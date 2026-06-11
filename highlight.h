@@ -1,0 +1,201 @@
+#ifndef __AM_HIGHLIGHT_H__
+#define __AM_HIGHLIGHT_H__
+
+#include <wchar.h>
+#include <wctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <unistd.h>
+
+#include "lexer.h"
+
+/* ===== 颜色主题配置（可自定义）===== */
+typedef enum {
+    COLOR_DEFAULT = 0,
+    COLOR_KEYWORD,      // define, if, lambda 等
+    COLOR_BOOLEAN,      // #t, #f
+    COLOR_SPECIAL,      // #null, #undefined
+    COLOR_NUMBER,       // 数字字面值
+    COLOR_STRING,       // "hello"
+    COLOR_SYMBOL,       // 'symbol, `, , 等
+    COLOR_QUOTE,       // 'symbol, `, , 等
+    COLOR_BRACKET,      // ( ) [ ] { }
+    COLOR_VARIABLE,     // 普通变量/标识符
+    COLOR_COMMENT,      // ; 注释
+    COLOR_ERROR,        // 意外token
+    COLOR_COUNT
+} ColorScheme;
+
+/* ANSI转义序列（Linux/macOS/现代终端） */
+static const char* ANSI_COLORS[COLOR_COUNT] = {
+    [COLOR_DEFAULT]  = "\033[0m",
+    [COLOR_KEYWORD]  = "\033[0m\033[1;35m",
+    [COLOR_BOOLEAN]  = "\033[0m\033[1;36m",
+    [COLOR_SPECIAL]  = "\033[0m\033[34m",
+    [COLOR_NUMBER]   = "\033[0m\033[32m",
+    [COLOR_STRING]   = "\033[0m\033[1;33m",
+    [COLOR_SYMBOL]   = "\033[0m\033[1;31m",
+    [COLOR_QUOTE]    = "\033[0m\033[1;31m",
+    [COLOR_BRACKET]  = "\033[0m\033[37m",
+    [COLOR_VARIABLE] = "\033[0m\033[1;37m",
+    [COLOR_COMMENT]  = "\033[0m\033[1;32m",
+    [COLOR_ERROR]    = "\033[0m\033[38m",
+};
+
+
+/* ===== 平台无关的颜色控制 ===== */
+static void set_color(ColorScheme scheme) {
+    // 检查终端是否支持颜色（可选优化）
+    if(isatty(fileno(stdout))) {
+        fputs(ANSI_COLORS[scheme], stdout);
+    }
+}
+
+static void reset_color(void) {
+    set_color(COLOR_DEFAULT);
+}
+
+/* ===== 辅助：判断字符是否属于注释（; 到行尾）===== */
+// 由于Lexer会跳过注释不生成Token，这里需要手动检测注释区域用于高亮
+static inline int in_comment(wchar_t *code, int32_t pos) {
+    if(code[pos] == L';' && (pos == 0 || code[pos-1] != L'\\')) {
+        return 1;
+    }
+    // 向前查找：当前位置是否在 ; 之后、换行之前
+    int32_t i = pos - 1;
+    while(i >= 0 && code[i] != L'\n' && code[i] != L'\r') {
+        if(code[i] == L';' && (i == 0 || code[i-1] != L'\\')) {
+            return 1;
+        }
+        i--;
+    }
+    return 0;
+}
+
+/* ===== Token类型 → 颜色映射 ===== */
+static ColorScheme token_type_to_color(int32_t type) {
+    switch(type) {
+        case 3:  return COLOR_KEYWORD;    // TOKEN_TYPE_KEYWORD
+        case 4:  return COLOR_BOOLEAN;    // TOKEN_TYPE_BOOLEAN
+        case 5:  return COLOR_SPECIAL;    // TOKEN_TYPE_UNDEFINED
+        case 6:  return COLOR_SPECIAL;    // TOKEN_TYPE_NULL
+        case 7:  return COLOR_NUMBER;     // TOKEN_TYPE_NUMBER
+        case 8:  return COLOR_SYMBOL;     // TOKEN_TYPE_SYMBOL
+        case 9:  return COLOR_VARIABLE;   // TOKEN_TYPE_VARIABLE
+        case 10: return COLOR_STRING;     // TOKEN_TYPE_STRING
+        case 11: return COLOR_QUOTE;     // TOKEN_TYPE_QUOTE
+        case 1:  // fallthrough
+        case 2:  return COLOR_BRACKET;    // TOKEN_TYPE_LB/RB
+        case 99: return COLOR_ERROR;      // TOKEN_TYPE_UNEXPECTED
+        default: return COLOR_DEFAULT;
+    }
+}
+
+/* ===== 主函数：语法高亮输出 ===== */
+/**
+ * 基于Lexer输出的tokens，对原始code进行终端语法高亮
+ * @param code   原始源代码（宽字符串）
+ * @param tokens Lexer生成的token数组（按源码顺序排列）
+ * @param count  token数量
+ * @param start_line 起始行号（用于分页输出，默认1）
+ * @param max_lines 最大输出行数（0表示无限制）
+ * @return 实际输出的行数
+ */
+int32_t am_highlight_code(wchar_t *code, am_token_t *tokens, int32_t count,
+                          int32_t start_line, int32_t max_lines) {
+    if(!code) return 0;
+    
+    int32_t pos = 0;              // 当前字符位置
+    int32_t tok_idx = 0;          // 当前token索引
+    int32_t line = 1, col = 0;    // 当前行列
+    int32_t output_lines = 0;     // 已输出行数
+    ColorScheme current_color = COLOR_DEFAULT;
+    
+    // 提前退出检查
+    if(start_line > 1) {
+        // 快速跳过前面的行
+        while(code[pos] && line < start_line) {
+            if(code[pos] == L'\n') { line++; col = 0; }
+            else if(code[pos] == L'\r') {
+                if(code[pos+1] != L'\n') { line++; col = 0; }
+            }
+            else { col++; }
+            pos++;
+        }
+        if(!code[pos]) return 0;  // 已到达文件末尾
+    }
+    
+    reset_color();  // 确保起始为默认颜色
+    
+    while(code[pos]) {
+        while(tok_idx < count && pos >= tokens[tok_idx].index + tokens[tok_idx].length) {
+            tok_idx++;
+        }
+
+        // 检查是否需要切换颜色：当前位置是否是某个真实token的起始
+        ColorScheme target_color = COLOR_DEFAULT;
+        
+        // 优先检查注释（注释未被lexer输出为token，需特殊处理）
+        if(in_comment(code, pos)) {
+            target_color = COLOR_COMMENT;
+        }
+        // 检查是否匹配当前token的起始位置
+        else if(tok_idx < count) {
+            int32_t start = tokens[tok_idx].index;
+            int32_t end = start + tokens[tok_idx].length;
+            if(pos >= start && pos < end) {
+                target_color = token_type_to_color(tokens[tok_idx].type);
+            }
+        }
+        
+        // 颜色变化时更新终端状态
+        if(target_color != current_color) {
+            set_color(target_color);
+            current_color = target_color;
+        }
+        
+        // 输出当前字符
+        wchar_t c = code[pos];
+        if(c == L'\n' || c == L'\r') {
+            // 处理换行
+            printf("%lc", c);
+            if(c == L'\r' && code[pos+1] == L'\n') {
+                printf("%lc", code[++pos]);
+            }
+            line++;
+            col = 0;
+            output_lines++;
+            
+            // 检查是否达到输出行数限制
+            if(max_lines > 0 && output_lines >= max_lines) {
+                reset_color();
+                return output_lines;
+            }
+            
+            // 换行后重置颜色（避免颜色污染下一行）
+            reset_color();
+            current_color = COLOR_DEFAULT;
+        }
+        else {
+            printf("%lc", c);
+            col++;
+        }
+
+        pos++;
+    }
+    
+    // 文件末尾：确保颜色重置
+    reset_color();
+    printf("\n");
+    
+    return output_lines + (line > start_line ? 1 : 0);
+}
+
+/* ===== 便捷封装：默认参数版本 ===== */
+void am_print_highlighted(wchar_t *code, am_token_t *tokens, int32_t count) {
+    am_highlight_code(code, tokens, count, 1, 0);
+}
+
+#endif
