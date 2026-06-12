@@ -1,0 +1,90 @@
+请根据 @map.h 中关于am_map_t（哈希表：Map<am_value_t,am_value_t>）的定义，在 @map.h 中实现对其的一系列操作。
+
+am_map_t应当在am_allocator_t提供的内存中进行分配和操作，相关方法详见 @allocator.h。
+
+- am_map_t *am_map_create(am_allocator_t *alloc, uint32_t capacity); // 以初始容量新建哈希表：所有key和value初始化为AM_VALUE_NULL；capacity必须设置为不小于它的最小的2的幂
+- int32_t am_map_clear(am_allocator_t *alloc, am_map_t *map); // 清空哈希表：对所有的entry执行：如果value是am_value_is_ptr，则先free，再将value置为AM_VALUE_NULL
+- int32_t am_map_destroy(am_allocator_t *alloc, am_map_t *map); // 彻底销毁哈希表对象
+- am_value_t am_map_get(am_allocator_t *alloc, am_map_t *map, am_value_t key); // 查找
+- int32_t am_map_contains(am_allocator_t *alloc, am_map_t *map, am_value_t key); // 存在性检查
+- int32_t am_map_set(am_allocator_t *alloc, am_map_t *map, am_value_t key, am_value_t value); // 插入或修改（按需扩容）
+- int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_value_t key); // 删除
+- uint32_t am_map_size(am_allocator_t *alloc, am_map_t *map); // 当前有效键值对数量
+- uint32_t am_map_capacity(am_allocator_t *alloc, am_map_t *map); // 物理槽位数
+- void am_map_iter(am_allocator_t *alloc, am_map_t *map, am_map_iter_callback_t cb, void *user_data); // 遍历
+- am_value_t *am_map_keys(am_allocator_t *alloc, am_map_t *map); // 获取所有的key（直接在系统内存中调用malloc返回动态列表指针即可，无需使用am_allocator_t）
+
+遍历回调类型：
+typedef void (*am_map_iter_callback_t)(am_value_t key, am_value_t value, void *user_data);
+
+其他必要的接口包括哈希、扩容、重哈希等，按需实现。
+
+
+---------------------
+
+详细解释哈希函数 am_value_hash 的原理，不要修改代码。
+
+---------------------
+
+请你实现一个 test_map.c，用于测试 @map.h 。不要修改已有的任何代码，凡是缺失的基础设施想办法在 test_map.c 中实现。只允许在 test_map.c 中新增代码，不要修改已有的任何代码。
+
+---------------------
+
+针对map扩容会导致map指针发生变化的问题，我提出以下新需求：
+
+1、在 @map.h 中新增不扩容插入/修改接口：am_map_set_stable，返回int32_t表示是否成功，该函数仅做插入修改操作，不执行任何扩容操作，从而保证map指针稳定（不会被realloc）。同时保留原来的am_map_set接口不变。
+
+2、在 @test_map.c 中测试新增的 am_map_set_stable 函数。
+
+3、请你评审我的设计是否合理。由于map在我的Scheme解释器和VM的实现中是极其重要的核心数据结构，所以必须使其具备足够的灵活性。am_map_set_stable 用于解释器内部实现，例如对closure内部map的操作，以及用于map所有权复杂的情况。而am_map_set用于所有权清晰的情况，通过解释器和VM的handle机制实现解耦。
+
+---------------------
+
+关于抽象堆，我打算做以下设计：
+
+1、正如你所说，抽象堆的“地址”应当是与物理地址（指针）解耦的、稳定的“handle”，一个handle一旦被生成，在其整个生命周期内的值就不应变化（但是其对应的物理地址当然可以变化）。抽象堆有责任维护从handle到物理地址（指针）的映射关系。
+
+2、而我前面要的，实际上是对物理存储的抽象，而不是对进程堆的抽象。之所以要对物理存储进行抽象，一方面是为了兼容性（比如不允许/不能使用系统malloc的场景、比如内存极度受限的场景等等），可以将系统预先分配的一整块内存作为物理内存由VM的抽象物理存储进行管理，另一方面也是为了性能和灵活性，例如可以按需选用Arena、freelist等实现方案等等。
+
+请你评审我的想法。
+
+---------------------
+
+我自己手工修改了 @map.h 中的实现，将map对象及其操作改成了不依赖process、heap、am_object_t的基础数据结构。修改后，作为基础数据结构，其内存分配完全由 @allocator.h 中定义的抽象内存分配器 am_allocator_t 负责。现在请你完成以下两项任务：
+
+1、不要修改 @map.h ，仅检查是否有错漏之处。
+
+2、基于现有的 @map.h 和 @allocator.h ，彻底修改 @test_map.c ，使其适应新的map和allocator定义和实现。
+
+3、除此之外不要修改任何已有的其他无关代码。
+
+---------------------
+
+请重新读取 @map.h ，分析扩容相关逻辑，告诉我为什么不使用am_realloc。不要修改代码。
+
+---------------------
+
+为了实现物理地址与堆逻辑地址（handle）的解耦，以及便于实现堆GC，引入了“堆数据对象”，“堆数据对象”实际上是对立即数或者内存对象指针（物理地址）的封装，在堆中通过数值上不变的handle对“堆数据对象”进行引用。
+
+有两个问题：
+
+1、“堆数据对象”的hash如何计算（以便判断同一性等）。
+2、堆对象指针的所有权问题：是否能够确保只有堆数据对象唯一持有内存对象指针？进而一旦内存对象指针发生变化，该对象对应的堆数据对象的handle可以保持不变？
+
+---------------------
+
+我前面所说的“堆数据对象”，案例如下。这样的字段设计是否合理？
+
+// something堆对象（对am_something_t的封装，使其把柄稳定、可GC）
+typedef struct am_obj_something_t {
+    am_object_t base;
+
+    am_something_t *sth; // 抽象物理内存中指向实际am_something_t对象的指针，可能会变
+} am_obj_something_t;
+
+我总觉得这样很奇怪，性能问题且不论，这实际上形成了多次映射：handle-[heap]->am_obj_something_t对象 -[allocator]->am_something_t对象。但是我理解的heap应当是handle-[heap]->am_something_t对象。当然，am_something_t对象中凡是引用内存对象的，都是通过handle引用的。
+我这样做是有这样一层考虑，也就是让am_something_t在对象语言（如Scheme）中可见。
+请你评审我的想法，重点评述这种想法是如何抵抗物理地址变化的，以及在GC中的实现方式。
+
+---------------------
+

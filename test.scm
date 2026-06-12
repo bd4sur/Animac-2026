@@ -3,6 +3,7 @@
 (define free 100)
 (define foo (lambda () `(,free))) ; 准引用列表也是词法作用域的
 (define bar (lambda (free) (foo)))
+(define aaa (lambda (x ...) (foo)))
 (bar 200) ; 输出(100)，而不是(200)
 
 

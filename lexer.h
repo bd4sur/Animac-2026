@@ -31,7 +31,7 @@ typedef struct am_token_t {
 
 // 保留字表（示例）
 static const wchar_t* KEYWORDS[] = {
-    L"define", L"if", L"cond", L"lambda", L"begin", L"native", L"import",
+    L"define", L"if", L"cond", L"lambda", L"begin", L"native", L"import", L"...",
     L"quote", L"quasiquote", L"unquote", L"set!", NULL
 };
 
