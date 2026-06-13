@@ -87,7 +87,7 @@ static void test_create_and_basic_properties(void) {
     am_map_t *map = am_map_create(&test_allocator, 5);
     assert(map != NULL);
     assert(am_map_capacity(&test_allocator, map) == 8);
-    assert(am_map_size(&test_allocator, map) == 0);
+    assert(am_map_length(&test_allocator, map) == 0);
 
     am_map_t *map2 = am_map_create(&test_allocator, 0);
     assert(map2 != NULL);
@@ -112,7 +112,7 @@ static void test_set_get_contains_uint(void) {
     am_value_t v1 = am_make_value_of_uint(100);
     map = am_map_set(&test_allocator, map, k1, v1);
     assert(map != NULL);
-    assert(am_map_size(&test_allocator, map) == 1);
+    assert(am_map_length(&test_allocator, map) == 1);
     assert(am_map_contains(&test_allocator, map, k1) == 1);
     assert(am_value_equal(am_map_get(&test_allocator, map, k1), v1));
 
@@ -123,7 +123,7 @@ static void test_set_get_contains_uint(void) {
     am_value_t v1_new = am_make_value_of_uint(200);
     map = am_map_set(&test_allocator, map, k1, v1_new);
     assert(map != NULL);
-    assert(am_map_size(&test_allocator, map) == 1);
+    assert(am_map_length(&test_allocator, map) == 1);
     assert(am_value_equal(am_map_get(&test_allocator, map, k1), v1_new));
 
     am_map_destroy(&test_allocator, map);
@@ -150,7 +150,7 @@ static void test_different_value_types(void) {
     map = am_map_set(&test_allocator, map, k_sym,  v3); assert(map != NULL);
     map = am_map_set(&test_allocator, map, k_bool, v4); assert(map != NULL);
 
-    assert(am_map_size(&test_allocator, map) == 4);
+    assert(am_map_length(&test_allocator, map) == 4);
     assert(am_value_equal(am_map_get(&test_allocator, map, k_uint), v1));
     assert(am_value_equal(am_map_get(&test_allocator, map, k_int),  v2));
     assert(am_value_equal(am_map_get(&test_allocator, map, k_sym),  v3));
@@ -174,7 +174,7 @@ static void test_delete_and_tombstones(void) {
     map = am_map_set(&test_allocator, map, k3, am_make_value_of_uint(30)); assert(map != NULL);
 
     assert(am_map_delete(&test_allocator, map, k2) == 1);
-    assert(am_map_size(&test_allocator, map) == 2);
+    assert(am_map_length(&test_allocator, map) == 2);
     assert(am_map_contains(&test_allocator, map, k2) == 0);
     assert(am_value_equal(am_map_get(&test_allocator, map, k2), AM_VALUE_NULL));
 
@@ -204,7 +204,7 @@ static void test_resize_and_rehash(void) {
         assert(map != NULL);
     }
 
-    assert(am_map_size(&test_allocator, map) == (uint32_t)N);
+    assert(am_map_length(&test_allocator, map) == (uint32_t)N);
     assert(am_map_capacity(&test_allocator, map) >= (uint32_t)N);
 
     for (int i = 0; i < N; i++) {
@@ -295,7 +295,7 @@ static void test_clear_and_destroy(void) {
     assert(capacity_before >= 8);
 
     assert(am_map_clear(&test_allocator, map) == 0);
-    assert(am_map_size(&test_allocator, map) == 0);
+    assert(am_map_length(&test_allocator, map) == 0);
     assert(am_map_capacity(&test_allocator, map) == capacity_before);
 
     for (int i = 0; i < 50; i++) {
@@ -315,7 +315,7 @@ static void test_reserved_keys_rejected(void) {
     am_value_t some_value = am_make_value_of_uint(1);
     assert(am_map_set(&test_allocator, map, AM_MAP_KEY_EMPTY, some_value) == NULL);
     assert(am_map_set(&test_allocator, map, AM_MAP_KEY_TOMBSTONE, some_value) == NULL);
-    assert(am_map_size(&test_allocator, map) == 0);
+    assert(am_map_length(&test_allocator, map) == 0);
 
     am_map_destroy(&test_allocator, map);
     printf("OK\n");
@@ -332,7 +332,7 @@ static void test_set_stable_basic(void) {
         am_value_t v = am_make_value_of_uint((uint32_t)(i * 10));
         assert(am_map_set_stable(&test_allocator, map, k, v) == 0);
     }
-    assert(am_map_size(&test_allocator, map) == 8);
+    assert(am_map_length(&test_allocator, map) == 8);
     assert(am_map_capacity(&test_allocator, map) == 8);
 
     for (int i = 0; i < 8; i++) {
@@ -344,11 +344,11 @@ static void test_set_stable_basic(void) {
     am_value_t k0 = am_make_value_of_uint(0);
     assert(am_map_set_stable(&test_allocator, map, k0, am_make_value_of_uint(999)) == 0);
     assert(am_value_equal(am_map_get(&test_allocator, map, k0), am_make_value_of_uint(999)));
-    assert(am_map_size(&test_allocator, map) == 8);
+    assert(am_map_length(&test_allocator, map) == 8);
 
     am_value_t k_new = am_make_value_of_uint(100);
     assert(am_map_set_stable(&test_allocator, map, k_new, am_make_value_of_uint(1)) == -1);
-    assert(am_map_size(&test_allocator, map) == 8);
+    assert(am_map_length(&test_allocator, map) == 8);
 
     am_map_destroy(&test_allocator, map);
     printf("OK\n");
@@ -364,15 +364,15 @@ static void test_set_stable_tombstone_reuse(void) {
         am_value_t v = am_make_value_of_uint((uint32_t)i);
         assert(am_map_set_stable(&test_allocator, map, k, v) == 0);
     }
-    assert(am_map_size(&test_allocator, map) == 6);
+    assert(am_map_length(&test_allocator, map) == 6);
 
     assert(am_map_delete(&test_allocator, map, am_make_value_of_uint(2)) == 1);
     assert(am_map_delete(&test_allocator, map, am_make_value_of_uint(4)) == 1);
-    assert(am_map_size(&test_allocator, map) == 4);
+    assert(am_map_length(&test_allocator, map) == 4);
 
     assert(am_map_set_stable(&test_allocator, map, am_make_value_of_uint(20), am_make_value_of_uint(200)) == 0);
     assert(am_map_set_stable(&test_allocator, map, am_make_value_of_uint(21), am_make_value_of_uint(201)) == 0);
-    assert(am_map_size(&test_allocator, map) == 6);
+    assert(am_map_length(&test_allocator, map) == 6);
     assert(am_map_capacity(&test_allocator, map) == 8);
 
     assert(am_value_equal(am_map_get(&test_allocator, map, am_make_value_of_uint(0)),  am_make_value_of_uint(0)));
@@ -413,7 +413,7 @@ static void test_set_stable_no_resize(void) {
         assert(am_map_set_stable(&test_allocator, map, k, v) == 0);
     }
 
-    assert(am_map_size(&test_allocator, map) == 7);
+    assert(am_map_length(&test_allocator, map) == 7);
     assert(am_map_capacity(&test_allocator, map) == 8);
 
     am_map_destroy(&test_allocator, map);

@@ -1,5 +1,7 @@
 ;; 词法作用域
 
+'(lambda 'lambda ,lambda `lambda , ' ` ,(a ,b 'c `d) ,e ,#f `g `(h ,i 'j `k) 'l '(m ,n 'o `p if) ,(d 'e if else ... . , ' ` a)))
+
 (define free 100)
 (define foo (lambda () `(,free))) ; 准引用列表也是词法作用域的
 (define bar (lambda (free) (foo)))

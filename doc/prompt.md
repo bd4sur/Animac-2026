@@ -9,7 +9,7 @@ am_map_t应当在am_allocator_t提供的内存中进行分配和操作，相关�
 - int32_t am_map_contains(am_allocator_t *alloc, am_map_t *map, am_value_t key); // 存在性检查
 - int32_t am_map_set(am_allocator_t *alloc, am_map_t *map, am_value_t key, am_value_t value); // 插入或修改（按需扩容）
 - int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_value_t key); // 删除
-- size_t am_map_size(am_allocator_t *alloc, am_map_t *map); // 当前有效键值对数量
+- size_t am_map_length(am_allocator_t *alloc, am_map_t *map); // 当前有效键值对数量
 - size_t am_map_capacity(am_allocator_t *alloc, am_map_t *map); // 物理槽位数
 - void am_map_iter(am_allocator_t *alloc, am_map_t *map, am_map_iter_callback_t cb, void *user_data); // 遍历
 - am_value_t *am_map_keys(am_allocator_t *alloc, am_map_t *map); // 获取所有的key（直接在系统内存中调用malloc返回动态列表指针即可，无需使用am_allocator_t）

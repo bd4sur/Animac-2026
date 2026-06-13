@@ -20,9 +20,9 @@ typedef enum {
     COLOR_NUMBER,       // 数字字面值
     COLOR_STRING,       // "hello"
     COLOR_SYMBOL,       // 'symbol, `, , 等
-    COLOR_QUOTE,       // 'symbol, `, , 等
+    COLOR_QUOTE,        // 'symbol, `, , 等
     COLOR_BRACKET,      // ( ) [ ] { }
-    COLOR_VARIABLE,     // 普通变量/标识符
+    COLOR_IDENTIFIER,     // 普通变量/标识符
     COLOR_COMMENT,      // ; 注释
     COLOR_ERROR,        // 意外token
     COLOR_COUNT
@@ -39,7 +39,7 @@ static const char* ANSI_COLORS[COLOR_COUNT] = {
     [COLOR_SYMBOL]   = "\033[0m\033[1;31m",
     [COLOR_QUOTE]    = "\033[0m\033[1;31m",
     [COLOR_BRACKET]  = "\033[0m\033[37m",
-    [COLOR_VARIABLE] = "\033[0m\033[1;37m",
+    [COLOR_IDENTIFIER] = "\033[0m\033[1;37m",
     [COLOR_COMMENT]  = "\033[0m\033[1;32m",
     [COLOR_ERROR]    = "\033[0m\033[38m",
 };
@@ -77,18 +77,20 @@ static inline int in_comment(wchar_t *code, int32_t pos) {
 /* ===== Token类型 → 颜色映射 ===== */
 static ColorScheme token_type_to_color(int32_t type) {
     switch(type) {
-        case 3:  return COLOR_KEYWORD;    // TOKEN_TYPE_KEYWORD
-        case 4:  return COLOR_BOOLEAN;    // TOKEN_TYPE_BOOLEAN
-        case 5:  return COLOR_SPECIAL;    // TOKEN_TYPE_UNDEFINED
-        case 6:  return COLOR_SPECIAL;    // TOKEN_TYPE_NULL
-        case 7:  return COLOR_NUMBER;     // TOKEN_TYPE_NUMBER
-        case 8:  return COLOR_SYMBOL;     // TOKEN_TYPE_SYMBOL
-        case 9:  return COLOR_VARIABLE;   // TOKEN_TYPE_VARIABLE
-        case 10: return COLOR_STRING;     // TOKEN_TYPE_STRING
-        case 11: return COLOR_QUOTE;     // TOKEN_TYPE_QUOTE
+        case 3:  return COLOR_KEYWORD;    // AM_TOKEN_TYPE_KEYWORD
+        case 4:  return COLOR_BOOLEAN;    // AM_TOKEN_TYPE_BOOLEAN
+        case 5:  return COLOR_SPECIAL;    // AM_TOKEN_TYPE_UNDEFINED
+        case 6:  return COLOR_SPECIAL;    // AM_TOKEN_TYPE_NULL
+        case 7:  return COLOR_NUMBER;     // AM_TOKEN_TYPE_NUMBER
+        case 8:  return COLOR_SYMBOL;     // AM_TOKEN_TYPE_SYMBOL
+        case 9:  return COLOR_IDENTIFIER; // AM_TOKEN_TYPE_IDENTIFIER
+        case 10: return COLOR_STRING;     // AM_TOKEN_TYPE_STRING
+        case 11: return COLOR_QUOTE;     // AM_TOKEN_TYPE_QUOTE
+        case 12: return COLOR_QUOTE;     // AM_TOKEN_TYPE_QUOTE
+        case 13: return COLOR_QUOTE;     // AM_TOKEN_TYPE_QUOTE
         case 1:  // fallthrough
-        case 2:  return COLOR_BRACKET;    // TOKEN_TYPE_LB/RB
-        case 99: return COLOR_ERROR;      // TOKEN_TYPE_UNEXPECTED
+        case 2:  return COLOR_BRACKET;    // AM_TOKEN_TYPE_LB/RB
+        case 99: return COLOR_ERROR;      // AM_TOKEN_TYPE_UNEXPECTED
         default: return COLOR_DEFAULT;
     }
 }

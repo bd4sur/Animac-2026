@@ -32,7 +32,7 @@ typedef struct am_map_entry_t {
 typedef struct am_map_t {
     am_object_t base;
 
-    size_t size;       // 当前有效键值对数量
+    size_t length;     // 当前有效键值对数量
     size_t capacity;   // 物理槽位数 (必须是2的幂)
     size_t mask;       // capacity - 1，用于快速取模
     size_t tombstones; // 墓碑数量，用于触发重哈希
@@ -121,7 +121,7 @@ static inline am_map_t *am_map_create(am_allocator_t *alloc, size_t capacity) {
 
     map->capacity = cap;
     map->mask = cap - 1;
-    map->size = 0;
+    map->length = 0;
     map->tombstones = 0;
 
     for (size_t i = 0; i < cap; i++) {
@@ -148,7 +148,7 @@ static inline int32_t am_map_clear(am_allocator_t *alloc, am_map_t *map) {
         m->slots[i].key = AM_MAP_KEY_EMPTY;
         m->slots[i].value = AM_VALUE_NULL;
     }
-    m->size = 0;
+    m->length = 0;
     m->tombstones = 0;
     return 0;
 }
@@ -172,7 +172,7 @@ static inline am_map_t *am_map_copy(am_allocator_t *alloc, am_map_t *map) {
     am_map_t *copy = am_map_create(alloc, m->capacity);
     if (!copy) return NULL;
 
-    copy->size = m->size;
+    copy->length = m->length;
     copy->tombstones = m->tombstones;
 
     for (uint32_t i = 0; i < m->capacity; i++) {
@@ -192,7 +192,7 @@ static inline am_map_t *am_map_copy(am_allocator_t *alloc, am_map_t *map) {
 static inline am_value_t am_map_get(am_allocator_t *alloc, am_map_t *map, am_value_t key) {
     (void)alloc;
     am_map_t *m = (am_map_t *)map;
-    if (m->size == 0) return AM_VALUE_NULL;
+    if (m->length == 0) return AM_VALUE_NULL;
 
     size_t idx;
     if (!am_map_find_slot(m, key, &idx)) return AM_VALUE_NULL;
@@ -203,7 +203,7 @@ static inline am_value_t am_map_get(am_allocator_t *alloc, am_map_t *map, am_val
 static inline int32_t am_map_contains(am_allocator_t *alloc, am_map_t *map, am_value_t key) {
     (void)alloc;
     am_map_t *m = (am_map_t *)map;
-    if (m->size == 0) return 0;
+    if (m->length == 0) return 0;
 
     size_t idx;
     return am_map_find_slot(m, key, &idx) ? 1 : 0;
@@ -219,7 +219,7 @@ static inline int32_t am_map_set_stable(am_allocator_t *alloc, am_map_t *map, am
     am_map_t *m = (am_map_t *)map;
 
     // 表已完全填满（无空槽、无墓碑）：只能替换已有 key。
-    if (m->size == m->capacity) {
+    if (m->length == m->capacity) {
         size_t idx = am_value_hash(key) & m->mask;
         for (size_t i = 0; i < m->capacity; i++) {
             am_value_t k = m->slots[idx].key;
@@ -249,7 +249,7 @@ static inline int32_t am_map_set_stable(am_allocator_t *alloc, am_map_t *map, am
         }
         m->slots[idx].key = key;
         m->slots[idx].value = value;
-        m->size++;
+        m->length++;
     }
     return 0;
 }
@@ -264,7 +264,7 @@ static inline am_map_t *am_map_set(am_allocator_t *alloc, am_map_t *map, am_valu
     am_map_t *m = (am_map_t *)map;
 
     // 负载因子超过 75% 时扩容
-    if ((m->size + m->tombstones + 1) * 4 > m->capacity * 3) {
+    if ((m->length + m->tombstones + 1) * 4 > m->capacity * 3) {
         am_map_t *new_map = am_map_resize(alloc, map, m->capacity * 2);
         if (!new_map) return NULL;
         map = new_map;
@@ -284,7 +284,7 @@ static inline am_map_t *am_map_set(am_allocator_t *alloc, am_map_t *map, am_valu
         }
         m->slots[idx].key = key;
         m->slots[idx].value = value;
-        m->size++;
+        m->length++;
     }
     return map;
 }
@@ -293,7 +293,7 @@ static inline am_map_t *am_map_set(am_allocator_t *alloc, am_map_t *map, am_valu
 // 返回 1 表示删除成功，0 表示 key 不存在。
 static inline int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_value_t key) {
     am_map_t *m = (am_map_t *)map;
-    if (m->size == 0) return 0;
+    if (m->length == 0) return 0;
 
     size_t idx;
     if (!am_map_find_slot(m, key, &idx)) return 0;
@@ -303,7 +303,7 @@ static inline int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_val
     }
     m->slots[idx].key = AM_MAP_KEY_TOMBSTONE;
     m->slots[idx].value = AM_VALUE_NULL;
-    m->size--;
+    m->length--;
     m->tombstones++;
 
     // 墓碑过多时原地重哈希（失败则 map 未被修改，继续保留墓碑）
@@ -316,9 +316,9 @@ static inline int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_val
 }
 
 // 当前有效键值对数量
-static inline size_t am_map_size(am_allocator_t *alloc, am_map_t *map) {
+static inline size_t am_map_length(am_allocator_t *alloc, am_map_t *map) {
     (void)alloc;
-    return ((am_map_t *)map)->size;
+    return ((am_map_t *)map)->length;
 }
 
 // 物理槽位数
@@ -348,9 +348,9 @@ static inline void am_map_iter(am_allocator_t *alloc, am_map_t *map, am_map_iter
 static inline am_value_t *am_map_keys(am_allocator_t *alloc, am_map_t *map) {
     (void)alloc;
     am_map_t *m = (am_map_t *)map;
-    if (m->size == 0) return NULL;
+    if (m->length == 0) return NULL;
 
-    am_value_t *keys = (am_value_t *)malloc(m->size * sizeof(am_value_t));
+    am_value_t *keys = (am_value_t *)malloc(m->length * sizeof(am_value_t));
     if (!keys) return NULL;
 
     size_t count = 0;
@@ -379,7 +379,7 @@ static inline int32_t am_map_rehash(am_allocator_t *alloc, am_map_t *map) {
         m->slots[i].key = AM_MAP_KEY_EMPTY;
         m->slots[i].value = AM_VALUE_NULL;
     }
-    m->size = 0;
+    m->length = 0;
     m->tombstones = 0;
 
     for (size_t i = 0; i < cap; i++) {
@@ -388,7 +388,7 @@ static inline int32_t am_map_rehash(am_allocator_t *alloc, am_map_t *map) {
             am_map_find_slot(m, old_slots[i].key, &insert_idx);
             m->slots[insert_idx].key = old_slots[i].key;
             m->slots[insert_idx].value = old_slots[i].value;
-            m->size++;
+            m->length++;
         }
     }
 
@@ -424,7 +424,7 @@ static inline am_map_t *am_map_resize(am_allocator_t *alloc, am_map_t *map, size
 
     new_m->capacity = cap;
     new_m->mask = cap - 1;
-    new_m->size = 0;
+    new_m->length = 0;
     new_m->tombstones = 0;
 
     for (size_t i = 0; i < cap; i++) {
@@ -438,7 +438,7 @@ static inline am_map_t *am_map_resize(am_allocator_t *alloc, am_map_t *map, size
             am_map_find_slot(new_m, old_slots[i].key, &insert_idx);
             new_m->slots[insert_idx].key = old_slots[i].key;
             new_m->slots[insert_idx].value = old_slots[i].value;
-            new_m->size++;
+            new_m->length++;
         }
     }
 

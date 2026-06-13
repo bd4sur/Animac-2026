@@ -7,19 +7,21 @@
 #include <string.h>
 
 /* ===== Token类型定义 ===== */
-#define TOKEN_TYPE_SEP        (0)   // 分隔符: 空白字符
-#define TOKEN_TYPE_LB         (1)   // 左括号: ( [ {
-#define TOKEN_TYPE_RB         (2)   // 右括号: ) ] }
-#define TOKEN_TYPE_KEYWORD    (3)   // 关键字: define if cond while lambda begin 等
-#define TOKEN_TYPE_BOOLEAN    (4)   // 字面值：#t #f
-#define TOKEN_TYPE_UNDEFINED  (5)   // 字面值：#undefined
-#define TOKEN_TYPE_NULL       (6)   // 字面值：#null
-#define TOKEN_TYPE_NUMBER     (7)   // 字面值：数字，如 -3.14 +12.3 2e-5 等
-#define TOKEN_TYPE_SYMBOL     (8)   // 字面值：符号，即单撇号开头的符号，如 'symbol 等
-#define TOKEN_TYPE_VARIABLE   (9)   // 变量标识符
-#define TOKEN_TYPE_STRING     (10)  // 字符串: "hello"
-#define TOKEN_TYPE_QUOTE      (11)  // 各类用于标记quote、quasiquote、unquote的符号，如 , `
-#define TOKEN_TYPE_UNEXPECTED (99)  // 意料之外的token
+#define AM_TOKEN_TYPE_DELIMITER  (0)   // 分隔符: 空白字符
+#define AM_TOKEN_TYPE_LB         (1)   // 左括号: ( [ {
+#define AM_TOKEN_TYPE_RB         (2)   // 右括号: ) ] }
+#define AM_TOKEN_TYPE_KEYWORD    (3)   // 关键字: define if cond while lambda begin 等
+#define AM_TOKEN_TYPE_BOOLEAN    (4)   // 字面值：#t #f
+#define AM_TOKEN_TYPE_UNDEFINED  (5)   // 字面值：#undefined
+#define AM_TOKEN_TYPE_NULL       (6)   // 字面值：#null
+#define AM_TOKEN_TYPE_NUMBER     (7)   // 字面值：数字，如 -3.14 +12.3 2e-5 等
+#define AM_TOKEN_TYPE_SYMBOL     (8)   // 字面值：符号，即单撇号开头的符号，如 'symbol 等
+#define AM_TOKEN_TYPE_IDENTIFIER (9)   // 标识符（变量、运算符等）
+#define AM_TOKEN_TYPE_STRING     (10)  // 字符串: "hello"
+#define AM_TOKEN_TYPE_QUOTE      (11)  // 出现在括号前面的单引号'
+#define AM_TOKEN_TYPE_QUASIQUOTE (12)  // 反引号`
+#define AM_TOKEN_TYPE_UNQUOTE    (13)  // 逗号,
+#define AM_TOKEN_TYPE_UNEXPECTED (99)  // 意料之外的token
 
 typedef struct am_token_t {
     size_t  index;   // token首字符在code中的偏移
@@ -29,10 +31,14 @@ typedef struct am_token_t {
     int32_t column;  // 列号(从0开始)
 } am_token_t;
 
-// 保留字表（示例）
-static const wchar_t* KEYWORDS[] = {
-    L"define", L"if", L"cond", L"lambda", L"begin", L"native", L"import", L"...",
-    L"quote", L"quasiquote", L"unquote", L"set!", NULL
+// 关键字
+
+#define AM_KEYWORDS_NUM (24)
+static const wchar_t* AM_KEYWORDS[] = {
+    L"lambda", L"define", L"set!", L"let", L"begin", L"return", L"...", L"_",
+    L"if", L"and", L"or", L"cond", L"else", L"for", L"while", L"break", L"continue", L"case", L"do",
+    L"quote", L"quasiquote", L"unquote",
+    L"import", L"native", NULL
 };
 
 
@@ -41,7 +47,7 @@ static const wchar_t* KEYWORDS[] = {
 // 定界符判断
 static inline int is_delimiter(wchar_t c) {
     return c == L'(' || c == L')' || c == L'[' || c == L']' ||
-           c == L'{' || c == L'}' || c == L',' || c == L'`' || c == L'"';
+           c == L'{' || c == L'}' || c == L'"' || c == L'`' || c == L',';
 }
 
 static inline int is_whitespace(wchar_t c) {
@@ -111,8 +117,8 @@ static int is_number(wchar_t *code, int32_t start, int32_t len) {
 // 判断是否为关键字
 static int is_keyword(wchar_t *code, int32_t start, int32_t len) {
     if(len == 0) return 0;
-    for(int i = 0; KEYWORDS[i]; i++) {
-        if(wcsncmp(&code[start], KEYWORDS[i], len) == 0 && KEYWORDS[i][len] == L'\0') {
+    for(int i = 0; AM_KEYWORDS[i]; i++) {
+        if(wcsncmp(&code[start], AM_KEYWORDS[i], len) == 0 && AM_KEYWORDS[i][len] == L'\0') {
             return 1;
         }
     }
@@ -132,7 +138,7 @@ static int32_t parse_hash_literal(wchar_t *code, int32_t start, int32_t *len_out
             return 0; // #ta 不是合法布尔值
         }
         *len_out = 2;
-        return TOKEN_TYPE_BOOLEAN;
+        return AM_TOKEN_TYPE_BOOLEAN;
     }
     
     // #undefined
@@ -140,7 +146,7 @@ static int32_t parse_hash_literal(wchar_t *code, int32_t start, int32_t *len_out
         wchar_t next = code[pos + 9];
         if(!is_delimiter(next) && !is_whitespace(next) && next != L'\0') return 0;
         *len_out = 10; // # + undefined(9)
-        return TOKEN_TYPE_UNDEFINED;
+        return AM_TOKEN_TYPE_UNDEFINED;
     }
     
     // #null
@@ -148,7 +154,7 @@ static int32_t parse_hash_literal(wchar_t *code, int32_t start, int32_t *len_out
         wchar_t next = code[pos + 4];
         if(!is_delimiter(next) && !is_whitespace(next) && next != L'\0') return 0;
         *len_out = 5; // # + null(4)
-        return TOKEN_TYPE_NULL;
+        return AM_TOKEN_TYPE_NULL;
     }
     
     return 0; // 不识别的 # 字面值
@@ -186,33 +192,33 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
     do {                                                        \
         if(buf_start != -1) {                                   \
             int32_t len = pos - buf_start;                      \
-            int32_t t_type = TOKEN_TYPE_VARIABLE;               \
+            int32_t t_type = AM_TOKEN_TYPE_IDENTIFIER;          \
             wchar_t first = code[buf_start];                    \
-            /* #开头的特殊字面值 */                             \
+            /* #开头的特殊字面值 */                              \
             if(first == L'#') {                                 \
                 int32_t hash_len;                               \
                 int32_t hash_type = parse_hash_literal(code, buf_start, &hash_len); \
                 if(hash_type != 0 && hash_len == len) {         \
                     t_type = hash_type;                         \
                 } else {                                        \
-                    t_type = TOKEN_TYPE_UNEXPECTED;             \
+                    t_type = AM_TOKEN_TYPE_UNEXPECTED;          \
                 }                                               \
             }                                                   \
             else if (first == L'\'') {                          \
-                if (len > 1) t_type = TOKEN_TYPE_SYMBOL;        \
-                else t_type = TOKEN_TYPE_QUOTE;                 \
+                if (len > 1) t_type = AM_TOKEN_TYPE_SYMBOL;     \
+                else t_type = AM_TOKEN_TYPE_QUOTE;              \
             }                                                   \
             /* 数字字面值 */                                     \
             else if(is_number(code, buf_start, len)) {          \
-                t_type = TOKEN_TYPE_NUMBER;                     \
+                t_type = AM_TOKEN_TYPE_NUMBER;                  \
             }                                                   \
             /* 关键字 */                                        \
             else if (is_keyword(code, buf_start, len)) {        \
-                t_type = TOKEN_TYPE_KEYWORD;                    \
+                t_type = AM_TOKEN_TYPE_KEYWORD;                 \
             }                                                   \
-            /* 其他: 变量 */                                     \
+            /* 其他: 一般标识符 */                               \
             else {                                              \
-                t_type = TOKEN_TYPE_VARIABLE;                   \
+                t_type = AM_TOKEN_TYPE_IDENTIFIER;              \
             }                                                   \
             EMIT(t_type, len, buf_start);                       \
         }                                                       \
@@ -240,7 +246,7 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
                 int32_t len = parse_string(code, pos, &end_pos);
                 if(len < 0) return -1;
                 buf_line = line; buf_col = col;
-                EMIT(TOKEN_TYPE_STRING, len, pos);
+                EMIT(AM_TOKEN_TYPE_STRING, len, pos);
                 while(pos < end_pos) update_pos(code[pos++], &line, &col);
                 continue;
             }
@@ -248,10 +254,10 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
             // 2.2 { 特殊转换: { -> ( + begin (虚拟token)
             if(c == L'{') {
                 buf_line = line; buf_col = col;
-                EMIT(TOKEN_TYPE_LB, 1, pos);
+                EMIT(AM_TOKEN_TYPE_LB, 1, pos);
                 
                 am_token_t *t2 = &tokens[tok_cnt++];
-                t2->index = -1; t2->length = 5; t2->type = TOKEN_TYPE_KEYWORD;
+                t2->index = SIZE_MAX; t2->length = 5; t2->type = AM_TOKEN_TYPE_KEYWORD;
                 t2->line = line; t2->column = col + 1;
                 
                 update_pos(c, &line, &col);
@@ -262,14 +268,15 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
             // 🔹 2.4 普通定界符类型映射
             int32_t t_type;
             if(c == L'(' || c == L'[') 
-                t_type = TOKEN_TYPE_LB;
+                t_type = AM_TOKEN_TYPE_LB;
             else if(c == L')' || c == L']' || c == L'}') 
-                t_type = TOKEN_TYPE_RB;
-            // 🔹 逗号、反引号 → QUOTE 类型
-            else if(c == L',' || c == L'`') 
-                t_type = TOKEN_TYPE_QUOTE;
+                t_type = AM_TOKEN_TYPE_RB;
+            else if(c == L'`') 
+                t_type = AM_TOKEN_TYPE_QUASIQUOTE;
+            else if(c == L',') 
+                t_type = AM_TOKEN_TYPE_UNQUOTE;
             else 
-                t_type = TOKEN_TYPE_SEP;
+                t_type = AM_TOKEN_TYPE_DELIMITER;
             
             buf_line = line; buf_col = col;
             EMIT(t_type, 1, pos);
@@ -305,9 +312,9 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
 // 安全获取 token 文本（处理虚拟 token）
 const wchar_t* token_text(am_token_t *tok, wchar_t *code) {
     static wchar_t buf[256];
-    if(tok->index == -1) {
+    if(tok->index == SIZE_MAX) {
         // 虚拟 token
-        if(tok->type == TOKEN_TYPE_KEYWORD && tok->length == 5) return L"begin";
+        if(tok->type == AM_TOKEN_TYPE_KEYWORD && tok->length == 5) return L"begin";
         return L"[virtual]";
     }
     // 真实 token

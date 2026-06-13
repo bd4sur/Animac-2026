@@ -39,7 +39,7 @@ int main(void) {
     am_map_t *copy = am_map_copy(&test_allocator, map);
     assert(copy != NULL);
     assert(copy != map);
-    assert(am_map_size(&test_allocator, copy) == am_map_size(&test_allocator, map));
+    assert(am_map_length(&test_allocator, copy) == am_map_length(&test_allocator, map));
     assert(am_map_capacity(&test_allocator, copy) == am_map_capacity(&test_allocator, map));
 
     for (int i = 0; i < N; i++) {

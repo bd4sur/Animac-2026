@@ -12,18 +12,20 @@
 // 打印 token 类型名称
 const wchar_t* type_name(int32_t type) {
     switch(type) {
-        case TOKEN_TYPE_SEP: return L"SEP";
-        case TOKEN_TYPE_LB: return L"LB";
-        case TOKEN_TYPE_RB: return L"RB";
-        case TOKEN_TYPE_KEYWORD: return L"KEYWORD";
-        case TOKEN_TYPE_BOOLEAN: return L"BOOLEAN";
-        case TOKEN_TYPE_UNDEFINED: return L"UNDEFINED";
-        case TOKEN_TYPE_NULL: return L"NULL";
-        case TOKEN_TYPE_NUMBER: return L"NUMBER";
-        case TOKEN_TYPE_SYMBOL: return L"SYMBOL";
-        case TOKEN_TYPE_VARIABLE: return L"VARIABLE";
-        case TOKEN_TYPE_STRING: return L"STRING";
-        case TOKEN_TYPE_QUOTE: return L"QUOTE";
+        case AM_TOKEN_TYPE_DELIMITER: return L"SEP";
+        case AM_TOKEN_TYPE_LB: return L"LB";
+        case AM_TOKEN_TYPE_RB: return L"RB";
+        case AM_TOKEN_TYPE_KEYWORD: return L"KEYWORD";
+        case AM_TOKEN_TYPE_BOOLEAN: return L"BOOLEAN";
+        case AM_TOKEN_TYPE_UNDEFINED: return L"UNDEFINED";
+        case AM_TOKEN_TYPE_NULL: return L"NULL";
+        case AM_TOKEN_TYPE_NUMBER: return L"NUMBER";
+        case AM_TOKEN_TYPE_SYMBOL: return L"SYMBOL";
+        case AM_TOKEN_TYPE_IDENTIFIER: return L"IDENTIFIER";
+        case AM_TOKEN_TYPE_STRING: return L"STRING";
+        case AM_TOKEN_TYPE_QUOTE: return L"QUOTE";
+        case AM_TOKEN_TYPE_QUASIQUOTE: return L"QUASIQUOTE";
+        case AM_TOKEN_TYPE_UNQUOTE: return L"UNQUOTE";
         default: return L"UNEXPECTED";
     }
 }
@@ -50,7 +52,7 @@ int main(int argc, char* argv[]) {
     }
 
     for (int32_t i = 0; i < count; i++) {
-        printf("[%4d] %12ls @%5d+%3d  %ls\n", 
+        printf("[%4d] %12ls @%5zu+%3zu  %ls\n", 
             i, type_name(tokens[i].type), 
             tokens[i].index, tokens[i].length,
             token_text(&tokens[i], code));

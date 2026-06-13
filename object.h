@@ -9,11 +9,17 @@
 
 struct am_map_t;
 typedef struct am_map_t am_map_t;
+
 struct am_array_t;
 typedef struct am_array_t am_array_t;
 
+struct am_heap_t;
+typedef struct am_heap_t am_heap_t;
+
+
+
 ///////////////////////////////////////////
-// TPV 与 Object
+// 对象语言数据值：TPV (Tagged Pointer Value)
 ///////////////////////////////////////////
 
 // 与架构相关的基本类型
@@ -49,21 +55,25 @@ typedef uint8_t am_undefined_t;
 typedef uint8_t am_null_t;
 
 
-typedef enum am_value_type_t {
-    AM_VALUE_TYPE_PTR,
-    // 以下均为IMME
-    AM_VALUE_TYPE_HANDLE,  // uint_like
-    AM_VALUE_TYPE_IADDR,   // uint_like
-    AM_VALUE_TYPE_VARID,   // uint_like
-    AM_VALUE_TYPE_BOOLEAN, // uint_like
-    AM_VALUE_TYPE_NULL,    // uint_like, 单例
-    AM_VALUE_TYPE_UNDEFINED, // uint_like, 单例
-    AM_VALUE_TYPE_SYMBOL,  // uint_like, keyword也是一种特殊的symbol，在编译时就应该放进symbol映射表中
-    AM_VALUE_TYPE_WCHAR, // wchar_t, 仅用于组成字符串
-    AM_VALUE_TYPE_UINT,  // number
-    AM_VALUE_TYPE_INT,   // number
-    AM_VALUE_TYPE_FLOAT, // number
-} am_value_type_t;
+// TPV(Tagged Pointer Value)作为唯一的值类型
+typedef uintptr_t am_value_t;
+
+
+
+// TPV的类型枚举
+#define AM_VALUE_TYPE_PTR (0x00)
+// 以下均为IMME
+#define AM_VALUE_TYPE_HANDLE    (0x01) // uint_like
+#define AM_VALUE_TYPE_IADDR     (0x02) // uint_like
+#define AM_VALUE_TYPE_VARID     (0x03) // uint_like
+#define AM_VALUE_TYPE_BOOLEAN   (0x04) // uint_like
+#define AM_VALUE_TYPE_NULL      (0x05) // uint_like, 单例
+#define AM_VALUE_TYPE_UNDEFINED (0x06) // uint_like, 单例
+#define AM_VALUE_TYPE_SYMBOL    (0x07) // uint_like, keyword也是一种特殊的symbol，在编译时就应该放进symbol映射表中
+#define AM_VALUE_TYPE_WCHAR     (0x08) // wchar_t, 仅用于组成字符串
+#define AM_VALUE_TYPE_UINT      (0x09) // number
+#define AM_VALUE_TYPE_INT       (0x0A) // number
+#define AM_VALUE_TYPE_FLOAT     (0x0B) // number
 
 
 // TPV的类型标记：征用 Bit0 （从LSB开始）作为 Tag
@@ -72,6 +82,7 @@ typedef enum am_value_type_t {
 #define AM_VALUE_TAG_IMME  ((am_value_t)0x1ULL) // 1: 立即数 (小整数)
 
 // TPV的立即数类型标记 (占用Bits1-4，从LSB开始)
+// TODO 改成移位之后的值似乎更好
 #define AM_VALUE_TAG_IMME_MASK      ((am_value_t)0x1EULL)
 #define AM_VALUE_TAG_IMME_HANDLE    ((am_value_t)0x1ULL)
 #define AM_VALUE_TAG_IMME_IADDR     ((am_value_t)0x2ULL)
@@ -85,75 +96,85 @@ typedef enum am_value_type_t {
 #define AM_VALUE_TAG_IMME_INT       ((am_value_t)0xAULL)
 #define AM_VALUE_TAG_IMME_FLOAT     ((am_value_t)0xBULL)
 
+// 方便构建uint_like的value
+#define AM_MAKE_VALUE_OF_UINT_LIKE(x, imme_type_tag) ((am_value_t)(((am_value_t)(x) << 5) | ((imme_type_tag) << 1) | AM_VALUE_TAG_IMME))
 
 
-// TPV(Tagged Pointer Value)作为唯一的值类型
-typedef uintptr_t am_value_t;
-
-
+///////////////////////////////////////////
 // 特殊（单例）TPV
-#define AM_VALUE_NULL      ((am_value_t)(0x0 | (AM_VALUE_TAG_IMME_NULL << 1) | AM_VALUE_TAG_IMME))
-#define AM_VALUE_UNDEFINED ((am_value_t)(0x0 | (AM_VALUE_TAG_IMME_UNDEFINED << 1) | AM_VALUE_TAG_IMME))
-#define AM_VALUE_TRUE      ((am_value_t)(0x1 | (AM_VALUE_TAG_IMME_BOOLEAN << 1) | AM_VALUE_TAG_IMME))
-#define AM_VALUE_FALSE     ((am_value_t)(0x0 | (AM_VALUE_TAG_IMME_BOOLEAN << 1) | AM_VALUE_TAG_IMME))
+///////////////////////////////////////////
+
+#define AM_VALUE_NULL      AM_MAKE_VALUE_OF_UINT_LIKE(0x0, AM_VALUE_TAG_IMME_NULL)
+#define AM_VALUE_UNDEFINED AM_MAKE_VALUE_OF_UINT_LIKE(0x0, AM_VALUE_TAG_IMME_UNDEFINED)
+#define AM_VALUE_TRUE      AM_MAKE_VALUE_OF_UINT_LIKE(0x1, AM_VALUE_TAG_IMME_BOOLEAN)
+#define AM_VALUE_FALSE     AM_MAKE_VALUE_OF_UINT_LIKE(0x0, AM_VALUE_TAG_IMME_BOOLEAN)
+
+// 首把柄和空把柄（值为(UINTPTR_MAX>>5)的把柄）
+#define AM_VALUE_HANDLE_BASE  AM_MAKE_VALUE_OF_UINT_LIKE(0x0, AM_VALUE_TAG_IMME_HANDLE)
+#define AM_VALUE_HANDLE_NULL  AM_MAKE_VALUE_OF_UINT_LIKE(UINTPTR_MAX, AM_VALUE_TAG_IMME_HANDLE)
+
+// 关键字（保留的symbol）
+// NOTE 关键字在词法上属于identifier，与variable接近；但是在语义上属于symbol，全局保留的symbol，不带前导单引号的特殊symbol
+// lambda define set! let begin return ... _
+// if and or cond else for while break continue case do
+// quote quasiquote unquote
+// import native
+#define AM_VALUE_KW_lambda     AM_MAKE_VALUE_OF_UINT_LIKE(0x00, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_define     AM_MAKE_VALUE_OF_UINT_LIKE(0x01, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_set        AM_MAKE_VALUE_OF_UINT_LIKE(0x02, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_let        AM_MAKE_VALUE_OF_UINT_LIKE(0x03, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_begin      AM_MAKE_VALUE_OF_UINT_LIKE(0x04, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_return     AM_MAKE_VALUE_OF_UINT_LIKE(0x05, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_dot3       AM_MAKE_VALUE_OF_UINT_LIKE(0x06, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_underscore AM_MAKE_VALUE_OF_UINT_LIKE(0x07, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_if         AM_MAKE_VALUE_OF_UINT_LIKE(0x08, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_and        AM_MAKE_VALUE_OF_UINT_LIKE(0x09, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_or         AM_MAKE_VALUE_OF_UINT_LIKE(0x0A, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_cond       AM_MAKE_VALUE_OF_UINT_LIKE(0x0B, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_else       AM_MAKE_VALUE_OF_UINT_LIKE(0x0C, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_for        AM_MAKE_VALUE_OF_UINT_LIKE(0x0D, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_while      AM_MAKE_VALUE_OF_UINT_LIKE(0x0E, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_break      AM_MAKE_VALUE_OF_UINT_LIKE(0x0F, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_continue   AM_MAKE_VALUE_OF_UINT_LIKE(0x10, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_case       AM_MAKE_VALUE_OF_UINT_LIKE(0x11, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_do         AM_MAKE_VALUE_OF_UINT_LIKE(0x12, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_quote      AM_MAKE_VALUE_OF_UINT_LIKE(0x13, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_quasiquote AM_MAKE_VALUE_OF_UINT_LIKE(0x14, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_unquote    AM_MAKE_VALUE_OF_UINT_LIKE(0x15, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_import     AM_MAKE_VALUE_OF_UINT_LIKE(0x16, AM_VALUE_TAG_IMME_SYMBOL)
+#define AM_VALUE_KW_native     AM_MAKE_VALUE_OF_UINT_LIKE(0x17, AM_VALUE_TAG_IMME_SYMBOL)
 
 
-
-// Object类型
-typedef enum am_object_type_t {
-    AM_OBJECT_TYPE_LIST,         // 通用线性表List<am_value_t>
-    AM_OBJECT_TYPE_MAP,          // 通用散列表Map<am_value_t, am_value_t>
-    AM_OBJECT_TYPE_STRING,       // 字符串
-    AM_OBJECT_TYPE_PORT,         // 端口（对IO的抽象）
-    AM_OBJECT_TYPE_CLOSURE,      // 闭包
-    AM_OBJECT_TYPE_CONTINUATION, // 续体
-    AM_OBJECT_TYPE_FRAME,        // 栈帧
-    AM_OBJECT_TYPE_ILCODE,       // 中间语言指令 TODO
-    AM_OBJECT_TYPE_BOX,          // 基本类型装箱 TODO
-} am_object_type_t;
 
 
 
 ///////////////////////////////////////////
-// Object基类
+// 对象语言数据对象：Object
 ///////////////////////////////////////////
 
-// 基类（公共头）
+
+// Object类型枚举
+#define AM_OBJECT_TYPE_BASE         (0x00)  // 默认类型（基类）
+#define AM_OBJECT_TYPE_LIST         (0x01)  // 通用线性表List<am_value_t>
+#define AM_OBJECT_TYPE_MAP          (0x02)  // 通用散列表Map<am_value_t, am_value_t>
+#define AM_OBJECT_TYPE_STRING       (0x03)  // 字符串
+#define AM_OBJECT_TYPE_PORT         (0x04)  // 端口（对IO的抽象）
+#define AM_OBJECT_TYPE_CLOSURE      (0x05)  // 闭包
+#define AM_OBJECT_TYPE_CONTINUATION (0x06)  // 续体
+#define AM_OBJECT_TYPE_FRAME        (0x07)  // 栈帧
+#define AM_OBJECT_TYPE_ILCODE       (0x08)  // 中间语言指令 TODO
+#define AM_OBJECT_TYPE_BOX          (0x09)  // 基本类型装箱 TODO
+
+
+// Object基类（公共头）
 typedef struct am_object_t {
-    uint32_t         header; // TODO 预留，包括static标记等
-    uint32_t         hash;   // T散列值
-    uint32_t         gcmark; // TODO 用于垃圾回收，具体用法待定，取决于垃圾回收算法
-    am_object_type_t type;   // 对象类型
+    uint32_t header; // TODO 预留，包括static标记等
+    uint32_t hash;   // T散列值
+    uint32_t gcmark; // TODO 用于垃圾回收，具体用法待定，取决于垃圾回收算法
+    int32_t  type;   // 对象类型（AM_OBJECT_TYPE_*）
 } am_object_t;
 
 
-
-
-///////////////////////////////////////////
-// 列表对象
-///////////////////////////////////////////
-
-// List子类型枚举，决定了编译器和虚拟机如何解释List对象，这是Homoiconicity的基石
-typedef enum am_obj_list_type_t {
-    AM_SLIST_TYPE_DEFAULT,
-    AM_SLIST_TYPE_LAMBDA, // TODO lambda的对象布局不做特殊处理，以实现Homoiconicity
-    AM_SLIST_TYPE_APPLICATION, // 实际等同于AM_SLIST_TYPE_DEFAULT
-    AM_SLIST_TYPE_QUOTE,
-    AM_SLIST_TYPE_QUASIQUOTE,
-    AM_SLIST_TYPE_UNQUOTE,
-} am_obj_list_type_t;
-
-// List堆对象
-// TODO 直接在这上面实现线性表相关算法（TODO 评估am_array_t作为基础设施的必要性）
-typedef struct am_obj_list_t {
-    am_object_t base;
-
-    am_obj_list_type_t type;
-
-    size_t     length; // 指的是children的元素个数
-    am_value_t parent; // (am_handle_t)
-    am_value_t children[]; // Array<am_value_t> 柔性数组
-} am_obj_list_t;
 
 
 
@@ -241,7 +262,6 @@ static inline am_float_t am_value_to_float(am_value_t v) {
 }
 
 // 打包
-#define AM_MAKE_VALUE_OF_UINT_LIKE(x, imme_type_tag) (((am_value_t)(x) << 5) | ((imme_type_tag) << 1) | AM_VALUE_TAG_IMME)
 static inline am_value_t am_make_value_of_ptr(am_object_t* obj_p) { return (am_value_t)obj_p; }
 static inline am_value_t am_make_value_of_handle(am_handle_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_IMME_HANDLE); }
 static inline am_value_t am_make_value_of_iaddr(am_iaddr_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_IMME_IADDR); }
@@ -267,13 +287,6 @@ static inline am_value_t am_make_value_of_float(am_float_t x) {
 
 
 
-
-
-///////////////////////////////////////////
-// TODO 抽象堆
-///////////////////////////////////////////
-
-typedef void am_heap_t;
 
 
 
