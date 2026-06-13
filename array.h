@@ -1,6 +1,10 @@
 #ifndef __AM_ARRAY_H__
 #define __AM_ARRAY_H__
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,8 +17,12 @@
 
 // 线性表
 typedef struct am_array_t {
-    uint32_t length;
+    size_t     length;
     am_value_t arr[];
 } am_array_t;
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

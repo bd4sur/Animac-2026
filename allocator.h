@@ -7,6 +7,10 @@
 #include <string.h>
 #include <stdio.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 ///////////////////////////////////////////
 // 抽象内存分配器
 ///////////////////////////////////////////
@@ -45,5 +49,8 @@ static inline void am_free(am_allocator_t *alloc, void *ptr) {
 // void am_free_impl(void *state, void *ptr) { free(ptr); }
 // const am_allocator_vtable_t malloc_vtable = { am_malloc_impl, am_free_impl, NULL };
 
+#ifdef __cplusplus
+}
+#endif
 
 #endif

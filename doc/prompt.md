@@ -2,15 +2,15 @@
 
 am_map_t应当在am_allocator_t提供的内存中进行分配和操作，相关方法详见 @allocator.h。
 
-- am_map_t *am_map_create(am_allocator_t *alloc, uint32_t capacity); // 以初始容量新建哈希表：所有key和value初始化为AM_VALUE_NULL；capacity必须设置为不小于它的最小的2的幂
+- am_map_t *am_map_create(am_allocator_t *alloc, size_t capacity); // 以初始容量新建哈希表：所有key和value初始化为AM_VALUE_NULL；capacity必须设置为不小于它的最小的2的幂
 - int32_t am_map_clear(am_allocator_t *alloc, am_map_t *map); // 清空哈希表：对所有的entry执行：如果value是am_value_is_ptr，则先free，再将value置为AM_VALUE_NULL
 - int32_t am_map_destroy(am_allocator_t *alloc, am_map_t *map); // 彻底销毁哈希表对象
 - am_value_t am_map_get(am_allocator_t *alloc, am_map_t *map, am_value_t key); // 查找
 - int32_t am_map_contains(am_allocator_t *alloc, am_map_t *map, am_value_t key); // 存在性检查
 - int32_t am_map_set(am_allocator_t *alloc, am_map_t *map, am_value_t key, am_value_t value); // 插入或修改（按需扩容）
 - int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_value_t key); // 删除
-- uint32_t am_map_size(am_allocator_t *alloc, am_map_t *map); // 当前有效键值对数量
-- uint32_t am_map_capacity(am_allocator_t *alloc, am_map_t *map); // 物理槽位数
+- size_t am_map_size(am_allocator_t *alloc, am_map_t *map); // 当前有效键值对数量
+- size_t am_map_capacity(am_allocator_t *alloc, am_map_t *map); // 物理槽位数
 - void am_map_iter(am_allocator_t *alloc, am_map_t *map, am_map_iter_callback_t cb, void *user_data); // 遍历
 - am_value_t *am_map_keys(am_allocator_t *alloc, am_map_t *map); // 获取所有的key（直接在系统内存中调用malloc返回动态列表指针即可，无需使用am_allocator_t）
 
@@ -85,6 +85,149 @@ typedef struct am_obj_something_t {
 我总觉得这样很奇怪，性能问题且不论，这实际上形成了多次映射：handle-[heap]->am_obj_something_t对象 -[allocator]->am_something_t对象。但是我理解的heap应当是handle-[heap]->am_something_t对象。当然，am_something_t对象中凡是引用内存对象的，都是通过handle引用的。
 我这样做是有这样一层考虑，也就是让am_something_t在对象语言（如Scheme）中可见。
 请你评审我的想法，重点评述这种想法是如何抵抗物理地址变化的，以及在GC中的实现方式。
+
+---------------------
+
+基于 @closure.h 中现有的 am_obj_closure_t 结构体定义，在 @closure.h 中实现以下对Scheme闭包对象的操作。
+注意：我的意图是用线性表（柔性数组）来模拟从 (am_varid_t varid, int32_t type) 到 (am_value_t value, int32_t dirty_flag) 的映射，也就是说，通过尾部插入和遍历搜索的方式进行操作即可。闭包中变量的绑定不涉及删除操作。你的API实现需要支持动态扩容（扩容后am_obj_closure_t对象的指针可能会变，这部分逻辑你可以参考 @map.h 中哈希表扩容的相关方法）。
+但是你要注意到，绝大多数情况下，是不涉及闭包扩容的。你的实现应该充分考虑这一点，以优化性能。
+
+你需要实现的API如下：
+
+- am_obj_closure_t *am_closure_create(am_allocator_t *alloc, am_iaddr_t iaddr, am_handle_t parent, size_t capacity); // 默认capacity为16
+- int32_t am_closure_destroy(am_allocator_t *alloc, am_obj_closure_t *closure);
+- am_obj_closure_t *am_closure_copy(am_allocator_t *alloc, am_obj_closure_t *closure); // 全拷贝：必须完整拷贝所有字段和bindings
+- am_obj_closure_t *am_closure_init_bound_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable, am_value_t value); // 如涉及扩容，则返回新闭包对象的指针，下同
+- am_obj_closure_t *am_closure_set_bound_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable, am_value_t value);
+- am_value_t am_closure_get_bound_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable);
+- am_obj_closure_t *am_closure_init_free_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable, am_value_t value);
+- am_obj_closure_t *am_closure_set_free_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable, am_value_t value);
+- am_value_t am_closure_get_free_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable);
+- int32_t am_closure_is_dirty_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable);
+- int32_t am_closure_has_bound_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable);
+- int32_t am_closure_has_free_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable);
+
+你可以参考已有的TypeScript实现：
+
+```
+// 闭包（运行时堆对象）
+class Closure extends SchemeObject {
+    public instructionAddress: number;               // 指令地址
+    public parent: Handle;            // 亲代闭包把柄
+    public boundVariables: HashMap<string, any>;   // 约束变量
+    public freeVariables: HashMap<string, any>;    // 自由变量
+    public dirtyFlag: HashMap<string, boolean>;    // 脏标记
+
+    constructor(instructionAddress: number,
+                parent: Handle) {
+        super();
+        this.type = SchemeObjectType.CLOSURE;
+        this.instructionAddress = instructionAddress;
+        this.parent = parent;
+        this.boundVariables = new HashMap<string, any>();
+        this.freeVariables = new HashMap<string, any>();
+        this.dirtyFlag = new HashMap<string, boolean>();
+    }
+
+    public Copy(): Closure {
+        let copy = new Closure(this.instructionAddress, this.parent);
+        copy.type = SchemeObjectType.CLOSURE;
+        copy.boundVariables = this.boundVariables.Copy();
+        copy.freeVariables = this.freeVariables.Copy();
+        copy.dirtyFlag = this.dirtyFlag.Copy();
+        return copy;
+    }
+
+    // 不加脏标记
+    public InitBoundVariable(variable: string, value: any): void {
+        this.boundVariables[variable] = value;
+        this.dirtyFlag[variable] = false;
+    }
+    // 加脏标记（仅用于set指令）
+    public SetBoundVariable(variable: string, value: any): void {
+        this.boundVariables[variable] = value;
+        this.dirtyFlag[variable] = true;
+    }
+    public GetBoundVariable(variable: string): any {
+        return this.boundVariables[variable];
+    }
+    // 不加脏标记
+    public InitFreeVariable(variable: string, value: any): void {
+        this.freeVariables[variable] = value;
+        this.dirtyFlag[variable] = false;
+    }
+    // 加脏标记（仅用于set指令）
+    public SetFreeVariable(variable: string, value: any): void {
+        this.freeVariables[variable] = value;
+        this.dirtyFlag[variable] = true;
+    }
+    public GetFreeVariable(variable: string): any {
+        return this.freeVariables[variable];
+    }
+
+    public IsDirtyVariable(variable: string): boolean {
+        return this.dirtyFlag[variable];
+    }
+
+    public HasBoundVariable(variable: string): boolean {
+        return this.boundVariables.has(variable);
+    }
+    public HasFreeVariable(variable: string): boolean {
+        return this.freeVariables.has(variable);
+    }
+}
+```
+
+---------------------
+
+从统计的角度讲，一个Scheme闭包内部，有多少变量绑定？包含自由变量和约束变量。给出上下限和平均情况的估计。
+
+从程序语言实现领域的经验观察来看（Scheme、ML、Lisp 等函数式语言的编译器文献和工业实现数据），闭包内部的变量绑定数量呈现**极度偏斜的分布**：绝大多数极少，极端个案极少。**平均 3~5 个、90% 以上少于 8 个、99% 以上少于 15 个**。
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
 
 ---------------------
 

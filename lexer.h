@@ -22,8 +22,8 @@
 #define TOKEN_TYPE_UNEXPECTED (99)  // 意料之外的token
 
 typedef struct am_token_t {
-    int32_t index;   // token首字符在code中的偏移
-    int32_t length;  // token长度(字符数)
+    size_t  index;   // token首字符在code中的偏移
+    size_t  length;  // token长度(字符数)
     int32_t type;    // token类型
     int32_t line;    // 行号(从1开始)
     int32_t column;  // 列号(从0开始)

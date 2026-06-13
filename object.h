@@ -23,20 +23,20 @@ typedef struct am_array_t am_array_t;
     typedef uint32_t am_uint_t;
     typedef float    am_float_t;
     typedef uint32_t am_float_bits_t;
-    typedef uint32_t am_symbol_t;
-    typedef uint32_t am_iaddr_t;
-    typedef uint32_t am_handle_t;
-    typedef uint32_t am_varid_t;
+    typedef size_t   am_symbol_t;
+    typedef size_t   am_iaddr_t;
+    typedef size_t   am_handle_t;
+    typedef size_t   am_varid_t;
 #elif UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
     // 64 位系统
     typedef int64_t  am_int_t;
     typedef uint64_t am_uint_t;
     typedef double   am_float_t;
     typedef uint64_t am_float_bits_t;
-    typedef uint64_t am_symbol_t;
-    typedef uint64_t am_iaddr_t;
-    typedef uint64_t am_handle_t;
-    typedef uint64_t am_varid_t;
+    typedef size_t   am_symbol_t;
+    typedef size_t   am_iaddr_t;
+    typedef size_t   am_handle_t;
+    typedef size_t   am_varid_t;
 #else
     #error "Only 32-bit and 64-bit architectures are supported."
 #endif
@@ -114,6 +114,10 @@ typedef enum am_object_type_t {
 
 
 
+///////////////////////////////////////////
+// Object基类
+///////////////////////////////////////////
+
 // 基类（公共头）
 typedef struct am_object_t {
     uint32_t         header; // TODO 预留，包括static标记等
@@ -122,6 +126,12 @@ typedef struct am_object_t {
     am_object_type_t type;   // 对象类型
 } am_object_t;
 
+
+
+
+///////////////////////////////////////////
+// 列表对象
+///////////////////////////////////////////
 
 // List子类型枚举，决定了编译器和虚拟机如何解释List对象，这是Homoiconicity的基石
 typedef enum am_obj_list_type_t {
@@ -140,30 +150,26 @@ typedef struct am_obj_list_t {
 
     am_obj_list_type_t type;
 
-    uint32_t   length; // 指的是children的元素个数
+    size_t     length; // 指的是children的元素个数
     am_value_t parent; // (am_handle_t)
     am_value_t children[]; // Array<am_value_t> 柔性数组
 } am_obj_list_t;
 
 
-// Map堆对象Wrapper（对am_map_t(Payload)的封装，使其把柄稳定、可GC）
-typedef struct am_obj_map_t {
-    am_object_t base;
 
-    am_map_t *payload; // Payload: 指向实际am_map_t对象的指针
-} am_obj_map_t;
+///////////////////////////////////////////
+// Map对象
+///////////////////////////////////////////
+
+// Map堆对象（am_obj_map_t作为对象语言的数据对象，实质上是am_map_t）
+typedef am_map_t am_obj_map_t;
 
 
-// 闭包堆对象
-// TODO 由于规模小，这个map可以简化实现（用线性表实现：b0 v b1 v b2 v ... f0 v f1 v ...）
-typedef struct am_obj_closure_t {
-    am_object_t base;
 
-    am_value_t iaddr;     // am_value_t(iaddr)
-    // am_map_t *bound;      // am_value_t(varid) -> am_value_t(any)
-    // am_map_t *free;       // am_value_t(varid) -> am_value_t(any)
-    // am_map_t *dirty_flag; // am_value_t(varid) -> am_value_t(uint)
-} am_obj_closure_t;
+
+
+
+
 
 // 续体类型
 typedef struct am_obj_continuation_t {

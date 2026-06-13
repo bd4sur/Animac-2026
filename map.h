@@ -26,11 +26,16 @@ typedef struct am_map_entry_t {
 } am_map_entry_t;
 
 // 散列表（开放寻址法）
+// NOTE 说明：虽然am_map_t是基础设施，但定义上让它携带am_object_t头（base），赋予其解释器基础设施和语言对象的双重身份。
+//           am_map_t作为解释器的底层基础设施使用时，不应该感知base，由解释器本身和宿主环境管理；
+//           而作为对象语言的数据对象使用时，它作为am_object_t的一个派生类，接受抽象堆和内存分配器的管理。
 typedef struct am_map_t {
-    uint32_t size;       // 当前有效键值对数量
-    uint32_t capacity;   // 物理槽位数 (必须是2的幂)
-    uint32_t mask;       // capacity - 1，用于快速取模
-    uint32_t tombstones; // 墓碑数量，用于触发重哈希
+    am_object_t base;
+
+    size_t size;       // 当前有效键值对数量
+    size_t capacity;   // 物理槽位数 (必须是2的幂)
+    size_t mask;       // capacity - 1，用于快速取模
+    size_t tombstones; // 墓碑数量，用于触发重哈希
     am_map_entry_t slots[];  // 连续槽位区
 } am_map_t;
 
@@ -61,8 +66,8 @@ static inline bool am_value_equal(am_value_t a, am_value_t b) {
 }
 
 // 将容量向上取整为不小于它的最小 2 的幂
-static inline uint32_t am_map_round_up_capacity(uint32_t capacity) {
-    uint32_t cap = 1;
+static inline size_t am_map_round_up_capacity(size_t capacity) {
+    size_t cap = 1;
     while (cap < capacity) cap <<= 1;
     return cap;
 }
@@ -70,9 +75,9 @@ static inline uint32_t am_map_round_up_capacity(uint32_t capacity) {
 // 查找 key 所在槽位。
 // 返回值：1 表示找到，0 表示未找到。
 // 无论是否找到，*out_insert_idx 都会返回可插入位置（首个墓碑或空槽）。
-static inline int32_t am_map_find_slot(const am_map_t *m, am_value_t key, uint32_t *out_insert_idx) {
-    uint32_t idx = am_value_hash(key) & m->mask;
-    uint32_t insert_idx = UINT32_MAX;
+static inline size_t am_map_find_slot(const am_map_t *m, am_value_t key, size_t *out_insert_idx) {
+    size_t idx = am_value_hash(key) & m->mask;
+    size_t insert_idx = UINT32_MAX;
 
     while (1) {
         am_value_t k = m->slots[idx].key;
@@ -96,7 +101,7 @@ static inline int32_t am_map_rehash(am_allocator_t *alloc, am_map_t *map);
 
 // 扩容并重哈希到新容量（new_capacity 会被向上取整为 2 的幂）。
 // 返回新的 map 对象指针；失败返回 NULL。原 map 对象会被释放，调用者必须使用返回的新指针。
-static inline am_map_t *am_map_resize(am_allocator_t *alloc, am_map_t *map, uint32_t new_capacity);
+static inline am_map_t *am_map_resize(am_allocator_t *alloc, am_map_t *map, size_t new_capacity);
 
 // ===============================================================================
 // 构造函数
@@ -104,8 +109,8 @@ static inline am_map_t *am_map_resize(am_allocator_t *alloc, am_map_t *map, uint
 
 // 以初始容量新建哈希表。capacity 会被向上取整为不小于它的最小 2 的幂。
 // 所有 key 初始化为 AM_MAP_KEY_EMPTY，value 初始化为 AM_VALUE_NULL。
-static inline am_map_t *am_map_create(am_allocator_t *alloc, uint32_t capacity) {
-    uint32_t cap = am_map_round_up_capacity(capacity);
+static inline am_map_t *am_map_create(am_allocator_t *alloc, size_t capacity) {
+    size_t cap = am_map_round_up_capacity(capacity);
     if (cap < 8) cap = 8;
 
     size_t total_size = sizeof(am_map_t) + cap * sizeof(am_map_entry_t);
@@ -119,7 +124,7 @@ static inline am_map_t *am_map_create(am_allocator_t *alloc, uint32_t capacity) 
     map->size = 0;
     map->tombstones = 0;
 
-    for (uint32_t i = 0; i < cap; i++) {
+    for (size_t i = 0; i < cap; i++) {
         map->slots[i].key = AM_MAP_KEY_EMPTY;
         map->slots[i].value = AM_VALUE_NULL;
     }
@@ -134,7 +139,7 @@ static inline am_map_t *am_map_create(am_allocator_t *alloc, uint32_t capacity) 
 // 清空哈希表：对所有有效 entry，若 value 是指针则先释放，再将 key 置为 EMPTY、value 置为 NULL
 static inline int32_t am_map_clear(am_allocator_t *alloc, am_map_t *map) {
     am_map_t *m = (am_map_t *)map;
-    for (uint32_t i = 0; i < m->capacity; i++) {
+    for (size_t i = 0; i < m->capacity; i++) {
         if (m->slots[i].key != AM_MAP_KEY_EMPTY && m->slots[i].key != AM_MAP_KEY_TOMBSTONE) {
             if (am_value_is_ptr(m->slots[i].value)) {
                 am_free(alloc, am_value_to_ptr(m->slots[i].value));
@@ -155,6 +160,30 @@ static inline int32_t am_map_destroy(am_allocator_t *alloc, am_map_t *map) {
     return 0;
 }
 
+
+// ===============================================================================
+// 拷贝
+// ===============================================================================
+
+// 深拷贝：创建并返回一个与原 map 内容完全一致的新 map 对象。
+// 所有 key/value 按位拷贝（与闭包 Copy 语义一致，不递归拷贝指针指向的对象）。
+static inline am_map_t *am_map_copy(am_allocator_t *alloc, am_map_t *map) {
+    am_map_t *m = (am_map_t *)map;
+    am_map_t *copy = am_map_create(alloc, m->capacity);
+    if (!copy) return NULL;
+
+    copy->size = m->size;
+    copy->tombstones = m->tombstones;
+
+    for (uint32_t i = 0; i < m->capacity; i++) {
+        copy->slots[i].key = m->slots[i].key;
+        copy->slots[i].value = m->slots[i].value;
+    }
+
+    return copy;
+}
+
+
 // ===============================================================================
 // 基本操作
 // ===============================================================================
@@ -165,7 +194,7 @@ static inline am_value_t am_map_get(am_allocator_t *alloc, am_map_t *map, am_val
     am_map_t *m = (am_map_t *)map;
     if (m->size == 0) return AM_VALUE_NULL;
 
-    uint32_t idx;
+    size_t idx;
     if (!am_map_find_slot(m, key, &idx)) return AM_VALUE_NULL;
     return m->slots[idx].value;
 }
@@ -176,7 +205,7 @@ static inline int32_t am_map_contains(am_allocator_t *alloc, am_map_t *map, am_v
     am_map_t *m = (am_map_t *)map;
     if (m->size == 0) return 0;
 
-    uint32_t idx;
+    size_t idx;
     return am_map_find_slot(m, key, &idx) ? 1 : 0;
 }
 
@@ -191,8 +220,8 @@ static inline int32_t am_map_set_stable(am_allocator_t *alloc, am_map_t *map, am
 
     // 表已完全填满（无空槽、无墓碑）：只能替换已有 key。
     if (m->size == m->capacity) {
-        uint32_t idx = am_value_hash(key) & m->mask;
-        for (uint32_t i = 0; i < m->capacity; i++) {
+        size_t idx = am_value_hash(key) & m->mask;
+        for (size_t i = 0; i < m->capacity; i++) {
             am_value_t k = m->slots[idx].key;
             if (am_value_equal(k, key)) {
                 if (am_value_is_ptr(m->slots[idx].value)) {
@@ -207,7 +236,7 @@ static inline int32_t am_map_set_stable(am_allocator_t *alloc, am_map_t *map, am
     }
 
     // 存在空槽或墓碑，find_slot 必然终止
-    uint32_t idx;
+    size_t idx;
     int32_t found = am_map_find_slot(m, key, &idx);
     if (found) {
         if (am_value_is_ptr(m->slots[idx].value)) {
@@ -242,7 +271,7 @@ static inline am_map_t *am_map_set(am_allocator_t *alloc, am_map_t *map, am_valu
         m = (am_map_t *)map;
     }
 
-    uint32_t idx;
+    size_t idx;
     int32_t found = am_map_find_slot(m, key, &idx);
     if (found) {
         if (am_value_is_ptr(m->slots[idx].value)) {
@@ -266,7 +295,7 @@ static inline int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_val
     am_map_t *m = (am_map_t *)map;
     if (m->size == 0) return 0;
 
-    uint32_t idx;
+    size_t idx;
     if (!am_map_find_slot(m, key, &idx)) return 0;
 
     if (am_value_is_ptr(m->slots[idx].value)) {
@@ -287,13 +316,13 @@ static inline int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_val
 }
 
 // 当前有效键值对数量
-static inline uint32_t am_map_size(am_allocator_t *alloc, am_map_t *map) {
+static inline size_t am_map_size(am_allocator_t *alloc, am_map_t *map) {
     (void)alloc;
     return ((am_map_t *)map)->size;
 }
 
 // 物理槽位数
-static inline uint32_t am_map_capacity(am_allocator_t *alloc, am_map_t *map) {
+static inline size_t am_map_capacity(am_allocator_t *alloc, am_map_t *map) {
     (void)alloc;
     return ((am_map_t *)map)->capacity;
 }
@@ -307,7 +336,7 @@ static inline void am_map_iter(am_allocator_t *alloc, am_map_t *map, am_map_iter
     (void)alloc;
     if (!cb) return;
     am_map_t *m = (am_map_t *)map;
-    for (uint32_t i = 0; i < m->capacity; i++) {
+    for (size_t i = 0; i < m->capacity; i++) {
         if (m->slots[i].key != AM_MAP_KEY_EMPTY && m->slots[i].key != AM_MAP_KEY_TOMBSTONE) {
             cb(m->slots[i].key, m->slots[i].value, user_data);
         }
@@ -324,8 +353,8 @@ static inline am_value_t *am_map_keys(am_allocator_t *alloc, am_map_t *map) {
     am_value_t *keys = (am_value_t *)malloc(m->size * sizeof(am_value_t));
     if (!keys) return NULL;
 
-    uint32_t count = 0;
-    for (uint32_t i = 0; i < m->capacity; i++) {
+    size_t count = 0;
+    for (size_t i = 0; i < m->capacity; i++) {
         if (m->slots[i].key != AM_MAP_KEY_EMPTY && m->slots[i].key != AM_MAP_KEY_TOMBSTONE) {
             keys[count++] = m->slots[i].key;
         }
@@ -339,23 +368,23 @@ static inline am_value_t *am_map_keys(am_allocator_t *alloc, am_map_t *map) {
 
 static inline int32_t am_map_rehash(am_allocator_t *alloc, am_map_t *map) {
     am_map_t *m = (am_map_t *)map;
-    uint32_t cap = m->capacity;
+    size_t cap = m->capacity;
     size_t entries_size = cap * sizeof(am_map_entry_t);
 
     am_map_entry_t *old_slots = (am_map_entry_t *)am_malloc(alloc, entries_size);
     if (!old_slots) return -1;
     memcpy(old_slots, m->slots, entries_size);
 
-    for (uint32_t i = 0; i < cap; i++) {
+    for (size_t i = 0; i < cap; i++) {
         m->slots[i].key = AM_MAP_KEY_EMPTY;
         m->slots[i].value = AM_VALUE_NULL;
     }
     m->size = 0;
     m->tombstones = 0;
 
-    for (uint32_t i = 0; i < cap; i++) {
+    for (size_t i = 0; i < cap; i++) {
         if (old_slots[i].key != AM_MAP_KEY_EMPTY && old_slots[i].key != AM_MAP_KEY_TOMBSTONE) {
-            uint32_t insert_idx;
+            size_t insert_idx;
             am_map_find_slot(m, old_slots[i].key, &insert_idx);
             m->slots[insert_idx].key = old_slots[i].key;
             m->slots[insert_idx].value = old_slots[i].value;
@@ -367,16 +396,16 @@ static inline int32_t am_map_rehash(am_allocator_t *alloc, am_map_t *map) {
     return 0;
 }
 
-static inline am_map_t *am_map_resize(am_allocator_t *alloc, am_map_t *map, uint32_t new_capacity) {
+static inline am_map_t *am_map_resize(am_allocator_t *alloc, am_map_t *map, size_t new_capacity) {
     am_map_t *m = (am_map_t *)map;
-    uint32_t cap = am_map_round_up_capacity(new_capacity);
+    size_t cap = am_map_round_up_capacity(new_capacity);
     if (cap <= m->capacity) {
         // 容量未增加：仅做重哈希清理墓碑
         if (am_map_rehash(alloc, map) != 0) return NULL;
         return map;
     }
 
-    uint32_t old_capacity = m->capacity;
+    size_t old_capacity = m->capacity;
     size_t old_entries_size = old_capacity * sizeof(am_map_entry_t);
 
     am_map_entry_t *old_slots = NULL;
@@ -398,14 +427,14 @@ static inline am_map_t *am_map_resize(am_allocator_t *alloc, am_map_t *map, uint
     new_m->size = 0;
     new_m->tombstones = 0;
 
-    for (uint32_t i = 0; i < cap; i++) {
+    for (size_t i = 0; i < cap; i++) {
         new_m->slots[i].key = AM_MAP_KEY_EMPTY;
         new_m->slots[i].value = AM_VALUE_NULL;
     }
 
-    for (uint32_t i = 0; i < old_capacity; i++) {
+    for (size_t i = 0; i < old_capacity; i++) {
         if (old_slots[i].key != AM_MAP_KEY_EMPTY && old_slots[i].key != AM_MAP_KEY_TOMBSTONE) {
-            uint32_t insert_idx;
+            size_t insert_idx;
             am_map_find_slot(new_m, old_slots[i].key, &insert_idx);
             new_m->slots[insert_idx].key = old_slots[i].key;
             new_m->slots[insert_idx].value = old_slots[i].value;
