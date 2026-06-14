@@ -4,17 +4,17 @@ LDFLAGS := -lm
 
 all: main test_closure test_map
 
-main: main.o
+main: main.o src/lexer.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 
-test_closure: src/test_closure.o
+test_closure: test/test_closure.o src/closure.o src/object.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 
-test_map: src/test_map.o
+test_map: test/test_map.o src/map.o src/object.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f main test_map test_closure *.o src/*.o *.exe
+	rm -f main test_map test_closure *.o src/*.o test/*.o *.exe

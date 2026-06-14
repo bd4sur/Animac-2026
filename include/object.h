@@ -7,6 +7,9 @@
 #include <string.h>
 #include <stdio.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct am_object_t;
 typedef struct am_object_t am_object_t;
@@ -190,8 +193,8 @@ static inline am_handle_t    am_value_to_handle(am_value_t v)    { return (am_ha
 static inline am_iaddr_t     am_value_to_iaddr(am_value_t v)     { return (am_iaddr_t)(v >> 5); }
 static inline am_varid_t     am_value_to_varid(am_value_t v)     { return (am_varid_t)(v >> 5); }
 static inline am_boolean_t   am_value_to_boolean(am_value_t v)   { return (am_boolean_t)(v >> 5); } // 整数部分非0即为#t，除此之外全部为#f
-static inline am_null_t      am_value_to_null(am_value_t v)      { return (am_null_t)(1); } // 单例：常函数，且具体值不重要
-static inline am_undefined_t am_value_to_undefined(am_value_t v) { return (am_undefined_t)(1); } // 单例：常函数，具体值不重要
+static inline am_null_t      am_value_to_null(am_value_t v)      { (void)v; return (am_null_t)(1); } // 单例：常函数，且具体值不重要
+static inline am_undefined_t am_value_to_undefined(am_value_t v) { (void)v; return (am_undefined_t)(1); } // 单例：常函数，具体值不重要
 static inline am_symbol_t    am_value_to_symbol(am_value_t v)    { return (am_symbol_t)(v >> 5); }
 static inline am_wchar_t     am_value_to_wchar(am_value_t v)     { return (am_wchar_t)(v >> 5); }
 static inline am_uint_t      am_value_to_uint(am_value_t v)      { return (am_uint_t)(v >> 5); }
@@ -214,8 +217,8 @@ static inline am_value_t am_make_value_of_handle(am_handle_t x) { return AM_MAKE
 static inline am_value_t am_make_value_of_iaddr(am_iaddr_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_IADDR); }
 static inline am_value_t am_make_value_of_varid(am_varid_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_VARID); }
 static inline am_value_t am_make_value_of_boolean(am_boolean_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_BOOLEAN); }
-static inline am_value_t am_make_value_of_null(am_null_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_NULL); } // 单例：常函数，输入不重要
-static inline am_value_t am_make_value_of_undefined(am_undefined_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_UNDEFINED); } // 单例：常函数，输入不重要
+static inline am_value_t am_make_value_of_null(am_null_t x) { (void)x; return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_NULL); } // 单例：常函数，输入不重要
+static inline am_value_t am_make_value_of_undefined(am_undefined_t x) { (void)x; return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_UNDEFINED); } // 单例：常函数，输入不重要
 static inline am_value_t am_make_value_of_symbol(am_symbol_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_SYMBOL); }
 static inline am_value_t am_make_value_of_wchar(am_wchar_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_WCHAR); }
 static inline am_value_t am_make_value_of_uint(am_uint_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_UINT); }
@@ -338,5 +341,9 @@ typedef struct am_process_t {
 typedef void am_runtime_t;
 
 
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
