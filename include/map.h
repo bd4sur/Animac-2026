@@ -27,7 +27,7 @@ typedef struct am_map_entry_t {
 
 // 散列表（开放寻址法）
 // NOTE 说明：虽然am_map_t是基础设施，但定义上让它携带am_object_t头（base），赋予其解释器基础设施和语言对象的双重身份。
-//           am_map_t作为解释器的底层基础设施使用时，不应该感知base，由解释器本身和宿主环境管理；
+//           am_map_t作为解释器的底层基础设施使用时，由解释器本身和宿主环境管理；
 //           而作为对象语言的数据对象使用时，它作为am_object_t的一个派生类，接受抽象堆和内存分配器的管理。
 typedef struct am_map_t {
     am_object_t base;
@@ -119,6 +119,7 @@ static inline am_map_t *am_map_create(am_allocator_t *alloc, size_t capacity) {
 
     memset(map, 0, total_size);
 
+    map->base.type = AM_OBJECT_TYPE_MAP;
     map->capacity = cap;
     map->mask = cap - 1;
     map->length = 0;
