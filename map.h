@@ -185,6 +185,44 @@ static inline am_map_t *am_map_copy(am_allocator_t *alloc, am_map_t *map) {
 
 
 // ===============================================================================
+// 对象二进制转储 TODO
+// ===============================================================================
+
+// 将对象的二进制内存布局从alloc管理的内存中倒出来，返回一个系统malloc的二进制序列，以及序列长度
+//   注意：压缩对象，将capacity压缩到跟length一致，删除多余分配的空闲部分
+static inline uint8_t *am_map_dump(am_allocator_t *alloc, am_map_t *map, size_t *size) {
+    (void)alloc;
+    am_map_t *m = (am_map_t *)map;
+
+    if (size) *size = 0;
+    if (!m) return NULL;
+
+    size_t dump_size = sizeof(am_map_t) + m->length * sizeof(am_map_entry_t);
+    uint8_t *buf = (uint8_t *)malloc(dump_size);
+    if (!buf) return NULL;
+
+    am_map_t *dump = (am_map_t *)buf;
+    dump->base = m->base;
+    dump->length = m->length;
+    dump->capacity = m->length;
+    dump->mask = (m->length > 0) ? (m->length - 1) : 0;
+    dump->tombstones = 0;
+
+    size_t idx = 0;
+    for (size_t i = 0; i < m->capacity; i++) {
+        if (m->slots[i].key != AM_MAP_KEY_EMPTY && m->slots[i].key != AM_MAP_KEY_TOMBSTONE) {
+            dump->slots[idx].key = m->slots[i].key;
+            dump->slots[idx].value = m->slots[i].value;
+            idx++;
+        }
+    }
+
+    if (size) *size = dump_size;
+    return buf;
+}
+
+
+// ===============================================================================
 // 基本操作
 // ===============================================================================
 

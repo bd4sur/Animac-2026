@@ -7,6 +7,9 @@
 #include <string.h>
 #include <stdio.h>
 
+struct am_list_t;
+typedef struct am_list_t am_list_t;
+
 struct am_map_t;
 typedef struct am_map_t am_map_t;
 
@@ -175,6 +178,15 @@ typedef struct am_object_t {
 } am_object_t;
 
 
+
+
+
+///////////////////////////////////////////
+// List对象
+///////////////////////////////////////////
+
+// List堆对象（am_obj_list_t作为对象语言的数据对象，实质上是am_list_t）
+typedef am_list_t am_obj_list_t;
 
 
 

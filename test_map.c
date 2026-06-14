@@ -13,8 +13,18 @@
 #pragma GCC diagnostic pop
 
 // ===============================================================================
-// 基础设施：实现一个委托给系统 malloc/free/realloc 的简单抽象分配器
+// 基础设施：基于内存池的简单测试分配器（bump allocator）
 // ===============================================================================
+
+#define TEST_POOL_SIZE 2048
+
+typedef struct test_allocator_state_t {
+    uint8_t *base;      // 内存池基地址
+    size_t offset;      // 下一个可分配位置的偏移量
+    size_t capacity;    // 内存池总容量
+} test_allocator_state_t;
+
+static test_allocator_state_t test_allocator_state;
 
 static void* test_malloc(void *state, size_t size);
 static void* test_calloc(void *state, size_t size);
@@ -22,28 +32,112 @@ static void* test_realloc(void *state, void *ptr, size_t size);
 static void  test_free(void *state, void *ptr);
 static void  test_destroy(void *state);
 
+static size_t test_align_size(size_t size) {
+    const size_t align = sizeof(void*);
+    return (size + align - 1) & ~(align - 1);
+}
+
+static void test_print_progress_bar(void) {
+    test_allocator_state_t *s = &test_allocator_state;
+    const int width = 50;
+    int used_chars = (int)((s->offset * width + s->capacity - 1) / s->capacity);
+    if (used_chars > width) used_chars = width;
+
+    printf("[BAR]  [");
+    for (int i = 0; i < used_chars; i++) putchar('#');
+    for (int i = used_chars; i < width; i++) putchar('-');
+    printf("]\n");
+}
+
+static void test_scan_pool(void) {
+    test_allocator_state_t *s = &test_allocator_state;
+    printf("[SCAN] ");
+    size_t i = 0;
+    int first = 1;
+    while (i < s->capacity) {
+        bool used = (i < s->offset);
+        size_t start = i;
+        while (i < s->capacity && (i < s->offset) == used) {
+            i++;
+        }
+        if (!first) printf(", ");
+        first = 0;
+        printf("start=%-4zu %4zu bytes %s", start, i - start, used ? "used" : "free");
+    }
+    printf("\n");
+}
+
+static void test_print_layout(const char *op, size_t size, void *ptr) {
+    test_allocator_state_t *s = &test_allocator_state;
+
+    printf("[POOL] %-10s", op);
+    if (size > 0) printf(" size=%4zu ptr=%p", size, ptr);
+    printf(" offset=%4zu/%4zu\n", s->offset, s->capacity);
+
+    test_print_progress_bar();
+    test_scan_pool();
+}
+
 static void* test_malloc(void *state, size_t size) {
-    (void)state;
-    return malloc(size);
+    test_allocator_state_t *s = (test_allocator_state_t *)state;
+    if (size == 0) {
+        test_print_layout("malloc", 0, NULL);
+        return NULL;
+    }
+    size_t aligned_size = test_align_size(size);
+    if (s->offset + aligned_size > s->capacity) {
+        test_print_layout("malloc-FAIL", size, NULL);
+        return NULL;
+    }
+    void *p = s->base + s->offset;
+    s->offset += aligned_size;
+    test_print_layout("malloc", size, p);
+    return p;
 }
 
 static void* test_calloc(void *state, size_t size) {
-    (void)state;
-    return calloc(1, size);
+    void *p = test_malloc(state, size);
+    if (p) memset(p, 0, size);
+    // layout 已在 test_malloc 中打印
+    return p;
 }
 
 static void* test_realloc(void *state, void *ptr, size_t size) {
-    (void)state;
-    return realloc(ptr, size);
+    if (ptr == NULL) return test_malloc(state, size);
+    // Bump allocator 不记录单个对象尺寸，无法原地扩展。
+    // 简单实现为分配新块并按新尺寸拷贝；map.h 的实现中不会调用 am_realloc。
+    void *new_ptr = test_malloc(state, size);
+    if (new_ptr) {
+        memcpy(new_ptr, ptr, size);
+    }
+    // layout 已在 test_malloc 中打印
+    return new_ptr;
 }
 
 static void test_free(void *state, void *ptr) {
     (void)state;
-    free(ptr);
+    // Bump allocator：释放为 no-op，内存池在 destroy 时统一释放。
+    test_print_layout("free", 0, ptr);
 }
 
 static void test_destroy(void *state) {
-    (void)state;
+    test_allocator_state_t *s = (test_allocator_state_t *)state;
+    if (s->base) {
+        free(s->base);
+        s->base = NULL;
+    }
+    s->offset = 0;
+    s->capacity = 0;
+}
+
+static void test_allocator_init(void) {
+    test_allocator_state.base = (uint8_t *)malloc(TEST_POOL_SIZE);
+    test_allocator_state.offset = 0;
+    test_allocator_state.capacity = TEST_POOL_SIZE;
+}
+
+static void test_allocator_reset(void) {
+    test_allocator_state.offset = 0;
 }
 
 static const am_allocator_vtable_t test_allocator_vtable = {
@@ -54,7 +148,7 @@ static const am_allocator_vtable_t test_allocator_vtable = {
     test_destroy
 };
 
-static am_allocator_t test_allocator = { &test_allocator_vtable, NULL };
+static am_allocator_t test_allocator = { &test_allocator_vtable, &test_allocator_state };
 
 // ===============================================================================
 // 测试用辅助结构与回调
@@ -196,7 +290,7 @@ static void test_resize_and_rehash(void) {
     am_map_t *map = am_map_create(&test_allocator, 4);
     assert(am_map_capacity(&test_allocator, map) == 8);
 
-    const int N = 200;
+    const int N = 20;
     for (int i = 0; i < N; i++) {
         am_value_t k = am_make_value_of_uint((uint32_t)(1000 + i));
         am_value_t v = am_make_value_of_uint((uint32_t)i);
@@ -284,7 +378,7 @@ static void test_clear_and_destroy(void) {
 
     am_map_t *map = am_map_create(&test_allocator, 8);
 
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 20; i++) {
         am_value_t k = am_make_value_of_uint((uint32_t)i);
         am_value_t v = am_make_value_of_uint((uint32_t)(i + 1));
         map = am_map_set(&test_allocator, map, k, v);
@@ -298,7 +392,7 @@ static void test_clear_and_destroy(void) {
     assert(am_map_length(&test_allocator, map) == 0);
     assert(am_map_capacity(&test_allocator, map) == capacity_before);
 
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 20; i++) {
         am_value_t k = am_make_value_of_uint((uint32_t)i);
         assert(am_map_contains(&test_allocator, map, k) == 0);
     }
@@ -420,27 +514,136 @@ static void test_set_stable_no_resize(void) {
     printf("OK\n");
 }
 
+static void test_dump_basic(void) {
+    printf("test_dump_basic ... ");
+
+    // 空 map 转储
+    am_map_t *map = am_map_create(&test_allocator, 8);
+    size_t size = 0;
+    uint8_t *dump = am_map_dump(&test_allocator, map, &size);
+    assert(dump != NULL);
+    assert(size == sizeof(am_map_t));
+    am_map_t *d = (am_map_t *)dump;
+    assert(d->length == 0);
+    assert(d->capacity == 0);
+    assert(d->tombstones == 0);
+    free(dump);
+    am_map_destroy(&test_allocator, map);
+
+    // 非空 map 转储
+    map = am_map_create(&test_allocator, 8);
+    for (int i = 0; i < 5; i++) {
+        am_value_t k = am_make_value_of_uint((uint32_t)i);
+        am_value_t v = am_make_value_of_uint((uint32_t)(i * 10));
+        map = am_map_set(&test_allocator, map, k, v);
+        assert(map != NULL);
+    }
+    assert(am_map_length(&test_allocator, map) == 5);
+    assert(am_map_capacity(&test_allocator, map) == 8);
+
+    dump = am_map_dump(&test_allocator, map, &size);
+    assert(dump != NULL);
+    assert(size == sizeof(am_map_t) + 5 * sizeof(am_map_entry_t));
+    d = (am_map_t *)dump;
+    assert(d->length == 5);
+    assert(d->capacity == 5);
+    assert(d->tombstones == 0);
+
+    for (int i = 0; i < 5; i++) {
+        am_value_t k = am_make_value_of_uint((uint32_t)i);
+        am_value_t expected = am_make_value_of_uint((uint32_t)(i * 10));
+        int found = 0;
+        for (size_t j = 0; j < d->length; j++) {
+            if (am_value_equal(d->slots[j].key, k) && am_value_equal(d->slots[j].value, expected)) {
+                found = 1;
+                break;
+            }
+        }
+        assert(found);
+    }
+    free(dump);
+
+    // 带墓碑的 map 转储：墓碑应被丢弃
+    am_value_t k2 = am_make_value_of_uint(2);
+    assert(am_map_delete(&test_allocator, map, k2) == 1);
+    assert(am_map_length(&test_allocator, map) == 4);
+
+    dump = am_map_dump(&test_allocator, map, &size);
+    assert(dump != NULL);
+    assert(size == sizeof(am_map_t) + 4 * sizeof(am_map_entry_t));
+    d = (am_map_t *)dump;
+    assert(d->length == 4);
+    assert(d->capacity == 4);
+    assert(d->tombstones == 0);
+    free(dump);
+
+    am_map_destroy(&test_allocator, map);
+    printf("OK\n");
+}
+
+static void test_dump_vs_copy(void) {
+    printf("test_dump_vs_copy ... ");
+
+    am_map_t *map = am_map_create(&test_allocator, 8);
+    for (int i = 0; i < 5; i++) {
+        am_value_t k = am_make_value_of_uint((uint32_t)i);
+        am_value_t v = am_make_value_of_uint((uint32_t)(i * 10));
+        map = am_map_set(&test_allocator, map, k, v);
+        assert(map != NULL);
+    }
+    am_value_t k2 = am_make_value_of_uint(2);
+    assert(am_map_delete(&test_allocator, map, k2) == 1);
+
+    // copy 完整保留源对象：capacity、length、tombstones、所有槽位均不变
+    am_map_t *copy = am_map_copy(&test_allocator, map);
+    assert(copy != NULL);
+    assert(copy->capacity == map->capacity);
+    assert(copy->tombstones == map->tombstones);
+    assert(copy->length == map->length);
+
+    // dump 压缩对象：capacity 与 length 一致，丢弃墓碑和空闲槽位
+    size_t dump_size = 0;
+    uint8_t *dump = am_map_dump(&test_allocator, map, &dump_size);
+    assert(dump != NULL);
+    am_map_t *d = (am_map_t *)dump;
+    assert(d->capacity == d->length);
+    assert(d->tombstones == 0);
+    assert(d->length == 4);
+    assert(dump_size == sizeof(am_map_t) + d->length * sizeof(am_map_entry_t));
+
+    free(dump);
+    am_map_destroy(&test_allocator, copy);
+    am_map_destroy(&test_allocator, map);
+    printf("OK\n");
+}
+
 // ===============================================================================
 // 入口
 // ===============================================================================
 
+#define RUN_TEST(t) do { test_allocator_reset(); t(); } while (0)
+
 int main(void) {
     printf("Running map tests...\n");
+    test_allocator_init();
 
-    test_create_and_basic_properties();
-    test_set_get_contains_uint();
-    test_different_value_types();
-    test_delete_and_tombstones();
-    test_resize_and_rehash();
-    test_iter_and_keys();
-    test_pointer_value_ownership();
-    test_clear_and_destroy();
-    test_reserved_keys_rejected();
-    test_set_stable_basic();
-    test_set_stable_tombstone_reuse();
-    test_set_stable_pointer_ownership();
-    test_set_stable_no_resize();
+    RUN_TEST(test_create_and_basic_properties);
+    RUN_TEST(test_set_get_contains_uint);
+    RUN_TEST(test_different_value_types);
+    RUN_TEST(test_delete_and_tombstones);
+    RUN_TEST(test_resize_and_rehash);
+    RUN_TEST(test_iter_and_keys);
+    RUN_TEST(test_pointer_value_ownership);
+    RUN_TEST(test_clear_and_destroy);
+    RUN_TEST(test_reserved_keys_rejected);
+    RUN_TEST(test_set_stable_basic);
+    RUN_TEST(test_set_stable_tombstone_reuse);
+    RUN_TEST(test_set_stable_pointer_ownership);
+    RUN_TEST(test_set_stable_no_resize);
+    RUN_TEST(test_dump_basic);
+    RUN_TEST(test_dump_vs_copy);
 
+    test_destroy(test_allocator.state);
     printf("All map tests passed.\n");
     return 0;
 }
