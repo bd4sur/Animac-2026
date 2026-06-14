@@ -16,7 +16,7 @@
 // 基础设施：基于内存池的简单测试分配器（bump allocator）
 // ===============================================================================
 
-#define TEST_POOL_SIZE 2048
+#define TEST_POOL_SIZE 65536
 
 typedef struct test_allocator_state_t {
     uint8_t *base;      // 内存池基地址
@@ -617,6 +617,44 @@ static void test_dump_vs_copy(void) {
     printf("OK\n");
 }
 
+static void test_copy_independence(void) {
+    printf("test_copy_independence ... ");
+
+    am_map_t *map = am_map_create(&test_allocator, 8);
+    assert(map != NULL);
+
+    const int N = 50;
+    for (int i = 0; i < N; i++) {
+        am_value_t k = am_make_value_of_uint((uint32_t)i);
+        am_value_t v = am_make_value_of_int(-i);
+        map = am_map_set(&test_allocator, map, k, v);
+        assert(map != NULL);
+    }
+
+    am_map_t *copy = am_map_copy(&test_allocator, map);
+    assert(copy != NULL);
+    assert(copy != map);
+    assert(am_map_length(&test_allocator, copy) == am_map_length(&test_allocator, map));
+    assert(am_map_capacity(&test_allocator, copy) == am_map_capacity(&test_allocator, map));
+
+    for (int i = 0; i < N; i++) {
+        am_value_t k = am_make_value_of_uint((uint32_t)i);
+        am_value_t expected = am_make_value_of_int(-i);
+        assert(am_map_contains(&test_allocator, copy, k) == 1);
+        assert(am_value_equal(am_map_get(&test_allocator, copy, k), expected));
+    }
+
+    // 修改副本不应影响原 map
+    am_value_t k0 = am_make_value_of_uint(0);
+    map = am_map_set(&test_allocator, map, k0, am_make_value_of_int(9999));
+    assert(map != NULL);
+    assert(am_value_equal(am_map_get(&test_allocator, copy, k0), am_make_value_of_int(0)));
+
+    am_map_destroy(&test_allocator, map);
+    am_map_destroy(&test_allocator, copy);
+    printf("OK\n");
+}
+
 // ===============================================================================
 // 入口
 // ===============================================================================
@@ -642,6 +680,7 @@ int main(void) {
     RUN_TEST(test_set_stable_no_resize);
     RUN_TEST(test_dump_basic);
     RUN_TEST(test_dump_vs_copy);
+    RUN_TEST(test_copy_independence);
 
     test_destroy(test_allocator.state);
     printf("All map tests passed.\n");

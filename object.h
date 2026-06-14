@@ -171,7 +171,7 @@ typedef uintptr_t am_value_t;
 
 // Object基类（公共头）
 typedef struct am_object_t {
-    uint32_t header; // TODO 预留，包括static标记等
+    uint32_t header; // TODO 预留，包括魔法值、static标记等
     uint32_t hash;   // T散列值
     uint32_t gcmark; // TODO 用于垃圾回收，具体用法待定，取决于垃圾回收算法
     int32_t  type;   // 对象类型（AM_OBJECT_TYPE_*）
