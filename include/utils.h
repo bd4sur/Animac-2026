@@ -1,12 +1,12 @@
 #ifndef __AM_UTILS_H__
 #define __AM_UTILS_H__
 
-
 #include <stdint.h>
-#include <math.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <wchar.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // ===============================================================================
 // 字符编码相关
@@ -14,102 +14,12 @@
 
 // 将 UTF-32 码点（wchar_t）数组转换为 UTF-8 字符串
 // 注意：此函数假设 wchar_t 为 32 位（即 UTF-32），符合 ESP32 的配置（通常 -fshort-wchar 未启用）
-uint32_t _wcstombs(char *dest, const wchar_t *src, uint32_t dest_size) {
-    const wchar_t *p = src;
-    char *q = dest;
-    uint32_t dest_len = 0;
-    char *end = dest + dest_size - 1; // 留 1 字节给 \0
-
-    while (*p != L'\0' && q < end) {
-        uint32_t cp = (uint32_t)*p++;
-        if (cp <= 0x7F && q < end) {
-            *q++ = (char)cp;
-            dest_len++;
-        } else if (cp <= 0x7FF && q + 1 < end) {
-            *q++ = 0xC0 | (cp >> 6);
-            *q++ = 0x80 | (cp & 0x3F);
-            dest_len += 2;
-        } else if (cp <= 0xFFFF && q + 2 < end) {
-            *q++ = 0xE0 | (cp >> 12);
-            *q++ = 0x80 | ((cp >> 6) & 0x3F);
-            *q++ = 0x80 | (cp & 0x3F);
-            dest_len += 3;
-        } else if (cp <= 0x10FFFF && q + 3 < end) {
-            *q++ = 0xF0 | (cp >> 18);
-            *q++ = 0x80 | ((cp >> 12) & 0x3F);
-            *q++ = 0x80 | ((cp >> 6) & 0x3F);
-            *q++ = 0x80 | (cp & 0x3F);
-            dest_len += 4;
-        } else if (q < end) {
-            *q++ = '?';
-            dest_len++;
-        }
-    }
-    *q = '\0';
-    return dest_len;
-}
+uint32_t _wcstombs(char *dest, const wchar_t *src, uint32_t dest_size);
 
 // 将 UTF-8 字符串转换为 null-terminated 的 UTF-32 (wchar_t) 字符串
 // 返回值：成功转换的 wchar_t 字符数量（不包括结尾的 L'\0'）
 // 注意：dest 必须有至少 (length + 1) 个 wchar_t 的空间（最坏情况）
-uint32_t _mbstowcs(wchar_t *dest, const char *src, uint32_t length) {
-    const uint8_t *p = (const uint8_t *)src;
-    const uint8_t *end = p + length;
-    wchar_t *out = dest;
-
-    while (p < end) {
-        uint8_t byte = *p++;
-
-        if ((byte & 0x80) == 0) {
-            // 1-byte: ASCII
-            *out++ = (wchar_t)byte;
-        } else if ((byte & 0xE0) == 0xC0) {
-            // 2-byte
-            if (p >= end) goto invalid;
-            uint8_t b2 = *p++;
-            if ((b2 & 0xC0) != 0x80) goto invalid;
-            uint32_t cp = ((byte & 0x1F) << 6) | (b2 & 0x3F);
-            if (cp < 0x80) goto invalid; // overlong
-            *out++ = (wchar_t)cp;
-        } else if ((byte & 0xF0) == 0xE0) {
-            // 3-byte
-            if (p + 1 >= end) goto invalid;
-            uint8_t b2 = *p++;
-            uint8_t b3 = *p++;
-            if ((b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80) goto invalid;
-            uint32_t cp = ((byte & 0x0F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
-            if (cp < 0x800) goto invalid;
-            if (cp >= 0xD800 && cp <= 0xDFFF) goto invalid; // surrogate
-            *out++ = (wchar_t)cp;
-        } else if ((byte & 0xF8) == 0xF0) {
-            // 4-byte
-            if (p + 2 >= end) goto invalid;
-            uint8_t b2 = *p++;
-            uint8_t b3 = *p++;
-            uint8_t b4 = *p++;
-            if ((b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80 || (b4 & 0xC0) != 0x80) goto invalid;
-            uint32_t cp = ((byte & 0x07) << 18) | ((b2 & 0x3F) << 12) |
-                          ((b3 & 0x3F) << 6) | (b4 & 0x3F);
-            if (cp < 0x10000) goto invalid;
-            if (cp > 0x10FFFF) goto invalid;
-            *out++ = (wchar_t)cp;
-        } else {
-            goto invalid;
-        }
-    }
-
-    // 正常结束：添加 null 终止符
-    *out = (wchar_t)0;
-    return (uint32_t)(out - dest);
-
-invalid:
-    // 遇到无效 UTF-8：用 '?' 替代并终止
-    *out++ = (wchar_t)'?';
-    *out = (wchar_t)0;  // 仍然保证 null-terminated
-    return (uint32_t)(out - dest); // 返回包含 '?' 的字符数
-}
-
-
+uint32_t _mbstowcs(wchar_t *dest, const char *src, uint32_t length);
 
 /**
  * 读取文件内容（UTF-8），并转换为 wchar_t* 字符串
@@ -118,61 +28,10 @@ invalid:
  * @return 成功时返回动态分配的 wchar_t*（以 L'\0' 结尾），失败返回 NULL。
  *         调用者需用 free() 释放返回值。
  */
-wchar_t* read_file_to_wchar(char* filename) {
-    if (!filename) return NULL;
+wchar_t* read_file_to_wchar(char* filename);
 
-    // 2. 打开文件（当前工作目录）
-    FILE* fp = fopen(filename, "rb"); // 用二进制模式避免换行转换
-    if (!fp) {
-        return NULL;
-    }
-
-    // 3. 获取文件大小（可选，用于高效分配）
-    if (fseek(fp, 0, SEEK_END) != 0) {
-        fclose(fp);
-        return NULL;
-    }
-    size_t size = ftell(fp);
-    if (size < 0) {
-        fclose(fp);
-        return NULL;
-    }
-    if (fseek(fp, 0, SEEK_SET) != 0) {
-        fclose(fp);
-        return NULL;
-    }
-
-    // 4. 读取全部内容到 char 缓冲区（+1 保证可加 '\0'）
-    char* buffer = (char*)calloc(size + 1, sizeof(char));
-    if (!buffer) {
-        fclose(fp);
-        return NULL;
-    }
-
-    size_t bytes_read = fread(buffer, 1, size, fp);
-    fclose(fp);
-
-    if ((size_t)bytes_read != size) {
-        free(buffer);
-        return NULL;
-    }
-    buffer[size] = '\0'; // 确保以 null 结尾（UTF-8 是 null-safe 的）
-
-    // 5. 计算所需 wchar_t 数量
-    size_t wlen = size;
-
-    // 6. 分配 wchar_t 缓冲区
-    wchar_t* wstr = (wchar_t*)calloc((wlen + 1), sizeof(wchar_t));
-    if (!wstr) {
-        free(buffer);
-        return NULL;
-    }
-
-    // 7. 执行实际转换
-    (void)_mbstowcs(wstr, buffer, wlen + 1);
-    free(buffer);
-
-    return wstr; // 调用者负责 free()
+#ifdef __cplusplus
 }
+#endif
 
 #endif

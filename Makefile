@@ -4,7 +4,7 @@ LDFLAGS := -lm
 
 all: main test_closure test_map
 
-main: main.o src/lexer.o
+main: main.o src/lexer.o src/highlight.o src/utils.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 
 test_closure: test/test_closure.o src/closure.o src/object.o
