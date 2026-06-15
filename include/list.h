@@ -69,6 +69,11 @@ am_value_t am_list_pop(am_allocator_t *alloc, am_list_t *lst);
 am_value_t am_list_shift(am_allocator_t *alloc, am_list_t *lst); // 弹出第一个元素并全部左移
 
 
+// 从from_index开始遍历查找，找到第一个相同的则返回index，不管后面的；没有找到则返回SIZE_MAX
+size_t am_list_find(am_allocator_t *alloc, am_list_t *lst, am_value_t item, size_t from_index);
+
+
+
 
 
 ///////////////////////////////////////////

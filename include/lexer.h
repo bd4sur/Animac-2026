@@ -6,6 +6,8 @@
 #include <wctype.h>
 #include <string.h>
 
+#include "object.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,11 +30,14 @@ extern "C" {
 #define AM_TOKEN_TYPE_UNEXPECTED (99)  // 意料之外的token
 
 typedef struct am_token_t {
+    am_object_t base;
+
     size_t  index;   // token首字符在code中的偏移
     size_t  length;  // token长度(字符数)
     int32_t type;    // token类型
     int32_t line;    // 行号(从1开始)
     int32_t column;  // 列号(从0开始)
+    size_t  id;      // 如果是 AM_TOKEN_TYPE_SYMBOL 或 AM_TOKEN_TYPE_IDENTIFIER，记录其在编译时分配到的 am_symbol_t 或 am_varid_t
 } am_token_t;
 
 // 关键字
