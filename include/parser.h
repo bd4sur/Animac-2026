@@ -1,6 +1,14 @@
 #ifndef __AM_PARSER_H__
 #define __AM_PARSER_H__
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <stdint.h>
+#include <wchar.h>
+#include "ast.h"
+
 /************
 
 每个源码文件就是一个模块。
@@ -21,6 +29,26 @@ Parser需要维护的全局信息：
 Parser的输入是Lexer输出的token序列，基于以下BNF文法对token序列进行解析，输出初步生成的AST。
 
 输入代码必须是`((lambda () <code>))`格式。
+
+BNF：
+    <SourceCode> ::= (lambda () <TERM>*) CRLF
+          <Term> ::= <SList> | <Lambda> | <Quote> | <Unquote> | <Quasiquote> | <Identifier>
+         <SList> ::= ( <SListSeq> )
+      <SListSeq> ::= <Term> <SListSeq> | ε
+        <Lambda> ::= ( lambda <ArgList> <Body> )
+       <ArgList> ::= ( <ArgListSeq> )
+    <ArgListSeq> ::= <ArgIdentifier> <ArgListSeq> | ε
+ <ArgIdentifier> ::= <Identifier>
+          <Body> ::= <BodyTerm> <Body_>
+         <Body_> ::= <BodyTerm> <Body_> | ε
+      <BodyTerm> ::= <Term>
+         <Quote> ::= ' <QuoteTerm> | ( quote <QuoteTerm> )
+       <Unquote> ::= , <UnquoteTerm> | ( unquote <QuoteTerm> )
+    <Quasiquote> ::= ` <QuasiquoteTerm> | ( quasiquote <QuoteTerm> )
+     <QuoteTerm> ::= <Term>
+   <UnquoteTerm> ::= <Term>
+<QuasiquoteTerm> ::= <Term>
+    <Identifier> ::= IDENTIFIER
 
 # Analyser：AST作用域分析器设计原理说明
 
@@ -46,7 +74,25 @@ Analyser需要对AST做两趟扫描。分别是“词法作用域分析”和“
 
 同时在var_vocab中追加[... 10:mod.0.foo , 11:mod.0.x , 12:mod.0.y , 13:mod.0.bar , 14:mod.1.x]。这样就实现了所有变量都可以通过其varid唯一确定其scope，而不致混淆。
 
+
+# 实现说明
+
+- 调用 am_parser(code, absolute_path) 即可完成词法分析、词汇表构建、语法分析和预处理指令解析。
+- 返回的 am_ast_t 由调用者负责销毁。
+- 若解析失败，返回 NULL。
+
 ************/
 
+
+// 语法分析器入口。
+// 输入：内存分配器 alloc、Scheme 源码 code、模块绝对路径 absolute_path。
+// 输出：解析得到的 AST；失败返回 NULL。
+// 说明：code 与 absolute_path 由调用者所有；tokens 由返回的 AST 所有，随 AST 销毁而释放。
+am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path);
+
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

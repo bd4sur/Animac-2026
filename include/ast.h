@@ -11,6 +11,10 @@ extern "C" {
 #include "object.h"
 #include "lexer.h"
 #include "allocator.h"
+#include "vocab.h"
+#include "heap.h"
+#include "map.h"
+#include "list.h"
 
 
 // 顶级词法节点、顶级作用域和顶级闭包的parent字段，用于判断上溯结束
@@ -51,8 +55,60 @@ AST数据结构设计：
 
 
 typedef struct am_ast_t {
+    wchar_t *absolute_path;      // 模块代码文件所在的文件系统绝对路径
+    wchar_t *module_id;          // 模块ID，从absolute_path转换而来
 
+    wchar_t *code;               // 一切字符串的总源头
+    am_token_t *tokens;          // Lexer输出的token列表
+    size_t token_count;          // token数量
+
+    am_vocab_t *symbol_vocab;    // 保存所有的symbol字符串（含换名前和换名后）集合，以其index为am_symbol_t
+    am_vocab_t *var_vocab;       // 保存所有的变量字符串（含换名前和换名后）集合，以其index为am_varid_t
+
+    am_allocator_t *alloc;       // 编译阶段AST专用的内存分配器
+    am_heap_t *nodes;            // AST临时堆，保存编译阶段所有数据对象
+    am_map_t *node_token_mapping; // 记录AST节点把柄与token索引的映射关系（对应TS的nodeIndexes）
+
+    am_map_t *scopes;            // 词法作用域：Map<handle(lambda), handle(scope)>
+    am_map_t *variable_mapping;  // 变量换名映射：Map<varid, varid>，key是新varid，value是旧varid
+
+    am_list_t *lambda_handles;   // 记录所有的lambda节点的把柄（对应TS的lambdaHandles）
+    am_list_t *tailcall_handles; // 记录所有的尾调用节点的把柄（对应TS的tailcall）
+    am_list_t *topvar;           // 顶级变量varid列表（对应TS的topVariables）
+    am_map_t *dependencies;      // 依赖模块记录：Map<varid, handle>（对应TS的dependencies）
+    am_map_t *natives;           // 本地库记录：Map<varid, handle>（对应TS的natives）
 } am_ast_t;
+
+
+// 功能描述：创建AST对象。调用者保留code、absolute_path、tokens的所有权，AST只保存指针。
+// 实现说明：成功返回AST指针，失败返回NULL。
+am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path, am_token_t *tokens, size_t token_count);
+
+
+// 功能描述：销毁AST对象，释放AST自身及其内部所有堆对象。
+// 实现说明：成功返回1，失败返回0。注意不释放调用者传入的code、absolute_path、tokens。
+int32_t am_ast_destroy(am_ast_t *ast);
+
+
+// 功能描述：深拷贝AST对象（对应TS的AST.Copy）
+// 实现说明：创建新的AST，深拷贝所有内部集合和堆对象。code、absolute_path、tokens与源AST共享指针。
+am_ast_t *am_ast_copy(am_ast_t *ast);
+
+
+// 功能描述：设置AST节点把柄对应的token索引。
+// 实现说明：成功返回1，失败返回0。
+int32_t am_ast_set_node_token_index(am_ast_t *ast, am_handle_t node_handle, size_t token_index);
+
+
+// 功能描述：获取AST节点把柄对应的token索引（对应TS的nodeIndexes.get）。
+// 实现说明：若不存在，返回SIZE_MAX。
+size_t am_ast_get_node_token_index(am_ast_t *ast, am_handle_t node_handle);
+
+
+// 功能描述：融合另一个AST（对应TS的AST.MergeAST）
+// 设计说明：将源AST的全局节点按order指定的顺序合并到目标AST中，并合并两个AST的nodes、映射关系、lambda_handles、tailcall_handles、variable_mapping、topVariables、dependencies、natives。
+// 实现说明：order为L"top"时源AST全局节点前置，为L"bottom"时后置。成功返回1，失败返回0。
+int32_t am_ast_merge(am_ast_t *target, am_ast_t *source, const wchar_t *order);
 
 
 // 功能描述：遍历tokens，使用其中的KEYWORD和SYMBOL构建ast->symbol_vocab，同时等于是注册了am_symbol_t，并将am_symbol_t记录在token中
@@ -112,8 +168,8 @@ am_value_t *am_ast_get_global_nodes(am_ast_t *ast);
 
 // 功能描述：设置全局作用域（顶层lambda）的node列表（也就是函数体列表）。（对应TS的AST.SetGlobalNodes）
 // 设计说明：用bodies整体替换am_ast_get_top_lambda_node_handle也就是顶层lambda（thunk）的bodies。
-// 实现说明：通过am_list_lambda_set_bodies实现，这个过程可能涉及lambda对象指针的变化，如有变化，则更新AST->nodes中对应handle的值（打包成am_value_t的）。如有扩容失败等异常情况，返回0。执行成功则返回1。
-int32_t am_ast_set_global_nodes(am_ast_t *ast, am_value_t *bodies);
+// 实现说明：通过am_list_lambda_set_bodies实现，这个过程可能涉及lambda对象指针的变化，如有变化，则更新AST->nodes中对应handle的值（打包成am_value_t的）。n_body为bodies数组的长度。如有扩容失败等异常情况，返回0。执行成功则返回1。
+int32_t am_ast_set_global_nodes(am_ast_t *ast, am_value_t *bodies, size_t n_body);
 
 
 
@@ -134,6 +190,36 @@ am_handle_t am_ast_find_nearest_lambda_handle(am_ast_t *ast, am_handle_t from_no
 // 设计说明：该函数用于“变量换名”阶段，用于生成携带作用域信息的、全局唯一的变量名，并将其新增注册到ast->var_vocab中。
 // 实现说明：基于varid和所在lambda节点的handle，生成一个新的变量名字符串。规则是："V.module_id.lambda_handle.var_string"，并将其新增注册到ast->var_vocab，返回值是新变量名的ast->var_vocab的index。如有异常情况，返回SIZE_MAX，以示失败。
 am_varid_t am_ast_make_unique_variable(am_ast_t *ast, am_varid_t varid, am_handle_t lambda_handle);
+
+
+// 功能描述：向 tailcall_handles 中添加一个尾调用节点把柄。
+// 实现说明：成功返回1，失败返回0。
+int32_t am_ast_add_tailcall(am_ast_t *ast, am_handle_t handle);
+
+
+// 功能描述：向 topvar 中添加一个顶级变量 varid。
+// 实现说明：成功返回1，失败返回0。
+int32_t am_ast_add_topvar(am_ast_t *ast, am_varid_t varid);
+
+
+// 功能描述：设置依赖模块记录。
+// 实现说明：alias_varid 为 import 语句中模块别名对应的 varid；path_handle 为模块路径字符串节点在 ast->nodes 中的把柄。成功返回1，失败返回0。
+int32_t am_ast_set_dependency(am_ast_t *ast, am_varid_t alias_varid, am_handle_t path_handle);
+
+
+// 功能描述：设置本地库记录。
+// 实现说明：native_varid 为 native 语句中库名对应的 varid；handle 可暂时设置为 AM_VALUE_HANDLE_NULL。成功返回1，失败返回0。
+int32_t am_ast_set_native(am_ast_t *ast, am_varid_t native_varid, am_handle_t handle);
+
+
+// 功能描述：为lambda节点设置对应的词法作用域把柄。
+// 实现说明：成功返回1，失败返回0。
+int32_t am_ast_set_scope(am_ast_t *ast, am_handle_t lambda_handle, am_handle_t scope_handle);
+
+
+// 功能描述：获取lambda节点对应的词法作用域把柄。
+// 实现说明：若不存在，返回 AM_VALUE_HANDLE_NULL。
+am_handle_t am_ast_get_scope(am_ast_t *ast, am_handle_t lambda_handle);
 
 
 
