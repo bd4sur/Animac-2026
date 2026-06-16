@@ -18,7 +18,7 @@ extern "C" {
 
 
 // 顶级词法节点、顶级作用域和顶级闭包的parent字段，用于判断上溯结束
-#define AM_TOP_NODE_HANDLE AM_VALUE_HANDLE_NULL
+#define AM_TOP_NODE_HANDLE AM_HANDLE_NULL
 
 
 
@@ -133,29 +133,29 @@ am_value_t am_ast_get_node(am_ast_t *ast, am_handle_t handle);
 
 
 // 功能描述：创建lambda对象，返回其在AST->nodes堆中的把柄（对应TS的AST.MakeLambdaNode）
-// 实现说明：先从heap中申请一个把柄，再创建一个类型为AM_LIST_TYPE_LAMBDA的am_obj_list_t对象，以32为初始容量，再将对象指针打包成am_value_t与已分配把柄绑定在一起。同时，在ast->lambda_handles中登记这个把柄。最后返回把柄。如有异常情况，返回空把柄AM_VALUE_HANDLE_NULL，以示失败。
+// 实现说明：先从heap中申请一个把柄，再创建一个类型为AM_LIST_TYPE_LAMBDA的am_obj_list_t对象，以32为初始容量，再将对象指针打包成am_value_t与已分配把柄绑定在一起。同时，在ast->lambda_handles中登记这个把柄。最后返回把柄。如有异常情况，返回空把柄AM_HANDLE_NULL，以示失败。
 am_handle_t am_ast_make_lambda_node(am_ast_t *ast, am_handle_t parent);
 
 
 // 功能描述：创建SList对象，返回其在AST->nodes堆中的把柄（对应TS的AST.MakeApplicationNode）
-// 实现说明：先从heap中申请一个把柄，再创建一个类型为type=AM_LIST_TYPE_APPLICATION/AM_LIST_TYPE_QUOTE/AM_LIST_TYPE_QUASIQUOTE/AM_LIST_TYPE_UNQUOTE的am_obj_list_t对象，以32为初始容量，再将对象指针打包成am_value_t与已分配把柄绑定在一起。最后返回把柄。如有异常情况，返回空把柄AM_VALUE_HANDLE_NULL，以示失败。
+// 实现说明：先从heap中申请一个把柄，再创建一个类型为type=AM_LIST_TYPE_APPLICATION/AM_LIST_TYPE_QUOTE/AM_LIST_TYPE_QUASIQUOTE/AM_LIST_TYPE_UNQUOTE的am_obj_list_t对象，以32为初始容量，再将对象指针打包成am_value_t与已分配把柄绑定在一起。最后返回把柄。如有异常情况，返回空把柄AM_HANDLE_NULL，以示失败。
 am_handle_t am_ast_make_slist_node(am_ast_t *ast, am_handle_t parent, int32_t type);
 
 
 // 功能描述：创建WString对象，返回其在AST->nodes堆中的把柄（对应TS的AST.MakeStringNode）
-// 实现说明：先从AST->nodes中申请一个把柄，再根据AM_TOKEN_TYPE_STRING类型的am_token_t t 所表示的字符串（注意：可以根据其指示的index和length从ast->code中获取），创建一个am_obj_wstring_t对象，再将对象指针打包成am_value_t与已分配把柄绑定在一起。最后返回把柄。如有异常情况，返回空把柄AM_VALUE_HANDLE_NULL，以示失败。
+// 实现说明：先从AST->nodes中申请一个把柄，再根据AM_TOKEN_TYPE_STRING类型的am_token_t t 所表示的字符串（注意：可以根据其指示的index和length从ast->code中获取），创建一个am_obj_wstring_t对象，再将对象指针打包成am_value_t与已分配把柄绑定在一起。最后返回把柄。如有异常情况，返回空把柄AM_HANDLE_NULL，以示失败。
 am_handle_t am_ast_make_wstring_node(am_ast_t *ast, am_token_t *str_token);
 
 
-// 功能描述：查找AST->nodes堆中最顶级am_obj_list_t对象的handle，也就是parent字段为AM_VALUE_HANDLE_NULL的am_obj_list_t对象。（对应TS的AST.TopApplicationNodeHandle）
+// 功能描述：查找AST->nodes堆中最顶级am_obj_list_t对象的handle，也就是parent字段为AM_HANDLE_NULL的am_obj_list_t对象。（对应TS的AST.TopApplicationNodeHandle）
 // 设计说明：根据编译器的约定，合法Scheme代码的顶层结构应当是一个thunk的调用，即((lambda () ...))，这个函数就是用来获取这个顶层APPLICATION的。
-// 实现说明：如有异常情况，返回空把柄AM_VALUE_HANDLE_NULL，以示失败。
+// 实现说明：如有异常情况，返回空把柄AM_HANDLE_NULL，以示失败。
 am_handle_t am_ast_get_top_node_handle(am_ast_t *ast);
 
 
 // 功能描述：查找AST->nodes堆中顶级am_obj_list_t（Lambda）对象的handle，也就是最顶级application list对象的第一个child。（对应TS的AST.TopLambdaNodeHandle）
 // 设计说明：根据编译器的约定，合法Scheme代码的顶层结构应当是一个thunk的调用，即((lambda () ...))，这个函数就是用来获取这个顶层APPLICATION的第一个child也就是顶层lambda（thunk）的。
-// 实现说明：如有异常情况，返回空把柄AM_VALUE_HANDLE_NULL，以示失败。
+// 实现说明：如有异常情况，返回空把柄AM_HANDLE_NULL，以示失败。
 am_handle_t am_ast_get_top_lambda_node_handle(am_ast_t *ast);
 
 
@@ -176,13 +176,13 @@ int32_t am_ast_set_global_nodes(am_ast_t *ast, am_value_t *bodies, size_t n_body
 
 // 功能描述：从某个节点开始，向上上溯查找某个varid归属的lambda节点把柄，也就是该varid作为哪个lambda节点的parameter（对应TS的Analyser.ts中的searchVarLambdaHandle）
 // 设计说明：该函数用于“变量换名”过程，旨在寻找其最近上级lambda节点的把柄，进而确定其所在的词法作用域。该函数依赖于AST第一趟扫描“作用域分析”的结果。
-// 实现说明：该函数的输入是变量换名前的varid，以及上溯查找起点节点的handle。如有异常情况，返回空把柄AM_VALUE_HANDLE_NULL，以示失败。
+// 实现说明：该函数的输入是变量换名前的varid，以及上溯查找起点节点的handle。如有异常情况，返回空把柄AM_HANDLE_NULL，以示失败。
 am_handle_t am_ast_find_var_lambda_handle(am_ast_t *ast, am_varid_t varid, am_handle_t from_node_handle);
 
 
 // 功能描述：从某个节点开始，向上上溯查找最近的lambda节点的把柄（对应TS的Analyser.ts中的nearestLambdaHandle）
 // 设计说明：该函数用于确定某个节点最近上级lambda节点的把柄，进而确定其所在的词法作用域。
-// 实现说明：该函数的输入是上溯查找起点节点的handle。如有异常情况，返回空把柄AM_VALUE_HANDLE_NULL，以示失败。
+// 实现说明：该函数的输入是上溯查找起点节点的handle。如有异常情况，返回空把柄AM_HANDLE_NULL，以示失败。
 am_handle_t am_ast_find_nearest_lambda_handle(am_ast_t *ast, am_handle_t from_node_handle);
 
 
@@ -218,7 +218,7 @@ int32_t am_ast_set_scope(am_ast_t *ast, am_handle_t lambda_handle, am_handle_t s
 
 
 // 功能描述：获取lambda节点对应的词法作用域把柄。
-// 实现说明：若不存在，返回 AM_VALUE_HANDLE_NULL。
+// 实现说明：若不存在，返回 AM_HANDLE_NULL。
 am_handle_t am_ast_get_scope(am_ast_t *ast, am_handle_t lambda_handle);
 
 

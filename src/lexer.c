@@ -3,6 +3,7 @@
 #include <wctype.h>
 #include <string.h>
 
+#include "object.h"
 #include "lexer.h"
 
 
@@ -12,6 +13,34 @@ const wchar_t* AM_KEYWORDS[] = {
     L"if", L"and", L"or", L"cond", L"else", L"for", L"while", L"break", L"continue", L"case", L"do",
     L"quote", L"quasiquote", L"unquote",
     L"import", L"native", NULL
+};
+
+// 关键字对应的保留symbol值，索引与AM_KEYWORDS一一对应
+static const am_value_t AM_KEYWORD_SYMBOLS[] = {
+    AM_VALUE_KW_lambda,
+    AM_VALUE_KW_define,
+    AM_VALUE_KW_set,
+    AM_VALUE_KW_let,
+    AM_VALUE_KW_begin,
+    AM_VALUE_KW_return,
+    AM_VALUE_KW_dot3,
+    AM_VALUE_KW_underscore,
+    AM_VALUE_KW_if,
+    AM_VALUE_KW_and,
+    AM_VALUE_KW_or,
+    AM_VALUE_KW_cond,
+    AM_VALUE_KW_else,
+    AM_VALUE_KW_for,
+    AM_VALUE_KW_while,
+    AM_VALUE_KW_break,
+    AM_VALUE_KW_continue,
+    AM_VALUE_KW_case,
+    AM_VALUE_KW_do,
+    AM_VALUE_KW_quote,
+    AM_VALUE_KW_quasiquote,
+    AM_VALUE_KW_unquote,
+    AM_VALUE_KW_import,
+    AM_VALUE_KW_native
 };
 
 // ===============================================================================
@@ -66,15 +95,15 @@ static int is_number(wchar_t *code, int32_t start, int32_t len) {
     return has_digit; // 必须至少有一个数字
 }
 
-// 判断是否为关键字
-static int is_keyword(wchar_t *code, int32_t start, int32_t len) {
-    if(len == 0) return 0;
-    for(int i = 0; AM_KEYWORDS[i]; i++) {
+// 判断是否为关键字，返回关键字在AM_KEYWORDS中的索引；不是关键字返回-1
+static int32_t is_keyword(wchar_t *code, int32_t start, int32_t len) {
+    if(len == 0) return -1;
+    for(int32_t i = 0; AM_KEYWORDS[i]; i++) {
         if(wcsncmp(&code[start], AM_KEYWORDS[i], len) == 0 && AM_KEYWORDS[i][len] == L'\0') {
-            return 1;
+            return i;
         }
     }
-    return 0;
+    return -1;
 }
 
 // 解析 # 开头的特殊字面值
@@ -130,12 +159,13 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
     int32_t line = 1, col = 0;
     int32_t buf_start = -1, buf_line = -1, buf_col = -1;
 
-#define EMIT(t_type, t_len, t_idx)          \
+#define EMIT(t_type, t_len, t_idx, t_id)    \
     do {                                    \
         am_token_t *t = &tokens[tok_cnt++]; \
         t->index = (t_idx);                 \
         t->length = (t_len);                \
         t->type = (t_type);                 \
+        t->id = (t_id);                     \
         t->line = buf_line;                 \
         t->column = buf_col;                \
         buf_start = -1;                     \
@@ -147,6 +177,7 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
         if(buf_start != -1) {                                   \
             int32_t len = pos - buf_start;                      \
             int32_t t_type = AM_TOKEN_TYPE_IDENTIFIER;          \
+            size_t t_id = SIZE_MAX;                             \
             wchar_t first = code[buf_start];                    \
             /* #开头的特殊字面值 */                              \
             if(first == L'#') {                                 \
@@ -167,14 +198,14 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
                 t_type = AM_TOKEN_TYPE_NUMBER;                  \
             }                                                   \
             /* 关键字 */                                        \
-            else if (is_keyword(code, buf_start, len)) {        \
-                t_type = AM_TOKEN_TYPE_KEYWORD;                 \
-            }                                                   \
-            /* 其他: 一般标识符 */                               \
             else {                                              \
-                t_type = AM_TOKEN_TYPE_IDENTIFIER;              \
+                int32_t kw_idx = is_keyword(code, buf_start, len); \
+                if (kw_idx >= 0) {                              \
+                    t_type = AM_TOKEN_TYPE_KEYWORD;             \
+                    t_id = am_value_to_symbol(AM_KEYWORD_SYMBOLS[kw_idx]); \
+                }                                               \
             }                                                   \
-            EMIT(t_type, len, buf_start);                       \
+            EMIT(t_type, len, buf_start, t_id);                 \
         }                                                       \
     } while(0)
 
@@ -200,7 +231,7 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
                 int32_t len = parse_string(code, pos, &end_pos);
                 if(len < 0) return -1;
                 buf_line = line; buf_col = col;
-                EMIT(AM_TOKEN_TYPE_STRING, len, pos);
+                EMIT(AM_TOKEN_TYPE_STRING, len, pos, SIZE_MAX);
                 while(pos < end_pos) update_pos(code[pos++], &line, &col);
                 continue;
             }
@@ -208,10 +239,11 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
             // 2.2 { 特殊转换: { -> ( + begin (虚拟token)
             if(c == L'{') {
                 buf_line = line; buf_col = col;
-                EMIT(AM_TOKEN_TYPE_LB, 1, pos);
+                EMIT(AM_TOKEN_TYPE_LB, 1, pos, SIZE_MAX);
 
                 am_token_t *t2 = &tokens[tok_cnt++];
                 t2->index = SIZE_MAX; t2->length = 5; t2->type = AM_TOKEN_TYPE_KEYWORD;
+                t2->id = am_value_to_symbol(AM_VALUE_KW_begin);
                 t2->line = line; t2->column = col + 1;
 
                 update_pos(c, &line, &col);
@@ -233,7 +265,7 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
                 t_type = AM_TOKEN_TYPE_DELIMITER;
 
             buf_line = line; buf_col = col;
-            EMIT(t_type, 1, pos);
+            EMIT(t_type, 1, pos, SIZE_MAX);
             update_pos(c, &line, &col);
             pos++;
             continue;

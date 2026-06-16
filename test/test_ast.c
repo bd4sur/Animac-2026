@@ -179,11 +179,11 @@ static void test_make_nodes(void) {
 
     // 创建顶层 application: ((lambda () 42))
     am_handle_t app = am_ast_make_slist_node(ast, AM_TOP_NODE_HANDLE, AM_LIST_TYPE_APPLICATION);
-    assert(app != AM_VALUE_HANDLE_NULL);
+    assert(app != AM_HANDLE_NULL);
 
     // 创建顶层 lambda
     am_handle_t lambda = am_ast_make_lambda_node(ast, app);
-    assert(lambda != AM_VALUE_HANDLE_NULL);
+    assert(lambda != AM_HANDLE_NULL);
 
     // 把 lambda 加到 app 中
     am_value_t app_val = am_ast_get_node(ast, app);
@@ -237,7 +237,7 @@ static void test_make_wstring_node(void) {
     assert(ast != NULL);
 
     am_handle_t str_handle = am_ast_make_wstring_node(ast, &tokens[0]);
-    assert(str_handle != AM_VALUE_HANDLE_NULL);
+    assert(str_handle != AM_HANDLE_NULL);
 
     am_value_t v = am_ast_get_node(ast, str_handle);
     assert(am_value_is_ptr(v));

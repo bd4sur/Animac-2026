@@ -34,7 +34,10 @@ static wchar_t *path_to_module_id(am_allocator_t *alloc, const wchar_t *absolute
     size_t j = 0;
     for (size_t i = 0; i < len; i++) {
         wchar_t c = absolute_path[i];
-        if (c == L'/' || c == L'\\') {
+        if (i == 0 && c == L'/') {
+            // 首字符为/时直接去掉
+        }
+        else if (c == L'/' || c == L'\\') {
             module_id[j++] = L'.';
         }
         else if (c == L' ') {
@@ -65,9 +68,22 @@ static wchar_t *path_to_module_id(am_allocator_t *alloc, const wchar_t *absolute
 
 
 // 提取token对应的源码文本，返回新分配的以L'\0'结尾的宽字符串（使用系统malloc）。
-// 调用者负责free。虚拟token（index == SIZE_MAX）返回NULL。
+// 调用者负责free。虚拟token（index == SIZE_MAX）返回NULL，但begin虚拟token返回L"begin"。
 static wchar_t *am_token_text_dup(am_token_t *tok, wchar_t *code) {
-    if (!tok || !code || tok->index == SIZE_MAX) return NULL;
+    if (!tok) return NULL;
+
+    // 虚拟token：仅begin返回对应文本，其他返回NULL
+    if (tok->index == SIZE_MAX) {
+        if (tok->type == AM_TOKEN_TYPE_KEYWORD && tok->length == 5) {
+            wchar_t *buf = (wchar_t *)malloc(6 * sizeof(wchar_t));
+            if (!buf) return NULL;
+            wcscpy(buf, L"begin");
+            return buf;
+        }
+        return NULL;
+    }
+
+    if (!code) return NULL;
 
     size_t len = tok->length;
     wchar_t *buf = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
@@ -141,9 +157,9 @@ am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_
     ast->node_token_mapping = am_map_create(alloc, 64);
     ast->scopes = am_map_create(alloc, 64);
     ast->variable_mapping = am_map_create(alloc, 64);
-    ast->lambda_handles = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_VALUE_HANDLE_NULL);
-    ast->tailcall_handles = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_VALUE_HANDLE_NULL);
-    ast->topvar = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_VALUE_HANDLE_NULL);
+    ast->lambda_handles = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    ast->tailcall_handles = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    ast->topvar = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
     ast->dependencies = am_map_create(alloc, 16);
     ast->natives = am_map_create(alloc, 16);
 
@@ -272,7 +288,7 @@ int32_t am_ast_merge(am_ast_t *target, am_ast_t *source, const wchar_t *order) {
     // 2. 重组全局节点
     am_handle_t source_top_lambda = am_ast_get_top_lambda_node_handle(source);
     am_handle_t target_top_lambda = am_ast_get_top_lambda_node_handle(target);
-    if (source_top_lambda == AM_VALUE_HANDLE_NULL || target_top_lambda == AM_VALUE_HANDLE_NULL) return 0;
+    if (source_top_lambda == AM_HANDLE_NULL || target_top_lambda == AM_HANDLE_NULL) return 0;
 
     am_value_t *source_bodies = am_ast_get_global_nodes(source);
     am_value_t *target_bodies = am_ast_get_global_nodes(target);
@@ -327,10 +343,10 @@ int32_t am_ast_merge(am_ast_t *target, am_ast_t *source, const wchar_t *order) {
 
     // 3. 删除source原来的顶级App和顶级Lambda节点
     am_handle_t source_top_app = am_ast_get_top_node_handle(source);
-    if (source_top_app != AM_VALUE_HANDLE_NULL) {
+    if (source_top_app != AM_HANDLE_NULL) {
         am_heap_free_handle(target->alloc, target->nodes, source_top_app);
     }
-    if (source_top_lambda != AM_VALUE_HANDLE_NULL) {
+    if (source_top_lambda != AM_HANDLE_NULL) {
         am_heap_free_handle(target->alloc, target->nodes, source_top_lambda);
     }
 
@@ -425,7 +441,7 @@ size_t am_build_symbol_vocabulary(am_ast_t *ast) {
 
     for (size_t i = 0; i < ast->token_count; i++) {
         am_token_t *t = &ast->tokens[i];
-        if (t->index == SIZE_MAX) continue; // 跳过虚拟token
+        // if (t->index == SIZE_MAX) continue; // 跳过虚拟token
 
         if (t->type == AM_TOKEN_TYPE_KEYWORD) {
             wchar_t *text = am_token_text_dup(t, ast->code);
@@ -523,39 +539,39 @@ am_value_t am_ast_get_node(am_ast_t *ast, am_handle_t handle) {
 
 // 功能描述：创建lambda对象，返回其在AST->nodes堆中的把柄。
 am_handle_t am_ast_make_lambda_node(am_ast_t *ast, am_handle_t parent) {
-    if (!ast || !ast->nodes) return AM_VALUE_HANDLE_NULL;
+    if (!ast || !ast->nodes) return AM_HANDLE_NULL;
 
     am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->nodes);
-    if (handle == AM_VALUE_HANDLE_NULL) return AM_VALUE_HANDLE_NULL;
+    if (handle == AM_HANDLE_NULL) return AM_HANDLE_NULL;
 
     am_list_t *lambda = am_list_create(ast->alloc, 32, AM_LIST_TYPE_LAMBDA, parent);
     if (!lambda) {
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
 
     // Lambda表结构：children[0] = 'lambda, children[1] = 参数数量(uint)
     lambda = am_list_push(ast->alloc, lambda, AM_VALUE_KW_lambda);
     if (!lambda) {
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
     lambda = am_list_push(ast->alloc, lambda, am_make_value_of_uint(0));
     if (!lambda) {
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
 
     if (am_heap_set(ast->alloc, ast->nodes, handle, am_make_value_of_ptr((am_object_t *)lambda)) != 0) {
         am_list_destroy(ast->alloc, lambda);
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
 
     am_list_t *lst = am_list_push(ast->alloc, ast->lambda_handles, am_make_value_of_handle(handle));
     if (!lst) {
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
     ast->lambda_handles = lst;
 
@@ -565,25 +581,25 @@ am_handle_t am_ast_make_lambda_node(am_ast_t *ast, am_handle_t parent) {
 
 // 功能描述：创建SList对象，返回其在AST->nodes堆中的把柄。
 am_handle_t am_ast_make_slist_node(am_ast_t *ast, am_handle_t parent, int32_t type) {
-    if (!ast || !ast->nodes) return AM_VALUE_HANDLE_NULL;
+    if (!ast || !ast->nodes) return AM_HANDLE_NULL;
     if (type != AM_LIST_TYPE_APPLICATION && type != AM_LIST_TYPE_QUOTE &&
         type != AM_LIST_TYPE_QUASIQUOTE && type != AM_LIST_TYPE_UNQUOTE) {
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
 
     am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->nodes);
-    if (handle == AM_VALUE_HANDLE_NULL) return AM_VALUE_HANDLE_NULL;
+    if (handle == AM_HANDLE_NULL) return AM_HANDLE_NULL;
 
     am_list_t *lst = am_list_create(ast->alloc, 32, type, parent);
     if (!lst) {
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
 
     if (am_heap_set(ast->alloc, ast->nodes, handle, am_make_value_of_ptr((am_object_t *)lst)) != 0) {
         am_list_destroy(ast->alloc, lst);
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
 
     return handle;
@@ -592,17 +608,17 @@ am_handle_t am_ast_make_slist_node(am_ast_t *ast, am_handle_t parent, int32_t ty
 
 // 功能描述：创建WString对象，返回其在AST->nodes堆中的把柄。
 am_handle_t am_ast_make_wstring_node(am_ast_t *ast, am_token_t *str_token) {
-    if (!ast || !ast->nodes || !str_token) return AM_VALUE_HANDLE_NULL;
+    if (!ast || !ast->nodes || !str_token) return AM_HANDLE_NULL;
 
     am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->nodes);
-    if (handle == AM_VALUE_HANDLE_NULL) return AM_VALUE_HANDLE_NULL;
+    if (handle == AM_HANDLE_NULL) return AM_HANDLE_NULL;
 
     // 从token指示的位置截取字符串（包含引号，与TS行为一致）
     size_t len = str_token->length;
     wchar_t *text = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
     if (!text) {
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
     wcsncpy(text, &ast->code[str_token->index], len);
     text[len] = L'\0';
@@ -611,14 +627,14 @@ am_handle_t am_ast_make_wstring_node(am_ast_t *ast, am_token_t *str_token) {
     free(text);
     if (!ws) {
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
 
     if (am_heap_set(ast->alloc, ast->nodes, handle, am_make_value_of_ptr((am_object_t *)ws)) != 0) {
         // 注：am_wstring_t 的 content 是柔性数组，am_free 即可释放整个对象
         am_free(ast->alloc, ws);
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
-        return AM_VALUE_HANDLE_NULL;
+        return AM_HANDLE_NULL;
     }
 
     return handle;
@@ -635,7 +651,7 @@ typedef struct {
 
 static void am_ast_top_node_iter(am_handle_t handle, am_value_t value, void *user_data) {
     am_top_node_search_t *ctx = (am_top_node_search_t *)user_data;
-    if (ctx->found_handle != AM_VALUE_HANDLE_NULL) return;
+    if (ctx->found_handle != AM_HANDLE_NULL) return;
     if (!am_value_is_ptr(value)) return;
 
     am_object_t *obj = am_value_to_ptr(value);
@@ -650,9 +666,9 @@ static void am_ast_top_node_iter(am_handle_t handle, am_value_t value, void *use
 
 // 功能描述：查找最顶级Application的handle。
 am_handle_t am_ast_get_top_node_handle(am_ast_t *ast) {
-    if (!ast || !ast->nodes) return AM_VALUE_HANDLE_NULL;
+    if (!ast || !ast->nodes) return AM_HANDLE_NULL;
 
-    am_top_node_search_t ctx = { AM_VALUE_HANDLE_NULL };
+    am_top_node_search_t ctx = { AM_HANDLE_NULL };
     am_heap_iter(ast->alloc, ast->nodes, am_ast_top_node_iter, &ctx);
     return ctx.found_handle;
 }
@@ -661,16 +677,16 @@ am_handle_t am_ast_get_top_node_handle(am_ast_t *ast) {
 // 功能描述：查找顶级Lambda（全局作用域）节点的handle。
 am_handle_t am_ast_get_top_lambda_node_handle(am_ast_t *ast) {
     am_handle_t top_app = am_ast_get_top_node_handle(ast);
-    if (top_app == AM_VALUE_HANDLE_NULL) return AM_VALUE_HANDLE_NULL;
+    if (top_app == AM_HANDLE_NULL) return AM_HANDLE_NULL;
 
     am_value_t app_val = am_heap_get(ast->alloc, ast->nodes, top_app);
-    if (!am_value_is_ptr(app_val)) return AM_VALUE_HANDLE_NULL;
+    if (!am_value_is_ptr(app_val)) return AM_HANDLE_NULL;
 
     am_list_t *app = (am_list_t *)am_value_to_ptr(app_val);
-    if (app->length == 0) return AM_VALUE_HANDLE_NULL;
+    if (app->length == 0) return AM_HANDLE_NULL;
 
     am_value_t first = am_list_get(ast->alloc, app, 0);
-    if (!am_value_is_handle(first)) return AM_VALUE_HANDLE_NULL;
+    if (!am_value_is_handle(first)) return AM_HANDLE_NULL;
 
     return am_value_to_handle(first);
 }
@@ -681,7 +697,7 @@ am_value_t *am_ast_get_global_nodes(am_ast_t *ast) {
     if (!ast || !ast->nodes) return NULL;
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
-    if (top_lambda == AM_VALUE_HANDLE_NULL) return NULL;
+    if (top_lambda == AM_HANDLE_NULL) return NULL;
 
     am_value_t lambda_val = am_heap_get(ast->alloc, ast->nodes, top_lambda);
     if (!am_value_is_ptr(lambda_val)) return NULL;
@@ -697,7 +713,7 @@ int32_t am_ast_set_global_nodes(am_ast_t *ast, am_value_t *bodies, size_t n_body
     if (!ast || !ast->nodes || !bodies) return 0;
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
-    if (top_lambda == AM_VALUE_HANDLE_NULL) return 0;
+    if (top_lambda == AM_HANDLE_NULL) return 0;
 
     am_value_t lambda_val = am_heap_get(ast->alloc, ast->nodes, top_lambda);
     if (!am_value_is_ptr(lambda_val)) return 0;
@@ -725,12 +741,12 @@ int32_t am_ast_set_global_nodes(am_ast_t *ast, am_value_t *bodies, size_t n_body
 
 // 功能描述：从某个节点开始，向上上溯查找某个varid归属的lambda节点把柄。
 am_handle_t am_ast_find_var_lambda_handle(am_ast_t *ast, am_varid_t varid, am_handle_t from_node_handle) {
-    if (!ast || !ast->nodes) return AM_VALUE_HANDLE_NULL;
+    if (!ast || !ast->nodes) return AM_HANDLE_NULL;
 
     am_handle_t current = from_node_handle;
     while (current != AM_TOP_NODE_HANDLE) {
         am_value_t node_val = am_heap_get(ast->alloc, ast->nodes, current);
-        if (!am_value_is_ptr(node_val)) return AM_VALUE_HANDLE_NULL;
+        if (!am_value_is_ptr(node_val)) return AM_HANDLE_NULL;
 
         am_object_t *obj = am_value_to_ptr(node_val);
         if (obj->type == AM_OBJECT_TYPE_LIST) {
@@ -753,22 +769,22 @@ am_handle_t am_ast_find_var_lambda_handle(am_ast_t *ast, am_varid_t varid, am_ha
         }
         else {
             // 非list节点无法继续上溯
-            return AM_VALUE_HANDLE_NULL;
+            return AM_HANDLE_NULL;
         }
     }
 
-    return AM_VALUE_HANDLE_NULL;
+    return AM_HANDLE_NULL;
 }
 
 
 // 功能描述：从某个节点开始，向上上溯查找最近的lambda节点的把柄。
 am_handle_t am_ast_find_nearest_lambda_handle(am_ast_t *ast, am_handle_t from_node_handle) {
-    if (!ast || !ast->nodes) return AM_VALUE_HANDLE_NULL;
+    if (!ast || !ast->nodes) return AM_HANDLE_NULL;
 
     am_handle_t current = from_node_handle;
     while (current != AM_TOP_NODE_HANDLE) {
         am_value_t node_val = am_heap_get(ast->alloc, ast->nodes, current);
-        if (!am_value_is_ptr(node_val)) return AM_VALUE_HANDLE_NULL;
+        if (!am_value_is_ptr(node_val)) return AM_HANDLE_NULL;
 
         am_object_t *obj = am_value_to_ptr(node_val);
         if (obj->type == AM_OBJECT_TYPE_LIST) {
@@ -779,11 +795,11 @@ am_handle_t am_ast_find_nearest_lambda_handle(am_ast_t *ast, am_handle_t from_no
             current = lst->parent;
         }
         else {
-            return AM_VALUE_HANDLE_NULL;
+            return AM_HANDLE_NULL;
         }
     }
 
-    return AM_VALUE_HANDLE_NULL;
+    return AM_HANDLE_NULL;
 }
 
 
@@ -883,10 +899,10 @@ int32_t am_ast_set_scope(am_ast_t *ast, am_handle_t lambda_handle, am_handle_t s
 
 // 功能描述：获取lambda节点对应的词法作用域把柄。
 am_handle_t am_ast_get_scope(am_ast_t *ast, am_handle_t lambda_handle) {
-    if (!ast || !ast->scopes) return AM_VALUE_HANDLE_NULL;
+    if (!ast || !ast->scopes) return AM_HANDLE_NULL;
     am_value_t v = am_map_get(ast->alloc, ast->scopes, am_make_value_of_handle(lambda_handle));
     if (am_value_is_handle(v)) {
         return am_value_to_handle(v);
     }
-    return AM_VALUE_HANDLE_NULL;
+    return AM_HANDLE_NULL;
 }

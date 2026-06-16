@@ -11,6 +11,7 @@
 #include "list.h"
 #include "vocab.h"
 #include "wstring.h"
+#include "lexer.h"
 
 
 // ===============================================================================
@@ -132,6 +133,40 @@ static am_symbol_t symbol_of(am_ast_t *ast, const wchar_t *name) {
 
 
 // ===============================================================================
+// Token 序列打印（参照 main.c 格式）
+// ===============================================================================
+
+static const wchar_t *type_name(int32_t type) {
+    switch (type) {
+        case AM_TOKEN_TYPE_DELIMITER: return L"SEP";
+        case AM_TOKEN_TYPE_LB: return L"LB";
+        case AM_TOKEN_TYPE_RB: return L"RB";
+        case AM_TOKEN_TYPE_KEYWORD: return L"KEYWORD";
+        case AM_TOKEN_TYPE_BOOLEAN: return L"BOOLEAN";
+        case AM_TOKEN_TYPE_UNDEFINED: return L"UNDEFINED";
+        case AM_TOKEN_TYPE_NULL: return L"NULL";
+        case AM_TOKEN_TYPE_NUMBER: return L"NUMBER";
+        case AM_TOKEN_TYPE_SYMBOL: return L"SYMBOL";
+        case AM_TOKEN_TYPE_IDENTIFIER: return L"IDENTIFIER";
+        case AM_TOKEN_TYPE_STRING: return L"STRING";
+        case AM_TOKEN_TYPE_QUOTE: return L"QUOTE";
+        case AM_TOKEN_TYPE_QUASIQUOTE: return L"QUASIQUOTE";
+        case AM_TOKEN_TYPE_UNQUOTE: return L"UNQUOTE";
+        default: return L"UNEXPECTED";
+    }
+}
+
+static void print_tokens(wchar_t *code, am_token_t *tokens, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        printf("[%4zu] %12ls @%5zu+%3zu  %ls\n",
+            i, type_name(tokens[i].type),
+            tokens[i].index, tokens[i].length,
+            token_text(&tokens[i], code));
+    }
+}
+
+
+// ===============================================================================
 // 测试用例
 // ===============================================================================
 
@@ -144,13 +179,13 @@ static void test_parse_empty_arglist(void) {
     assert(ast != NULL);
 
     am_handle_t top_app = am_ast_get_top_node_handle(ast);
-    assert(top_app != AM_VALUE_HANDLE_NULL);
+    assert(top_app != AM_HANDLE_NULL);
     am_list_t *app = handle_to_list(ast, top_app);
     assert(app->type == AM_LIST_TYPE_APPLICATION);
     assert(app->length == 1);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
-    assert(top_lambda != AM_VALUE_HANDLE_NULL);
+    assert(top_lambda != AM_HANDLE_NULL);
     am_list_t *lambda = handle_to_list(ast, top_lambda);
     assert(lambda->type == AM_LIST_TYPE_LAMBDA);
     assert(am_list_lambda_get_body_number(ast->alloc, lambda) == 1);
@@ -494,7 +529,7 @@ static void ast_print_node(am_ast_t *ast, am_handle_t handle, FILE *out,
     }
 
     ast_print_indent(out, depth + 1);
-    if (lst->parent == AM_VALUE_HANDLE_NULL) {
+    if (lst->parent == AM_HANDLE_NULL) {
         fwprintf(out, L"parent: null\n");
     }
     else {
@@ -690,7 +725,7 @@ static void ast_print_node_summary(am_ast_t *ast, am_handle_t handle, FILE *out)
     }
 
     fwprintf(out, L"<H:%zu>: %ls parent=", (size_t)handle, type_name);
-    if (lst->parent == AM_VALUE_HANDLE_NULL) {
+    if (lst->parent == AM_HANDLE_NULL) {
         fwprintf(out, L"null");
     }
     else {
@@ -786,7 +821,7 @@ static void ast_print(FILE *out, am_ast_t *ast) {
     ast_print_indent(out, 1);
     fwprintf(out, L"top_node: ");
     am_handle_t top = am_ast_get_top_node_handle(ast);
-    if (top == AM_VALUE_HANDLE_NULL) {
+    if (top == AM_HANDLE_NULL) {
         fwprintf(out, L"null\n");
     }
     else {
@@ -799,13 +834,35 @@ static void ast_print(FILE *out, am_ast_t *ast) {
 }
 
 
+static void test_print_tokens(void) {
+    printf("test_print_tokens ... \n");
+    test_allocator_reset();
+
+    wchar_t *code = L"((lambda () (display \"hello\") 42))";
+
+    int32_t code_length = (int32_t)wcslen(code);
+    am_token_t *tokens = (am_token_t *)calloc(code_length, sizeof(am_token_t));
+    assert(tokens != NULL);
+
+    int32_t count = am_lexer(code, tokens);
+    assert(count >= 0);
+
+    print_tokens(code, tokens, (size_t)count);
+
+    free(tokens);
+    printf("OK\n");
+}
+
+
 static void test_ast_print(void) {
     printf("test_ast_print ... ");
     test_allocator_reset();
 
-    wchar_t *code = L"((lambda ()    (native Math) (import List \"/path/to/list.scm\") ((lambda (x) (List.cons x (cons (cons quote (cons x '(\"字符串\"))) '()))) (quote (lambda (x) (cons x (cons (cons quote (cons x '())) '())))))     ))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/demo.scm");
+    wchar_t *code = L"((lambda ()    (native Math) (import List \"/path/to/list.scm\") ((lambda (x) {1 2 3} (List.cons x (cons (cons quote (cons x '(\"字符串\"))) '()))) (quote (lambda (x) (cons x (cons (cons quote (cons x '())) '())))))     ))";
+    am_ast_t *ast = am_parser(&test_allocator, code, L"/home/bd4sur/animac/demo.scm");
     assert(ast != NULL);
+
+    print_tokens(code, ast->tokens, (size_t)(ast->token_count));
 
     FILE *out = tmpfile();
     assert(out != NULL);
@@ -878,6 +935,7 @@ int main(void) {
     test_parse_quote_keyword();
     test_parse_unquote_in_quasiquote();
     test_parse_import_native();
+    test_print_tokens();
     test_ast_print();
 
     test_destroy(&test_allocator_state);

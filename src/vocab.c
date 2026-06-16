@@ -52,7 +52,7 @@ am_vocab_t *am_vocab_create(am_allocator_t *alloc, size_t capacity) {
     am_vocab_t *vocab = (am_vocab_t *)am_calloc(alloc, total_size);
     if (!vocab) return NULL;
 
-    vocab->base.type = AM_OBJECT_TYPE_BASE;
+    vocab->base.type = AM_OBJECT_TYPE_VOCAB;
     vocab->capacity = capacity;
     vocab->length = 0;
 

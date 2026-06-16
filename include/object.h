@@ -121,6 +121,8 @@ typedef uintptr_t am_value_t;
 #define AM_VALUE_FALSE     AM_MAKE_VALUE_OF_UINT_LIKE(0x0, AM_VALUE_TAG_BOOLEAN)
 
 // 首把柄和空把柄（值为(UINTPTR_MAX>>5)的把柄）
+#define AM_HANDLE_BASE ((am_handle_t)0x0)
+#define AM_HANDLE_NULL ((am_handle_t)(UINTPTR_MAX>>5))
 #define AM_VALUE_HANDLE_BASE  AM_MAKE_VALUE_OF_UINT_LIKE(0x0, AM_VALUE_TAG_HANDLE)
 #define AM_VALUE_HANDLE_NULL  AM_MAKE_VALUE_OF_UINT_LIKE(UINTPTR_MAX, AM_VALUE_TAG_HANDLE)
 
@@ -260,6 +262,9 @@ static inline am_value_t am_make_value_of_float(am_float_t x) {
 #define AM_OBJECT_TYPE_FRAME        (0x07)  // 栈帧
 #define AM_OBJECT_TYPE_ILCODE       (0x08)  // 中间语言指令 TODO
 #define AM_OBJECT_TYPE_BOX          (0x09)  // 基本类型装箱 TODO
+#define AM_OBJECT_TYPE_TOKEN        (0x0A)  // 词元
+#define AM_OBJECT_TYPE_SCOPE        (0x0B)  // 词法作用域（环境帧）
+#define AM_OBJECT_TYPE_VOCAB        (0x0C)  // 词典（字符串集合）
 
 
 // Object基类（公共头）

@@ -16,6 +16,8 @@
 #include "parser.h"
 
 
+#define PARSER_LOG(x) ((void)x); // printf(x);
+
 // ===============================================================================
 // 解析器状态
 // ===============================================================================
@@ -355,7 +357,7 @@ static am_symbol_t ensure_symbol(parser_ctx_t *ctx, wchar_t *word) {
 // 递归下降分析
 // ===============================================================================
 
-static size_t parse_term(parser_ctx_t *ctx, size_t index) {
+static size_t parse_term(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Term\n");
     am_token_t *tok = token_at(ctx, index);
     am_token_t *next = token_at(ctx, index + 1);
     int state = state_stack_top(ctx);
@@ -432,7 +434,7 @@ static size_t parse_term(parser_ctx_t *ctx, size_t index) {
 }
 
 
-static size_t parse_slist(parser_ctx_t *ctx, size_t index) {
+static size_t parse_slist(parser_ctx_t *ctx, size_t index) { PARSER_LOG("SList\n");
     am_token_t *tok = token_at(ctx, index);
     if (!tok || tok->type != AM_TOKEN_TYPE_LB) {
         parser_set_error(ctx, L"expected '(' for slist");
@@ -445,14 +447,14 @@ static size_t parse_slist(parser_ctx_t *ctx, size_t index) {
     else if (state == AM_PARSER_STATE_QUASIQUOTE) list_type = AM_LIST_TYPE_QUASIQUOTE;
     else if (state == AM_PARSER_STATE_UNQUOTE) list_type = AM_LIST_TYPE_UNQUOTE;
 
-    am_handle_t parent_handle = AM_VALUE_HANDLE_NULL;
+    am_handle_t parent_handle = AM_HANDLE_NULL;
     am_value_t top = node_stack_top(ctx);
-    if (!ctx->error && am_value_is_handle(top) && top != AM_TOP_NODE_HANDLE) {
+    if (!ctx->error && am_value_is_handle(top) && top != am_make_value_of_handle(AM_TOP_NODE_HANDLE)) {
         parent_handle = am_value_to_handle(top);
     }
 
     am_handle_t list_handle = am_ast_make_slist_node(ctx->ast, parent_handle, list_type);
-    if (list_handle == AM_VALUE_HANDLE_NULL) {
+    if (list_handle == AM_HANDLE_NULL) {
         parser_set_error(ctx, L"failed to create slist node");
         return index;
     }
@@ -472,7 +474,7 @@ static size_t parse_slist(parser_ctx_t *ctx, size_t index) {
 }
 
 
-static size_t parse_slist_seq(parser_ctx_t *ctx, size_t index) {
+static size_t parse_slist_seq(parser_ctx_t *ctx, size_t index) { PARSER_LOG("SListSeq\n");
     am_token_t *tok = token_at(ctx, index);
     if (ctx->error) return index;
     if (!tok) {
@@ -494,21 +496,21 @@ static size_t parse_slist_seq(parser_ctx_t *ctx, size_t index) {
 }
 
 
-static size_t parse_lambda(parser_ctx_t *ctx, size_t index) {
+static size_t parse_lambda(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Lambda\n");
     am_token_t *tok = token_at(ctx, index);
     if (!tok || tok->type != AM_TOKEN_TYPE_LB) {
         parser_set_error(ctx, L"expected '(' for lambda");
         return index;
     }
 
-    am_handle_t parent_handle = AM_VALUE_HANDLE_NULL;
+    am_handle_t parent_handle = AM_HANDLE_NULL;
     am_value_t top = node_stack_top(ctx);
-    if (!ctx->error && am_value_is_handle(top) && top != AM_TOP_NODE_HANDLE) {
+    if (!ctx->error && am_value_is_handle(top) && top != am_make_value_of_handle(AM_TOP_NODE_HANDLE)) {
         parent_handle = am_value_to_handle(top);
     }
 
     am_handle_t lambda_handle = am_ast_make_lambda_node(ctx->ast, parent_handle);
-    if (lambda_handle == AM_VALUE_HANDLE_NULL) {
+    if (lambda_handle == AM_HANDLE_NULL) {
         parser_set_error(ctx, L"failed to create lambda node");
         return index;
     }
@@ -531,7 +533,7 @@ static size_t parse_lambda(parser_ctx_t *ctx, size_t index) {
 }
 
 
-static size_t parse_arg_list(parser_ctx_t *ctx, size_t index) {
+static size_t parse_arg_list(parser_ctx_t *ctx, size_t index) { PARSER_LOG("ArgList\n");
     am_token_t *tok = token_at(ctx, index);
     if (!tok || tok->type != AM_TOKEN_TYPE_LB) {
         parser_set_error(ctx, L"expected '(' for arglist");
@@ -552,7 +554,7 @@ static size_t parse_arg_list(parser_ctx_t *ctx, size_t index) {
 }
 
 
-static size_t parse_arg_list_seq(parser_ctx_t *ctx, size_t index) {
+static size_t parse_arg_list_seq(parser_ctx_t *ctx, size_t index) { PARSER_LOG("ArgListSeq\n");
     am_token_t *tok = token_at(ctx, index);
     if (ctx->error) return index;
     if (!tok) {
@@ -581,12 +583,12 @@ static size_t parse_arg_list_seq(parser_ctx_t *ctx, size_t index) {
 }
 
 
-static size_t parse_arg_identifier(parser_ctx_t *ctx, size_t index) {
+static size_t parse_arg_identifier(parser_ctx_t *ctx, size_t index) { PARSER_LOG("ArgId\n");
     return parse_identifier(ctx, index);
 }
 
 
-static size_t parse_body(parser_ctx_t *ctx, size_t index) {
+static size_t parse_body(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Body\n");
     size_t next_index = parse_body_term(ctx, index);
     if (ctx->error) return index;
 
@@ -599,7 +601,7 @@ static size_t parse_body(parser_ctx_t *ctx, size_t index) {
 }
 
 
-static size_t parse_body_tail(parser_ctx_t *ctx, size_t index) {
+static size_t parse_body_tail(parser_ctx_t *ctx, size_t index) { PARSER_LOG("BodyTail\n");
     am_token_t *tok = token_at(ctx, index);
     if (ctx->error) return index;
     if (!tok) {
@@ -624,7 +626,7 @@ static size_t parse_body_tail(parser_ctx_t *ctx, size_t index) {
 }
 
 
-static size_t parse_body_term(parser_ctx_t *ctx, size_t index) {
+static size_t parse_body_term(parser_ctx_t *ctx, size_t index) { PARSER_LOG("BodyTerm\n");
     return parse_term(ctx, index);
 }
 
@@ -735,7 +737,7 @@ static size_t parse_quasiquote_term(parser_ctx_t *ctx, size_t index) {
 // Identifier 解析
 // ===============================================================================
 
-static size_t parse_identifier(parser_ctx_t *ctx, size_t index) {
+static size_t parse_identifier(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Identifier\n");
     am_token_t *tok = token_at(ctx, index);
     if (!tok) {
         parser_set_error(ctx, L"unexpected end of input in identifier");
@@ -757,7 +759,7 @@ static size_t parse_identifier(parser_ctx_t *ctx, size_t index) {
 
         case AM_TOKEN_TYPE_STRING: {
             am_handle_t str_handle = am_ast_make_wstring_node(ctx->ast, tok);
-            if (str_handle == AM_VALUE_HANDLE_NULL) {
+            if (str_handle == AM_HANDLE_NULL) {
                 parser_set_error(ctx, L"failed to create string node");
                 return index;
             }
@@ -933,7 +935,7 @@ static void preprocess_iter_cb(am_handle_t handle, am_value_t value, void *user_
             parser_set_error(ctx, L"invalid native syntax");
             return;
         }
-        am_ast_set_native(ast, am_value_to_varid(name_val), am_value_to_handle(AM_VALUE_HANDLE_NULL));
+        am_ast_set_native(ast, am_value_to_varid(name_val), AM_HANDLE_NULL);
     }
 }
 
@@ -982,7 +984,7 @@ am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path
     ctx.token_count = (size_t)count;
 
     // 初始栈：顶部为 TOP_NODE_HANDLE（已是编码后的 am_value_t）
-    node_stack_push(&ctx, AM_TOP_NODE_HANDLE);
+    node_stack_push(&ctx, am_make_value_of_handle(AM_TOP_NODE_HANDLE));
 
     // 递归下降语法分析
     size_t final_index = parse_term(&ctx, 0);

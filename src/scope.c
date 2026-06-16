@@ -53,7 +53,7 @@ am_scope_t *am_scope_create(am_allocator_t *alloc, am_handle_t parent_scope_hand
     am_scope_t *scope = (am_scope_t *)am_calloc(alloc, total_size);
     if (!scope) return NULL;
 
-    scope->base.type = AM_OBJECT_TYPE_BASE;
+    scope->base.type = AM_OBJECT_TYPE_SCOPE;
     scope->parent_scope_handle = parent_scope_handle;
     scope->parent_lambda_handle = parent_lambda_handle;
     scope->current_lambda_handle = current_lambda_handle;
