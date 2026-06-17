@@ -18,42 +18,22 @@ extern "C" {
 
 
 // 顶级词法节点、顶级作用域和顶级闭包的parent字段，用于判断上溯结束
+// 注意其类型为 am_handle_t，不要与 am_value_t AM_VALUE_HANDLE_NULL 混淆
 #define AM_TOP_NODE_HANDLE AM_HANDLE_NULL
 
 
-
-/*
-
-AST数据结构设计：
-
-- wchar_t *absolute_path; // 模块代码文件所在的文件系统绝对路径
-- wchar_t *module_id; // 模块ID，从absolute_path转换而来，具体来说是把所有的斜杠替换成点号再倒序（类似Java的模块名规则）
-
-- wchar_t *code; // 一切字符串的总源头，凡是源码里有的，都应该从code中取。
-- am_token_t *tokens; // Lexer输出的token列表
-
-- am_vocab_t *symbol_vocab; // 保存所有的symbol字符串（含换名前和换名后）集合，以其index为am_symbol_t
-
-- am_vocab_t *var_vocab; // 保存所有的变量字符串（含换名前和换名后）集合，以其index为临时的varid（仅Parser阶段使用）
-- // Map<varid, handle(token)> varid_token_mapping; // 记录varid与token的映射关系（对应TS的variableMapping）
-
-- am_allocator_t *alloc; // 编译阶段AST专用的内存分配器
-- Heap<handle, value> nodes; // AST临时堆，保存编译阶段所有数据对象（包括SList也就是AST节点、词法作用域、var/sym表等）的临时堆，它们之间都是通过handle互相引用，建立起树结构
-- Map<handle, handle(token)> node_token_mapping; // 记录AST节点把柄与token的映射关系（对应TS的nodeIndexes）
-
-- Map<handle(lambda), handle(scope)> scopes; // 词法作用域
-
-- Map<varid, varid> variable_mapping; // 记录变量换名前后新旧varid的对应关系，用于报错。key是新的varid，value是旧的varid。（对应TS的variableMapping）
-
-- List<handle> lambda_handles; // 记录所有的lambda节点的把柄（对应TS的lambdaHandles）
-- List<handle> tailcall_handles; // 记录所有的尾调用节点的把柄（对应TS的tailcall）
-- List<varid> topvar; // 顶级变量varid（即顶层作用域define的变量）（对应TS的topVariables）
-- Map<varid, handle> dependencies; // 依赖模块记录，根据(import mod_alias "path/to/mod.scm")记录（对应TS的dependencies）
-- Map<varid, handle> natives; // 本地库记录，根据(native Math)记录，其中handle可暂时设置为AM_VALUE_HANDLE_NULL备用
-
-*/
+// ast.var_type的值
+#define AM_VAR_TYPE_OLD          (0) // 默认：普通变量（ARN换名前）
+#define AM_VAR_TYPE_NEW          (1) // 普通变量（ARN换名后）
+#define AM_VAR_TYPE_BUILTIN      (2) // 全局内置符号（不ARN）
+#define AM_VAR_TYPE_IMPORT_REF   (3) // 导入模块符号引用（不ARN）：点号分隔的引用了外部import模块的变量，例如Mod.foo
+#define AM_VAR_TYPE_NATIVE_REF   (4) // 本地模块符号引用（不ARN）：点号分隔的对native函数的调用，例如"Math.exp"
+#define AM_VAR_TYPE_IMPORT_ALIAS (5) // 导入模块的别名（不ARN）：也就是(import Mod "mod.scm")中的Mod
+#define AM_VAR_TYPE_NATIVE_ID    (6) // 本地模块名（不ARN）：也就是(native Math)中的Math
 
 
+
+// AST数据结构
 typedef struct am_ast_t {
     wchar_t *absolute_path;      // 模块代码文件所在的文件系统绝对路径
     wchar_t *module_id;          // 模块ID，从absolute_path转换而来
@@ -62,21 +42,22 @@ typedef struct am_ast_t {
     am_token_t *tokens;          // Lexer输出的token列表
     size_t token_count;          // token数量
 
-    am_vocab_t *symbol_vocab;    // 保存所有的symbol字符串（含换名前和换名后）集合，以其index为am_symbol_t
-    am_vocab_t *var_vocab;       // 保存所有的变量字符串（含换名前和换名后）集合，以其index为am_varid_t
+    am_vocab_t *symbol_vocab;    // 保存所有的symbol字符串集合，以其index为am_symbol_t
+    am_vocab_t *var_vocab;       // 保存所有的变量字符串集合，以其index为am_varid_t
+    am_list_t  *var_type;        // 记录每个变量的类型（取值为AM_VAR_TYPE_*），其index即为var_vocab的index
 
     am_allocator_t *alloc;       // 编译阶段AST专用的内存分配器
-    am_heap_t *nodes;            // AST临时堆，保存编译阶段所有数据对象
+    am_heap_t *nodes;            // AST临时堆，保存编译阶段所有数据对象（包括SList也就是AST节点、词法作用域、var/sym表等）的临时堆，它们之间都是通过handle互相引用，建立起树结构
     am_map_t *node_token_mapping; // 记录AST节点把柄与token索引的映射关系（对应TS的nodeIndexes）
 
     am_map_t *scopes;            // 词法作用域：Map<handle(lambda), handle(scope)>
-    am_map_t *variable_mapping;  // 变量换名映射：Map<varid, varid>，key是新varid，value是旧varid
+    am_map_t *var_arn_mapping;   // 变量ARN（Alpha-renaming）前后的映射：Map<varid, varid>，key是ARN后的新varid，value是ARN前的旧varid
 
     am_list_t *lambda_handles;   // 记录所有的lambda节点的把柄（对应TS的lambdaHandles）
     am_list_t *tailcall_handles; // 记录所有的尾调用节点的把柄（对应TS的tailcall）
-    am_list_t *topvar;           // 顶级变量varid列表（对应TS的topVariables）
-    am_map_t *dependencies;      // 依赖模块记录：Map<varid, handle>（对应TS的dependencies）
-    am_map_t *natives;           // 本地库记录：Map<varid, handle>（对应TS的natives）
+    am_list_t *var_top;          // 顶级变量varid列表（即顶层作用域define的变量）（对应TS的topVariables）
+    am_map_t *dependencies;      // 依赖模块记录：Map<varid, handle>（对应TS的dependencies）根据(import mod_alias "path/to/mod.scm")记录
+    am_map_t *natives;           // 本地库记录：Map<varid, handle>（对应TS的natives）根据(native Math)记录，其中handle可暂时设置为AM_VALUE_HANDLE_NULL备用
 } am_ast_t;
 
 
@@ -106,7 +87,7 @@ size_t am_ast_get_node_token_index(am_ast_t *ast, am_handle_t node_handle);
 
 
 // 功能描述：融合另一个AST（对应TS的AST.MergeAST）
-// 设计说明：将源AST的全局节点按order指定的顺序合并到目标AST中，并合并两个AST的nodes、映射关系、lambda_handles、tailcall_handles、variable_mapping、topVariables、dependencies、natives。
+// 设计说明：将源AST的全局节点按order指定的顺序合并到目标AST中，并合并两个AST的nodes、映射关系、lambda_handles、tailcall_handles、var_arn_mapping、topVariables、dependencies、natives。
 // 实现说明：order为L"top"时源AST全局节点前置，为L"bottom"时后置。成功返回1，失败返回0。
 int32_t am_ast_merge(am_ast_t *target, am_ast_t *source, const wchar_t *order);
 
@@ -197,9 +178,9 @@ am_varid_t am_ast_make_unique_variable(am_ast_t *ast, am_varid_t varid, am_handl
 int32_t am_ast_add_tailcall(am_ast_t *ast, am_handle_t handle);
 
 
-// 功能描述：向 topvar 中添加一个顶级变量 varid。
+// 功能描述：向 var_top 中添加一个顶级变量 varid。
 // 实现说明：成功返回1，失败返回0。
-int32_t am_ast_add_topvar(am_ast_t *ast, am_varid_t varid);
+int32_t am_ast_add_var_top(am_ast_t *ast, am_varid_t varid);
 
 
 // 功能描述：设置依赖模块记录。

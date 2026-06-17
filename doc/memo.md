@@ -16,6 +16,44 @@ TODO 未来将 alpha renaming 优化成 de Bruijn index
 
 TODO 模块名称机制（全限定名之类的，以及模块名在Linker中的用法）
 
+TODO 重要问题：module要不要作为语言内置对象存在？这样import就变成了一个内置过程，像是eval。
+     - 想办法支持“具名作用域”机制（这不就是define吗），这样就不需要麻烦的merge过程了。
+TODO 重要问题：链接器要不要放在IL层面？以支持module内置对象。
+
+TODO AN前先绑定全局内置符号，内置符号全局有效不换名（与extref的处理策略一致）。
+
+TODO 变量Alpha-renaming(ARN)规则：
+- BUILTIN一律不ARN，保留原形。NOTE builtin的绑定关系不可修改，VM将其视为native_ref。
+- IMPORT_REF、NATIVE_REF、IMPORT_ALIAS、NATIVE_ID都不ARN，保留原形。
+- AN不会涉及new，一旦遇到new，则报错退出。
+- 对于old类型的varid：ARN后的全限定名格式为"模块ID.定义所在Lambda的把柄.原名"
+  - 例如：home.user.app.114514.x
+
+TODO 将PathUtils单独实现出来。
+
+NOTE symbol是以其字面为ID的，相同拼写的symbol，无论在哪个上下文中都是同一个符号。因此AST合并时，字符串相同的symbol，就是同一个symbol。这与variable截然不同。（当然，如果parse后把所有的variable都扩展成全限定的，那就几乎等同于符号了）
+
+
+NOTE 关于解释器的工作目录、模块全局ID
+- 任何解释器实例都必须指定一个基准工作目录(base_dir)。
+- 若工作在REPL模式下，则以终端cwd为base_dir，给模块一个临时文件名
+- 若运行代码文件，则以该文件所在目录为base_dir，即该文件绝对路径的目录部分（约定不带斜杠）。
+- 所有的import文件路径，要么是绝对路径，要么是相对于base_dir的相对路径。
+- 链接器搜索import模块的算法：
+  - 判断import文件路径是绝对路径还是相对路径。如果是绝对路径，直接读取。
+  - 如果是相对路径，则将base_dir与相对路径拼接成绝对路径再读取。
+- 模块ID的构造规则：
+  - 将模块绝对路径中的斜杠替换为点、空白字符替换成下划线、冒号去掉。
+  - 去掉第一个点；若文件名有.scm后缀则去掉
+  - 例如："/home/a/b.scm" -> home.a.b
+- 链接器维护从模块ID到AST之间的映射关系：通过两个共享index的数组（字典）实现。
+  - 拓扑排序时即以模块ID在这个vocab中的index为排序对象，AST数组也以这个index为index。
+
+NOTE 关于本地native函数
+- 所有的内置函数+运算符都是本地函数，作为顶级符号绑定在顶级作用域中，全局可见。
+- 谨慎设计VMAPI
+
+
 TODO 返回int的函数，全盘采用“正面非负、负面负数”的语义约定。并将is_xxx改名为check_xxx。以下是初步盘点：
 成功（肯定）0，失败（否定）-1的：
 am_closure_destroy
@@ -78,15 +116,43 @@ TODO Linker中的跨模块引用换名问题：
 
 4) 增加ast成员函数如下
 
-// 功能描述：通过传入的变量名，找到该变量对应的顶级变量的varid。该函数用于链接过程中主引模块获得被引模块的AN换名后varid。
-// 设计说明：一般情况下，一个AN前的varid，可能对应多个AN后的varid。因此，单凭AN前的varid，无法确定唯一的AN后的varid。但是我们有以下规则：通过import机制引用其他模块的变量时，必须引用定义在顶层作用域的变量，也就是topvar列表中的变量，而顶层作用域的变量是唯一的。这样，在模块链接过程中，主引模块通过一个AN前的变量字符串，可以唯一地确定一个AN后的varid，这个varid必然是topvar。
+// 功能描述：通过传入的变量名，找到该变量对应的顶级变量的varid。该函数用于链接过程中主引模块获得被引模块的ARN换名后varid。
+// 设计说明：一般情况下，一个ARN前的varid，可能对应多个ARN后的varid。因此，单凭ARN前的varid，无法确定唯一的ARN后的varid。但是我们有以下规则：通过import机制引用其他模块的变量时，必须引用定义在顶层作用域的变量，也就是var_top列表中的变量，而顶层作用域的变量是唯一的。这样，在模块链接过程中，主引模块通过一个ARN前的变量字符串，可以唯一地确定一个ARN后的varid，这个varid必然是var_top。
 // 实现说明：
 // - 在ast->var_vocab中反查出varstr的varid
-// - 遍历ast->topvar中的每个varid=v，通过ast->variable_mapping找到v对应的AN换名前的varid，并与上一步反查出的varid比较。如果一致，则返回对应的v。
-// - 这个v就是varstr在AN换名后的varid，同时它也是模块的顶级变量。
+// - 遍历ast->var_top中的每个varid=v，通过ast->var_arn_mapping找到v对应的ARN换名前的varid，并与上一步反查出的varid比较。如果一致，则返回对应的v。
+// - 这个v就是varstr在ARN换名后的varid，同时它也是模块的顶级变量。
 
 am_varid_t am_ast_find_top_varid_of_external_ref(am_ast_t *ast, wchar_t *varstr);
 
+
+
+NOTE 模块链接算法
+
+提前分配相关元数据（模块数上限设定为1024）
+size_t module_counter(mod_index)
+// am_vocab_t module_id -> mod_index
+am_vocab_t module_abs_path -> mod_index
+am_ast_t *ALLAST; // mod_index->ast
+size_t DAG[][2]; // 邻接关系列表 importer_index -> importee_index
+size_t sorted_ast_index[];
+
+1) 从起始代码开始，解析为AST，读取所有导入文件，并逐个解析为AST，递归读取并解析，过程中完成：1收集AST；2构建DAG。
+2) 对DAG做拓扑排序。
+3) 从起始模块开始，按照拓扑排序顺序，逐个吃掉importee。每吃完一个importee，都做一次extref解引用（消歧），不能解引用的就暂时保留，待吃到后面的再处理。
+4) extref解引用算法细节：
+- 对extref变量，分割prefix和suffix
+- 在ALLAST[importer_index]中：prefix(alias)->mod_path->mod_abs_path->importee_index
+- 在ALLAST[importee_index]中：suffix->varid->在var_top中查找，找不到则报错，找到则通过var_ARN_mapping找到new_varid。
+
+
+NOTE AST融合算法说明
+
+merge(ast *importer, ast *importee, order); // 其中importer是大鱼（主引），importee是小鱼（被引），importee被importer吃掉，保留importer
+
+第1步：修改importee。
+- 将importee的symbol_vocab合并到importer的symbol_vocab，拿到新的am_symbol_t，建立old_id->new_id映射。
+- 将importee的var_vocab合并到importer的var_vocab。OLD不重复添加，NEW因为有模块名，所以一定不重复
 
 
 
@@ -96,7 +162,7 @@ NOTE 逻辑长度称length，物理长度称size，容器最大容量称capacity
 
 NOTE parameter形式参数称“引数”，argument实际参数称“参数”
 
-NOTE Alpha-renaming过程，也就是通过换名来消除嵌套词法作用域中同名变量的混淆的过程，简称为AN。
+NOTE Alpha-renaming过程，也就是通过换名来消除嵌套词法作用域中同名变量的混淆的过程，简称为ARN。
 
 NOTE 所有从heap中取出的变长容器类object，如果指针在操作后发生变化，必须将新指针的value写回map，以确保handle->value(ptr)->obj映射关系稳定！
 
@@ -110,3 +176,9 @@ NOTE 关于函数返回值的语义约定。为了区分正面含义（肯定、
 - am_handle_t类返回值：以AM_HANDLE_NULL即UINTPTR_MAX为负面含义（如handle分配失败等），其余为正面含义。
 - 指针类返回值：以NULL为负面含义（内存分配失败等），其余为正面含义。
 - am_value_t类返回值：解包成各个基本类型后，遵循以上原则。
+
+
+
+
+
+

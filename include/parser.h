@@ -9,6 +9,12 @@ extern "C" {
 #include <wchar.h>
 #include "ast.h"
 
+
+// 全局内置变量
+#define AM_GLOBAL_BUILTIN_VAR_NUM (33)
+extern const wchar_t* AM_GLOBAL_BUILTIN_VAR[];
+
+
 /************
 
 每个源码文件就是一个模块。

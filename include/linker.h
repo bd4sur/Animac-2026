@@ -27,16 +27,16 @@ extern "C" {
 
 ;; Module A 's AST
 var_vocab = [ f , x , + , v.0.f , v.1.x , v.1.+ ]
-variable_mapping = { 3:0 , 4:1 , 5:2  }
-topvar = [ 3 ]
+var_arn_mapping = { 3:0 , 4:1 , 5:2  }
+var_top = [ 3 ]
 (define V3 (lambda (V4) (V5 V4 1)))
 
 ;; Module B 's AST
 var_vocab = [ A , display , A.f , v.0.display ]
-variable_mapping = { 3:1 }
+var_arn_mapping = { 3:1 }
 variable_type = { 2:import_ref }
 dependencies = { 0:"a.scm" }
-topvar = [ ]
+var_top = [ ]
 (import V0 "a.scm")
 (V3 (V2 666))
 

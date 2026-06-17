@@ -18,6 +18,15 @@
 
 #define PARSER_LOG(x) ((void)x); // printf(x);
 
+// 全局内置变量
+const wchar_t* AM_GLOBAL_BUILTIN_VAR[] = {
+    L"+", L"-", L"*", L"/", L"mod", L"pow",
+    L"not", L">", L"<", L">=", L"<=", L"==",
+    L"eq?", L"eqn?", L"equal?", L"null?", L"undefined?", L"atom?", L"list?", L"number?", L"nan?",
+    L"car", L"cdr", L"cons", L"get_item", L"set_item!", L"length",
+    L"display", L"newline", L"write", L"read", L"call/cc", L"fork", NULL
+};
+
 // ===============================================================================
 // 解析器状态
 // ===============================================================================
@@ -41,6 +50,10 @@ typedef struct parser_ctx_t {
     int *state_stack;
     size_t state_stack_capacity;
     size_t state_stack_length;
+
+    am_handle_t *lambda_stack;
+    size_t lambda_stack_capacity;
+    size_t lambda_stack_length;
 
     int error;
     wchar_t error_msg[256];
@@ -113,6 +126,34 @@ static void state_stack_push(parser_ctx_t *ctx, int state) {
 static void state_stack_pop(parser_ctx_t *ctx) {
     if (!ctx || ctx->state_stack_length == 0) return;
     ctx->state_stack_length--;
+}
+
+
+static am_handle_t lambda_stack_top(parser_ctx_t *ctx) {
+    if (!ctx || ctx->lambda_stack_length == 0) return AM_HANDLE_NULL;
+    return ctx->lambda_stack[ctx->lambda_stack_length - 1];
+}
+
+
+static void lambda_stack_push(parser_ctx_t *ctx, am_handle_t lambda_handle) {
+    if (!ctx) return;
+    if (ctx->lambda_stack_length >= ctx->lambda_stack_capacity) {
+        size_t new_cap = ctx->lambda_stack_capacity ? ctx->lambda_stack_capacity * 2 : 16;
+        am_handle_t *new_stack = (am_handle_t *)realloc(ctx->lambda_stack, new_cap * sizeof(am_handle_t));
+        if (!new_stack) {
+            parser_set_error(ctx, L"lambda stack out of memory");
+            return;
+        }
+        ctx->lambda_stack = new_stack;
+        ctx->lambda_stack_capacity = new_cap;
+    }
+    ctx->lambda_stack[ctx->lambda_stack_length++] = lambda_handle;
+}
+
+
+static void lambda_stack_pop(parser_ctx_t *ctx) {
+    if (!ctx || ctx->lambda_stack_length == 0) return;
+    ctx->lambda_stack_length--;
 }
 
 
@@ -353,6 +394,17 @@ static am_symbol_t ensure_symbol(parser_ctx_t *ctx, wchar_t *word) {
 }
 
 
+static int is_global_builtin_variable(const wchar_t *text) {
+    if (!text) return 0;
+    for (size_t i = 0; i < AM_GLOBAL_BUILTIN_VAR_NUM; i++) {
+        if (AM_GLOBAL_BUILTIN_VAR[i] && wcscmp(text, AM_GLOBAL_BUILTIN_VAR[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
 // ===============================================================================
 // 递归下降分析
 // ===============================================================================
@@ -517,19 +569,26 @@ static size_t parse_lambda(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Lambda
 
     node_stack_push(ctx, am_make_value_of_handle(lambda_handle));
     am_ast_set_node_token_index(ctx->ast, lambda_handle, index);
+    lambda_stack_push(ctx, lambda_handle);
+
+    size_t result = index; // 出错时默认返回原索引
 
     size_t next_index = parse_arg_list(ctx, index + 2); // 跳过 '(' 和 'lambda'
-    if (ctx->error) return index;
+    if (ctx->error) goto lambda_done;
 
     next_index = parse_body(ctx, next_index);
-    if (ctx->error) return index;
+    if (ctx->error) goto lambda_done;
 
     am_token_t *after = token_at(ctx, next_index);
     if (!after || after->type != AM_TOKEN_TYPE_RB) {
         parser_set_error(ctx, L"lambda 右侧括号未闭合");
-        return index;
+        goto lambda_done;
     }
-    return next_index + 1;
+    result = next_index + 1;
+
+lambda_done:
+    lambda_stack_pop(ctx);
+    return result;
 }
 
 
@@ -841,7 +900,32 @@ static size_t parse_identifier(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Id
                     value = am_make_value_of_symbol((am_symbol_t)tok->id);
                 }
                 else {
-                    value = am_make_value_of_varid((am_varid_t)tok->id);
+                    // 全局内置变量不做 Alpha-renaming
+                    wchar_t *var_text = token_text_dup(tok, ctx->ast->code);
+                    if (!var_text) {
+                        parser_set_error(ctx, L"out of memory");
+                        return index;
+                    }
+                    int is_builtin = is_global_builtin_variable(var_text);
+                    free(var_text);
+
+                    if (is_builtin) {
+                        value = am_make_value_of_varid((am_varid_t)tok->id);
+                    }
+                    else {
+                        // 对普通变量进行 Alpha-renaming：根据当前 lambda 作用域生成唯一变量名
+                        am_handle_t lambda_handle = lambda_stack_top(ctx);
+                        if (lambda_handle == AM_HANDLE_NULL) {
+                            parser_set_error(ctx, L"identifier outside lambda scope");
+                            return index;
+                        }
+                        am_varid_t new_varid = am_ast_make_unique_variable(ctx->ast, (am_varid_t)tok->id, lambda_handle);
+                        if (new_varid == SIZE_MAX) {
+                            parser_set_error(ctx, L"failed to create unique variable");
+                            return index;
+                        }
+                        value = am_make_value_of_varid(new_varid);
+                    }
                 }
             }
             break;
@@ -996,6 +1080,7 @@ am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path
         fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
         free(ctx.node_stack);
         free(ctx.state_stack);
+        free(ctx.lambda_stack);
         am_ast_destroy(ast);
         am_free(alloc, tokens);
         return NULL;
@@ -1007,6 +1092,7 @@ am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path
         fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
         free(ctx.node_stack);
         free(ctx.state_stack);
+        free(ctx.lambda_stack);
         am_ast_destroy(ast);
         am_free(alloc, tokens);
         return NULL;
@@ -1014,5 +1100,6 @@ am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path
 
     free(ctx.node_stack);
     free(ctx.state_stack);
+    free(ctx.lambda_stack);
     return ast;
 }

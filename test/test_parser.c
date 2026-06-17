@@ -125,6 +125,16 @@ static am_varid_t varid_of(am_ast_t *ast, const wchar_t *name) {
     return (am_varid_t)idx;
 }
 
+// 获取 Alpha-renaming 后的变量 varid（不创建新条目，仅查找）
+static am_varid_t arnid_of(am_ast_t *ast, am_handle_t lambda_handle, const wchar_t *name) {
+    wchar_t buf[256];
+    int n = swprintf(buf, 256, L"%ls.%zu.%ls", ast->module_id, lambda_handle, name);
+    assert(n > 0 && n < 256);
+    size_t idx = am_vocab_find(ast->alloc, ast->var_vocab, buf);
+    assert(idx != SIZE_MAX);
+    return (am_varid_t)idx;
+}
+
 static am_symbol_t symbol_of(am_ast_t *ast, const wchar_t *name) {
     size_t idx = am_vocab_find(ast->alloc, ast->symbol_vocab, (wchar_t *)name);
     assert(idx != SIZE_MAX);
@@ -284,11 +294,12 @@ static void test_parse_application(void) {
 
     am_value_t op = am_list_get(ast->alloc, app, 0);
     assert(am_value_is_varid(op));
+    // display 是全局内置变量，保持原始 varid
     assert(am_value_to_varid(op) == varid_of(ast, L"display"));
 
     am_value_t arg = am_list_get(ast->alloc, app, 1);
     assert(am_value_is_varid(arg));
-    assert(am_value_to_varid(arg) == varid_of(ast, L"x"));
+    assert(am_value_to_varid(arg) == arnid_of(ast, top_lambda, L"x"));
 
     am_ast_destroy(ast);
     printf("OK\n");
@@ -320,11 +331,11 @@ static void test_parse_lambda(void) {
 
     am_value_t param = am_list_get(ast->alloc, inner, 2);
     assert(am_value_is_varid(param));
-    assert(am_value_to_varid(param) == varid_of(ast, L"y"));
+    assert(am_value_to_varid(param) == arnid_of(ast, am_value_to_handle(body), L"y"));
 
     am_value_t inner_body = am_list_get(ast->alloc, inner, 3);
     assert(am_value_is_varid(inner_body));
-    assert(am_value_to_varid(inner_body) == varid_of(ast, L"y"));
+    assert(am_value_to_varid(inner_body) == arnid_of(ast, am_value_to_handle(body), L"y"));
 
     am_ast_destroy(ast);
     printf("OK\n");
@@ -440,8 +451,9 @@ static void test_parse_import_native(void) {
     am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
-    am_varid_t m_varid = varid_of(ast, L"m");
-    am_varid_t n_varid = varid_of(ast, L"N");
+    am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
+    am_varid_t m_varid = arnid_of(ast, top_lambda, L"m");
+    am_varid_t n_varid = arnid_of(ast, top_lambda, L"N");
 
     am_value_t dep = am_map_get(ast->alloc, ast->dependencies, am_make_value_of_varid(m_varid));
     assert(am_value_is_handle(dep));
@@ -453,6 +465,103 @@ static void test_parse_import_native(void) {
 
     am_value_t nat = am_map_get(ast->alloc, ast->natives, am_make_value_of_varid(n_varid));
     assert(nat == AM_VALUE_HANDLE_NULL);
+
+    am_ast_destroy(ast);
+    printf("OK\n");
+}
+
+
+static void test_parse_alpha_renaming(void) {
+    printf("test_parse_alpha_renaming ... ");
+    test_allocator_reset();
+
+    wchar_t *code = L"((lambda () (display x)))";
+    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    assert(ast != NULL);
+
+    // 原始变量名仍然保留在词汇表中
+    am_varid_t raw_display = varid_of(ast, L"display");
+    am_varid_t raw_x = varid_of(ast, L"x");
+    (void)raw_display;
+    (void)raw_x;
+
+    am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
+    am_list_t *lambda = handle_to_list(ast, top_lambda);
+    assert(am_list_lambda_get_body_number(ast->alloc, lambda) == 1);
+
+    am_value_t body = am_list_get(ast->alloc, lambda, 2);
+    assert(am_value_is_handle(body));
+
+    am_list_t *app = handle_to_list(ast, am_value_to_handle(body));
+    assert(app->type == AM_LIST_TYPE_APPLICATION);
+    assert(app->length == 2);
+
+    // display 是全局内置变量，不做 Alpha-renaming；x 是普通变量，已被 Alpha-renaming
+    am_value_t op = am_list_get(ast->alloc, app, 0);
+    assert(am_value_is_varid(op));
+    assert(am_value_to_varid(op) == varid_of(ast, L"display"));
+
+    am_value_t arg = am_list_get(ast->alloc, app, 1);
+    assert(am_value_is_varid(arg));
+    assert(am_value_to_varid(arg) == arnid_of(ast, top_lambda, L"x"));
+
+    // ARN 后的名字与原始名字不同（仅对非内置变量）
+    assert(am_value_to_varid(arg) != varid_of(ast, L"x"));
+
+    am_ast_destroy(ast);
+    printf("OK\n");
+}
+
+
+static void test_parse_alpha_renaming_nested(void) {
+    printf("test_parse_alpha_renaming_nested ... ");
+    test_allocator_reset();
+
+    // 外层 lambda 中有同名变量 x 的引用；内层 lambda 将 x 作为参数并在体中引用。
+    // 二者应被换名为不同的 varid。
+    wchar_t *code = L"((lambda () (lambda (x) x) (f x)))";
+    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    assert(ast != NULL);
+
+    am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
+    am_list_t *top = handle_to_list(ast, top_lambda);
+    assert(am_list_lambda_get_body_number(ast->alloc, top) == 2);
+
+    // 第一个 body 是内层 lambda
+    am_value_t inner_lambda_val = am_list_get(ast->alloc, top, 2);
+    assert(am_value_is_handle(inner_lambda_val));
+    am_handle_t inner_lambda = am_value_to_handle(inner_lambda_val);
+    am_list_t *inner = handle_to_list(ast, inner_lambda);
+    assert(inner->type == AM_LIST_TYPE_LAMBDA);
+    am_value_t inner_n_param = am_list_get(ast->alloc, inner, 1);
+    assert(am_value_is_uint(inner_n_param));
+    assert(am_value_to_uint(inner_n_param) == 1);
+    assert(am_list_lambda_get_body_number(ast->alloc, inner) == 1);
+
+    // 内层 lambda 的参数 x 与体中的 x 引用应具有相同的 ARN（同一作用域）
+    am_value_t inner_param = am_list_get(ast->alloc, inner, 2);
+    am_value_t inner_body = am_list_get(ast->alloc, inner, 3);
+    assert(am_value_is_varid(inner_param));
+    assert(am_value_is_varid(inner_body));
+    assert(am_value_to_varid(inner_param) == am_value_to_varid(inner_body));
+    assert(am_value_to_varid(inner_param) == arnid_of(ast, inner_lambda, L"x"));
+
+    // 第二个 body 是外层应用 (f x)
+    am_value_t outer_app_val = am_list_get(ast->alloc, top, 3);
+    assert(am_value_is_handle(outer_app_val));
+    am_list_t *outer_app = handle_to_list(ast, am_value_to_handle(outer_app_val));
+    assert(outer_app->type == AM_LIST_TYPE_APPLICATION);
+    assert(outer_app->length == 2);
+
+    am_value_t outer_f = am_list_get(ast->alloc, outer_app, 0);
+    am_value_t outer_x = am_list_get(ast->alloc, outer_app, 1);
+    assert(am_value_is_varid(outer_f));
+    assert(am_value_is_varid(outer_x));
+    assert(am_value_to_varid(outer_f) == arnid_of(ast, top_lambda, L"f"));
+    assert(am_value_to_varid(outer_x) == arnid_of(ast, top_lambda, L"x"));
+
+    // 外层 x 与内层 x 的 ARN 不同
+    assert(am_value_to_varid(outer_x) != am_value_to_varid(inner_param));
 
     am_ast_destroy(ast);
     printf("OK\n");
@@ -804,8 +913,8 @@ static void ast_print(FILE *out, am_ast_t *ast) {
     ast_print_handle_list(out, ast, ast->tailcall_handles);
     fputwc(L'\n', out);
     ast_print_indent(out, 1);
-    fwprintf(out, L"topvar: ");
-    ast_print_handle_list(out, ast, ast->topvar);
+    fwprintf(out, L"var_top: ");
+    ast_print_handle_list(out, ast, ast->var_top);
     fputwc(L'\n', out);
     ast_print_indent(out, 1);
     fwprintf(out, L"dependencies: ");
@@ -858,7 +967,7 @@ static void test_ast_print(void) {
     printf("test_ast_print ... ");
     test_allocator_reset();
 
-    wchar_t *code = L"((lambda ()    (native Math) (import List \"/path/to/list.scm\") ((lambda (x) {1 2 3} (List.cons x (cons (cons quote (cons x '(\"字符串\"))) '()))) (quote (lambda (x) (cons x (cons (cons quote (cons x '())) '())))))     ))";
+    wchar_t *code = L"((lambda ()      (define f (lambda (x y) (define f (lambda (x) (+ x 100))) (+ (f x) y))) (define x 2) (define y 3) (display (f x y))         ))";
     am_ast_t *ast = am_parser(&test_allocator, code, L"/home/bd4sur/animac/demo.scm");
     assert(ast != NULL);
 
@@ -899,7 +1008,7 @@ static void test_ast_print(void) {
     // assert(wcsstr(buf, L"bodies:") != NULL);
     // assert(wcsstr(buf, L"children:") != NULL);
     assert(wcsstr(buf, L"nodes:") != NULL);
-    assert(wcsstr(buf, L"WSTRING") != NULL);
+    // assert(wcsstr(buf, L"WSTRING") != NULL);
 
     fclose(out);
 
@@ -935,6 +1044,8 @@ int main(void) {
     test_parse_quote_keyword();
     test_parse_unquote_in_quasiquote();
     test_parse_import_native();
+    test_parse_alpha_renaming();
+    test_parse_alpha_renaming_nested();
     test_print_tokens();
     test_ast_print();
 

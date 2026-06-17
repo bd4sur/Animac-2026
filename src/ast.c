@@ -156,16 +156,16 @@ am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_
     ast->nodes = am_heap_create(alloc, 1024);
     ast->node_token_mapping = am_map_create(alloc, 64);
     ast->scopes = am_map_create(alloc, 64);
-    ast->variable_mapping = am_map_create(alloc, 64);
+    ast->var_arn_mapping = am_map_create(alloc, 64);
     ast->lambda_handles = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
     ast->tailcall_handles = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
-    ast->topvar = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    ast->var_top = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
     ast->dependencies = am_map_create(alloc, 16);
     ast->natives = am_map_create(alloc, 16);
 
     if (!ast->symbol_vocab || !ast->var_vocab || !ast->nodes ||
-        !ast->node_token_mapping || !ast->scopes || !ast->variable_mapping ||
-        !ast->lambda_handles || !ast->tailcall_handles || !ast->topvar ||
+        !ast->node_token_mapping || !ast->scopes || !ast->var_arn_mapping ||
+        !ast->lambda_handles || !ast->tailcall_handles || !ast->var_top ||
         !ast->dependencies || !ast->natives) {
         am_ast_destroy(ast);
         return NULL;
@@ -187,10 +187,10 @@ int32_t am_ast_destroy(am_ast_t *ast) {
     if (ast->nodes) am_heap_destroy(alloc, ast->nodes);
     if (ast->node_token_mapping) am_map_destroy(alloc, ast->node_token_mapping);
     if (ast->scopes) am_map_destroy(alloc, ast->scopes);
-    if (ast->variable_mapping) am_map_destroy(alloc, ast->variable_mapping);
+    if (ast->var_arn_mapping) am_map_destroy(alloc, ast->var_arn_mapping);
     if (ast->lambda_handles) am_list_destroy(alloc, ast->lambda_handles);
     if (ast->tailcall_handles) am_list_destroy(alloc, ast->tailcall_handles);
-    if (ast->topvar) am_list_destroy(alloc, ast->topvar);
+    if (ast->var_top) am_list_destroy(alloc, ast->var_top);
     if (ast->dependencies) am_map_destroy(alloc, ast->dependencies);
     if (ast->natives) am_map_destroy(alloc, ast->natives);
 
@@ -222,16 +222,16 @@ am_ast_t *am_ast_copy(am_ast_t *ast) {
     copy->nodes = ast->nodes ? am_heap_copy(ast->alloc, ast->nodes) : NULL;
     copy->node_token_mapping = ast->node_token_mapping ? am_map_copy(ast->alloc, ast->node_token_mapping) : NULL;
     copy->scopes = ast->scopes ? am_map_copy(ast->alloc, ast->scopes) : NULL;
-    copy->variable_mapping = ast->variable_mapping ? am_map_copy(ast->alloc, ast->variable_mapping) : NULL;
+    copy->var_arn_mapping = ast->var_arn_mapping ? am_map_copy(ast->alloc, ast->var_arn_mapping) : NULL;
     copy->lambda_handles = ast->lambda_handles ? am_list_copy(ast->alloc, ast->lambda_handles) : NULL;
     copy->tailcall_handles = ast->tailcall_handles ? am_list_copy(ast->alloc, ast->tailcall_handles) : NULL;
-    copy->topvar = ast->topvar ? am_list_copy(ast->alloc, ast->topvar) : NULL;
+    copy->var_top = ast->var_top ? am_list_copy(ast->alloc, ast->var_top) : NULL;
     copy->dependencies = ast->dependencies ? am_map_copy(ast->alloc, ast->dependencies) : NULL;
     copy->natives = ast->natives ? am_map_copy(ast->alloc, ast->natives) : NULL;
 
     if (!copy->symbol_vocab || !copy->var_vocab || !copy->nodes ||
-        !copy->node_token_mapping || !copy->scopes || !copy->variable_mapping ||
-        !copy->lambda_handles || !copy->tailcall_handles || !copy->topvar ||
+        !copy->node_token_mapping || !copy->scopes || !copy->var_arn_mapping ||
+        !copy->lambda_handles || !copy->tailcall_handles || !copy->var_top ||
         !copy->dependencies || !copy->natives) {
         am_ast_destroy(copy);
         return NULL;
@@ -380,23 +380,23 @@ int32_t am_ast_merge(am_ast_t *target, am_ast_t *source, const wchar_t *order) {
         target->tailcall_handles = lst;
     }
 
-    // 7. 合并 variable_mapping、topvar、dependencies、natives
-    size_t vm_count = am_map_length(source->alloc, source->variable_mapping);
-    am_value_t *vm_keys = am_map_keys(source->alloc, source->variable_mapping);
+    // 7. 合并 var_arn_mapping、var_top、dependencies、natives
+    size_t vm_count = am_map_length(source->alloc, source->var_arn_mapping);
+    am_value_t *vm_keys = am_map_keys(source->alloc, source->var_arn_mapping);
     if (vm_count > 0 && !vm_keys) return 0;
     for (size_t i = 0; i < vm_count; i++) {
-        am_value_t v = am_map_get(source->alloc, source->variable_mapping, vm_keys[i]);
-        am_map_t *map = am_map_set(target->alloc, target->variable_mapping, vm_keys[i], v);
+        am_value_t v = am_map_get(source->alloc, source->var_arn_mapping, vm_keys[i]);
+        am_map_t *map = am_map_set(target->alloc, target->var_arn_mapping, vm_keys[i], v);
         if (!map) { free(vm_keys); return 0; }
-        target->variable_mapping = map;
+        target->var_arn_mapping = map;
     }
     free(vm_keys);
 
-    for (size_t i = 0; i < source->topvar->length; i++) {
-        am_value_t v = am_list_get(source->alloc, source->topvar, i);
-        am_list_t *lst = am_list_push(target->alloc, target->topvar, v);
+    for (size_t i = 0; i < source->var_top->length; i++) {
+        am_value_t v = am_list_get(source->alloc, source->var_top, i);
+        am_list_t *lst = am_list_push(target->alloc, target->var_top, v);
         if (!lst) return 0;
-        target->topvar = lst;
+        target->var_top = lst;
     }
 
     size_t dep_count = am_map_length(source->alloc, source->dependencies);
@@ -814,16 +814,16 @@ am_varid_t am_ast_make_unique_variable(am_ast_t *ast, am_varid_t varid, am_handl
     wchar_t *var_str = am_vocab_get(ast->alloc, ast->var_vocab, &varid);
     if (!var_str) return SIZE_MAX;
 
-    // 生成新变量名：V.module_id.lambda_handle.var_string
-    // 估算所需空间：前缀3 + module_id + 分隔点1 + handle最大20位 + 分隔点1 + var_str + 结尾\0
+    // 生成新变量名：module_id.lambda_handle.var_string
+    // 估算所需空间：module_id + 分隔点1 + handle最大20位 + 分隔点1 + var_str + 结尾\0
     size_t module_id_len = wcslen(ast->module_id);
     size_t var_len = wcslen(var_str);
-    size_t buf_size = 3 + module_id_len + 1 + 20 + 1 + var_len + 1;
+    size_t buf_size = module_id_len + 1 + 20 + 1 + var_len + 1;
 
     wchar_t *new_name = (wchar_t *)am_malloc(ast->alloc, buf_size * sizeof(wchar_t));
     if (!new_name) return SIZE_MAX;
 
-    int n = swprintf(new_name, buf_size, L"V.%ls.%zu.%ls", ast->module_id, lambda_handle, var_str);
+    int n = swprintf(new_name, buf_size, L"%ls.%zu.%ls", ast->module_id, lambda_handle, var_str);
     if (n <= 0 || (size_t)n >= buf_size) {
         am_free(ast->alloc, new_name);
         return SIZE_MAX;
@@ -851,12 +851,12 @@ int32_t am_ast_add_tailcall(am_ast_t *ast, am_handle_t handle) {
 }
 
 
-// 功能描述：向 topvar 中添加一个顶级变量 varid。
-int32_t am_ast_add_topvar(am_ast_t *ast, am_varid_t varid) {
-    if (!ast || !ast->topvar) return 0;
-    am_list_t *lst = am_list_push(ast->alloc, ast->topvar, am_make_value_of_varid(varid));
+// 功能描述：向 var_top 中添加一个顶级变量 varid。
+int32_t am_ast_add_var_top(am_ast_t *ast, am_varid_t varid) {
+    if (!ast || !ast->var_top) return 0;
+    am_list_t *lst = am_list_push(ast->alloc, ast->var_top, am_make_value_of_varid(varid));
     if (!lst) return 0;
-    ast->topvar = lst;
+    ast->var_top = lst;
     return 1;
 }
 

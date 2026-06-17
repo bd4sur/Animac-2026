@@ -186,6 +186,50 @@ class Closure extends SchemeObject {
 
 ---------------------
 
+本项目是一个C语言编写的Scheme解释器，尚未完成。请你通读项目C语言代码，并在 @parser.c 中完成以下需求。
+
+首先你需要知道 @parser.c 是一个递归下降解析器，其对应的BNF语法为：
+
+```
+    <SourceCode> ::= (lambda () <TERM>*) CRLF
+          <Term> ::= <SList> | <Lambda> | <Quote> | <Unquote> | <Quasiquote> | <Identifier>
+         <SList> ::= ( <SListSeq> )
+      <SListSeq> ::= <Term> <SListSeq> | ε
+        <Lambda> ::= ( lambda <ArgList> <Body> )
+       <ArgList> ::= ( <ArgListSeq> )
+    <ArgListSeq> ::= <ArgIdentifier> <ArgListSeq> | ε
+ <ArgIdentifier> ::= <Identifier>
+          <Body> ::= <BodyTerm> <Body_>
+         <Body_> ::= <BodyTerm> <Body_> | ε
+      <BodyTerm> ::= <Term>
+         <Quote> ::= ' <QuoteTerm> | ( quote <QuoteTerm> )
+       <Unquote> ::= , <UnquoteTerm> | ( unquote <QuoteTerm> )
+    <Quasiquote> ::= ` <QuasiquoteTerm> | ( quasiquote <QuoteTerm> )
+     <QuoteTerm> ::= <Term>
+   <UnquoteTerm> ::= <Term>
+<QuasiquoteTerm> ::= <Term>
+    <Identifier> ::= IDENTIFIER
+```
+
+## 需求1：增加保存Lambda嵌套状态的栈：lambda_stack
+
+在Parser的parser_ctx_t中，有几个stack，用于保存解析状态和列表嵌套状态。我要求你仿照node_stack及其用法，在parser_ctx_t中新增一个保存Lambda嵌套状态的栈：lambda_stack。这个栈的目的是：在递归下降解析过程中，保存当前所在的lambda节点的管辖范围，也就是词法作用域。当Parser解析到 parse_lambda() 时，会创建一个lambda_handle，意味着进入了一个新的词法作用域，你需要在lambda_stack栈中维护解析过程中遍历词法作用域（lambda节点的管辖范围）的过程。这样，Parser遍历到任何节点的时候，都可以通过lambda_stack栈知道自己处在哪个词法作用域（也就是Lambda节点的管辖范围）下。
+
+## 需求2：解析VARIABLE类型的IDENTIFIER时，对其做Alpha-renaming
+
+在 @parser.c 的844行附近，也就是 parse_identifier 的 AM_TOKEN_TYPE_IDENTIFIER 分支内，对于普通的variable，目前的实现是直接取token的id字段作为varid，并加入slist对象。而我希望基于需求1中实现的lambda_stack获取词法作用域信息，在parse阶段，直接对变量做Alpha-renaming。具体方法是：
+
+1. 根据token对象，取到这个variable的varid（tok->id）
+2. 从lambda_stack，取到当前所在lambda节点的handle：am_handle_t lambda_handle
+3. 调用 @ast.c 中的 am_ast_make_unique_variable 函数，构造一个Alpha-renaming 后的varid
+4. 以这个新的varid为value
+
+## 需求3：测试用例
+
+完成以上需求后，在 @test_parser.c 中进行测试。仅允许增加测试用例，不得修改其他测试用例。你可以通过WSL运行make进行构建。
+
+请阅读以上信息，实现我的需求。
+
 
 ---------------------
 
