@@ -89,18 +89,18 @@ static void test_bound_vars(void) {
     am_value_t v1 = am_make_value_of_uint(100);
     closure = am_closure_init_bound_var(&test_allocator, closure, 1, v1);
     assert(closure != NULL);
-    assert(am_closure_has_bound_var(&test_allocator, closure, 1) == 1);
+    assert(am_closure_has_bound_var(&test_allocator, closure, 1) == 0);
     assert(am_closure_get_bound_var(&test_allocator, closure, 1) == v1);
-    assert(am_closure_is_dirty_var(&test_allocator, closure, 1) == 0);
+    assert(am_closure_is_dirty_var(&test_allocator, closure, 1) == -1);
 
     am_value_t v2 = am_make_value_of_uint(200);
     closure = am_closure_set_bound_var(&test_allocator, closure, 1, v2);
     assert(closure != NULL);
     assert(am_closure_get_bound_var(&test_allocator, closure, 1) == v2);
-    assert(am_closure_is_dirty_var(&test_allocator, closure, 1) == 1);
+    assert(am_closure_is_dirty_var(&test_allocator, closure, 1) == 0);
 
     assert(am_closure_get_bound_var(&test_allocator, closure, 999) == AM_VALUE_UNDEFINED);
-    assert(am_closure_has_bound_var(&test_allocator, closure, 999) == 0);
+    assert(am_closure_has_bound_var(&test_allocator, closure, 999) == -1);
 
     am_closure_destroy(&test_allocator, closure);
     printf("OK\n");
@@ -115,18 +115,18 @@ static void test_free_vars(void) {
     am_value_t v1 = am_make_value_of_int(-10);
     closure = am_closure_init_free_var(&test_allocator, closure, 5, v1);
     assert(closure != NULL);
-    assert(am_closure_has_free_var(&test_allocator, closure, 5) == 1);
+    assert(am_closure_has_free_var(&test_allocator, closure, 5) == 0);
     assert(am_closure_get_free_var(&test_allocator, closure, 5) == v1);
-    assert(am_closure_is_dirty_var(&test_allocator, closure, 5) == 0);
+    assert(am_closure_is_dirty_var(&test_allocator, closure, 5) == -1);
 
     am_value_t v2 = am_make_value_of_int(-20);
     closure = am_closure_set_free_var(&test_allocator, closure, 5, v2);
     assert(closure != NULL);
     assert(am_closure_get_free_var(&test_allocator, closure, 5) == v2);
-    assert(am_closure_is_dirty_var(&test_allocator, closure, 5) == 1);
+    assert(am_closure_is_dirty_var(&test_allocator, closure, 5) == 0);
 
     assert(am_closure_get_free_var(&test_allocator, closure, 999) == AM_VALUE_UNDEFINED);
-    assert(am_closure_has_free_var(&test_allocator, closure, 999) == 0);
+    assert(am_closure_has_free_var(&test_allocator, closure, 999) == -1);
 
     am_closure_destroy(&test_allocator, closure);
     printf("OK\n");
@@ -149,8 +149,8 @@ static void test_bound_and_free_same_varid(void) {
 
     assert(am_closure_get_bound_var(&test_allocator, closure, 10) == bound_v);
     assert(am_closure_get_free_var(&test_allocator, closure, 10) == free_v);
-    assert(am_closure_has_bound_var(&test_allocator, closure, 10) == 1);
-    assert(am_closure_has_free_var(&test_allocator, closure, 10) == 1);
+    assert(am_closure_has_bound_var(&test_allocator, closure, 10) == 0);
+    assert(am_closure_has_free_var(&test_allocator, closure, 10) == 0);
 
     am_closure_destroy(&test_allocator, closure);
     printf("OK\n");
@@ -175,7 +175,7 @@ static void test_resize(void) {
 
     for (int i = 0; i < N; i++) {
         am_value_t expected = am_make_value_of_uint((uint32_t)i);
-        assert(am_closure_has_bound_var(&test_allocator, closure, (am_varid_t)i) == 1);
+        assert(am_closure_has_bound_var(&test_allocator, closure, (am_varid_t)i) == 0);
         assert(am_closure_get_bound_var(&test_allocator, closure, (am_varid_t)i) == expected);
     }
 
@@ -215,7 +215,7 @@ static void test_copy(void) {
         am_value_t expected = (i == 2) ? am_make_value_of_uint(99) : am_make_value_of_uint((uint32_t)(i + 1));
         assert(am_closure_get_bound_var(&test_allocator, copy, (am_varid_t)i) == expected);
     }
-    assert(am_closure_is_dirty_var(&test_allocator, copy, 2) == 1);
+    assert(am_closure_is_dirty_var(&test_allocator, copy, 2) == 0);
 
     for (int i = 10; i < 13; i++) {
         am_value_t expected = am_make_value_of_int(-(i));
@@ -241,16 +241,16 @@ static void test_init_overwrite_clears_dirty(void) {
 
     closure = am_closure_init_bound_var(&test_allocator, closure, 1, am_make_value_of_uint(1));
     assert(closure != NULL);
-    assert(am_closure_is_dirty_var(&test_allocator, closure, 1) == 0);
+    assert(am_closure_is_dirty_var(&test_allocator, closure, 1) == -1);
 
     closure = am_closure_set_bound_var(&test_allocator, closure, 1, am_make_value_of_uint(2));
     assert(closure != NULL);
-    assert(am_closure_is_dirty_var(&test_allocator, closure, 1) == 1);
+    assert(am_closure_is_dirty_var(&test_allocator, closure, 1) == 0);
 
     closure = am_closure_init_bound_var(&test_allocator, closure, 1, am_make_value_of_uint(3));
     assert(closure != NULL);
     assert(am_closure_get_bound_var(&test_allocator, closure, 1) == am_make_value_of_uint(3));
-    assert(am_closure_is_dirty_var(&test_allocator, closure, 1) == 0);
+    assert(am_closure_is_dirty_var(&test_allocator, closure, 1) == -1);
 
     am_closure_destroy(&test_allocator, closure);
     printf("OK\n");

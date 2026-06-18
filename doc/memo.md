@@ -29,23 +29,8 @@ TODO 变量Alpha-renaming(ARN)规则：
 
 TODO 将PathUtils单独实现出来。
 
-NOTE symbol是以其字面为ID的，相同拼写的symbol，无论在哪个上下文中都是同一个符号。因此AST合并时，字符串相同的symbol，就是同一个symbol。这与variable截然不同。（当然，如果parse后把所有的variable都扩展成全限定的，那就几乎等同于符号了）
 
 
-NOTE 关于解释器的工作目录、模块全局ID
-- 任何解释器实例都必须指定一个基准工作目录(base_dir)。
-- 若工作在REPL模式下，则以终端cwd为base_dir，给模块一个临时文件名
-- 若运行代码文件，则以该文件所在目录为base_dir，即该文件绝对路径的目录部分（约定不带斜杠）。
-- 所有的import文件路径，要么是绝对路径，要么是相对于base_dir的相对路径。
-- 链接器搜索import模块的算法：
-  - 判断import文件路径是绝对路径还是相对路径。如果是绝对路径，直接读取。
-  - 如果是相对路径，则将base_dir与相对路径拼接成绝对路径再读取。
-- 模块ID的构造规则：
-  - 将模块绝对路径中的斜杠替换为点、空白字符替换成下划线、冒号去掉。
-  - 去掉第一个点；若文件名有.scm后缀则去掉
-  - 例如："/home/a/b.scm" -> home.a.b
-- 链接器维护从模块ID到AST之间的映射关系：通过两个共享index的数组（字典）实现。
-  - 拓扑排序时即以模块ID在这个vocab中的index为排序对象，AST数组也以这个index为index。
 
 NOTE 关于本地native函数
 - 所有的内置函数+运算符都是本地函数，作为顶级符号绑定在顶级作用域中，全局可见。
@@ -55,6 +40,9 @@ NOTE 关于本地native函数
 TODO 返回int的函数，全盘采用“正面非负、负面负数”的语义约定。并将is_xxx改名为check_xxx。以下是初步盘点：
 成功（肯定）0，失败（否定）-1的：
 am_closure_destroy
+am_closure_has_bound_var
+am_closure_has_free_var
+am_closure_is_dirty_var
 am_heap_set
 parse_string
 am_lexer
@@ -64,9 +52,6 @@ am_map_destroy
 am_map_set_stable
 is_identifier_token -> is_term_start_token
 成功（肯定）1，失败（否定）0：
-am_closure_is_dirty_var
-am_closure_has_bound_var
-am_closure_has_free_var
 am_heap_destroy
 is_number
 is_keyword
@@ -115,29 +100,6 @@ TODO Linker中的跨模块引用换名问题：
 
 am_varid_t am_ast_find_top_varid_of_external_ref(am_ast_t *ast, wchar_t *varstr);
 
-
-
-
--------------------------------
-
-NOTE 逻辑长度称length，物理长度称size，容器最大容量称capacity
-
-NOTE parameter形式参数称“引数”，argument实际参数称“参数”
-
-NOTE Alpha-renaming过程，也就是通过换名来消除嵌套词法作用域中同名变量的混淆的过程，简称为ARN。
-
-NOTE 所有从heap中取出的变长容器类object，如果指针在操作后发生变化，必须将新指针的value写回map，以确保handle->value(ptr)->obj映射关系稳定！
-
-NOTE 所有对外提供的函数，都加am_前缀。所有的宏，都加AM_前缀。
-
-NOTE 关于函数返回值的语义约定。为了区分正面含义（肯定、正常、成功、找到）和负面含义（否定、异常、失败、没找到）两种语义，约定如下：
-
-- int类返回值：以以负整数为负面含义，非负整数（含0）为正面含义。对于返回int的有谓词含义的函数，不要用is_xxx来命名，而应用check_xxx来命名，以避免与C语言对真假值的定义混淆。
-- bool类返回值：此类函数几乎都应该用is_xxx的风格去命名，表示这是返回bool的谓词，以true为正面含义，以false为负面含义。如TPV的类型谓词：am_value_is_xxx，其返回值是bool类型，可直接通过if(is_xxx(xx))来使用。
-- uint类返回值（如size_t）：一般含有index、长度之类的语义，0也是有意义的值，因此以SIZE_MAX为负面含义（如搜索未找到等），其余为正面含义。
-- am_handle_t类返回值：以AM_HANDLE_NULL即UINTPTR_MAX为负面含义（如handle分配失败等），其余为正面含义。
-- 指针类返回值：以NULL为负面含义（内存分配失败等），其余为正面含义。
-- am_value_t类返回值：解包成各个基本类型后，遵循以上原则。
 
 
 

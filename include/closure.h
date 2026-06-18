@@ -106,13 +106,13 @@ am_value_t am_closure_get_free_var(am_allocator_t *alloc, am_obj_closure_t *clos
 // 查询
 // ===============================================================================
 
-// 判断变量是否为脏。未找到返回 0（false）。
+// 判断变量是否为脏。为脏返回 0，未找到或不为脏返回 -1。
 int32_t am_closure_is_dirty_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable);
 
-// 是否存在约束变量绑定。
+// 是否存在约束变量绑定。存在返回 0，不存在返回 -1。
 int32_t am_closure_has_bound_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable);
 
-// 是否存在自由变量绑定。
+// 是否存在自由变量绑定。存在返回 0，不存在返回 -1。
 int32_t am_closure_has_free_var(am_allocator_t *alloc, am_obj_closure_t *closure, am_varid_t variable);
 
 
