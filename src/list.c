@@ -74,7 +74,7 @@ am_list_t *am_list_create(am_allocator_t *alloc, size_t capacity, int32_t type, 
 int32_t am_list_destroy(am_allocator_t *alloc, am_list_t *lst) {
     if (!lst) return 0;
     am_free(alloc, lst);
-    return 1;
+    return 0;
 }
 
 
@@ -157,9 +157,9 @@ am_value_t am_list_get(am_allocator_t *alloc, am_list_t *lst, size_t index) {
 
 int32_t am_list_set(am_allocator_t *alloc, am_list_t *lst, size_t index, am_value_t item) {
     (void)alloc;
-    if (!lst || index >= lst->length) return 0;
+    if (!lst || index >= lst->length) return -1;
     lst->children[index] = item;
-    return 1;
+    return 0;
 }
 
 

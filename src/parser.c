@@ -320,121 +320,121 @@ static am_value_t parse_number_token(am_token_t *tok, wchar_t *code) {
 }
 
 
-static int append_child_to_top(parser_ctx_t *ctx) {
-    if (!ctx || ctx->error) return 0;
+static int32_t append_child_to_top(parser_ctx_t *ctx) {
+    if (!ctx || ctx->error) return -1;
     if (ctx->node_stack_length < 2) {
         parser_set_error(ctx, L"node stack underflow");
-        return 0;
+        return -1;
     }
 
     am_value_t child = node_stack_pop(ctx);
-    if (ctx->error) return 0;
+    if (ctx->error) return -1;
 
     am_value_t parent_val = node_stack_top(ctx);
     if (!am_value_is_handle(parent_val)) {
         parser_set_error(ctx, L"parent is not a handle");
-        return 0;
+        return -1;
     }
 
     am_handle_t parent_handle = am_value_to_handle(parent_val);
     am_value_t node_val = am_ast_get_node(ctx->ast, parent_handle);
     if (!am_value_is_ptr(node_val)) {
         parser_set_error(ctx, L"parent node not found");
-        return 0;
+        return -1;
     }
 
     am_object_t *obj = am_value_to_ptr(node_val);
     if (obj->type != AM_OBJECT_TYPE_LIST) {
         parser_set_error(ctx, L"parent is not a list");
-        return 0;
+        return -1;
     }
 
     am_list_t *lst = (am_list_t *)obj;
     am_list_t *new_lst = am_list_push(ctx->ast->alloc, lst, child);
     if (!new_lst) {
         parser_set_error(ctx, L"failed to append child");
-        return 0;
+        return -1;
     }
 
     if (new_lst != lst) {
         if (am_heap_set(ctx->ast->alloc, ctx->ast->nodes, parent_handle,
                         am_make_value_of_ptr((am_object_t *)new_lst)) != 0) {
             parser_set_error(ctx, L"failed to update parent node");
-            return 0;
+            return -1;
         }
     }
 
-    return 1;
+    return 0;
 }
 
 
-static int add_parameter_to_top_lambda(parser_ctx_t *ctx, am_value_t param) {
-    if (!ctx || ctx->error) return 0;
+static int32_t add_parameter_to_top_lambda(parser_ctx_t *ctx, am_value_t param) {
+    if (!ctx || ctx->error) return -1;
 
     am_value_t top = node_stack_top(ctx);
     if (!am_value_is_handle(top)) {
         parser_set_error(ctx, L"lambda stack corrupted");
-        return 0;
+        return -1;
     }
 
     am_handle_t lambda_handle = am_value_to_handle(top);
     am_value_t node_val = am_ast_get_node(ctx->ast, lambda_handle);
     if (!am_value_is_ptr(node_val)) {
         parser_set_error(ctx, L"lambda node not found");
-        return 0;
+        return -1;
     }
 
     am_list_t *lst = (am_list_t *)am_value_to_ptr(node_val);
     am_list_t *new_lst = am_list_lambda_add_parameter(ctx->ast->alloc, lst, param);
     if (!new_lst) {
         parser_set_error(ctx, L"failed to add parameter");
-        return 0;
+        return -1;
     }
 
     if (new_lst != lst) {
         if (am_heap_set(ctx->ast->alloc, ctx->ast->nodes, lambda_handle,
                         am_make_value_of_ptr((am_object_t *)new_lst)) != 0) {
             parser_set_error(ctx, L"failed to update lambda node");
-            return 0;
+            return -1;
         }
     }
 
-    return 1;
+    return 0;
 }
 
 
-static int add_body_to_top_lambda(parser_ctx_t *ctx, am_value_t body) {
-    if (!ctx || ctx->error) return 0;
+static int32_t add_body_to_top_lambda(parser_ctx_t *ctx, am_value_t body) {
+    if (!ctx || ctx->error) return -1;
 
     am_value_t top = node_stack_top(ctx);
     if (!am_value_is_handle(top)) {
         parser_set_error(ctx, L"lambda stack corrupted");
-        return 0;
+        return -1;
     }
 
     am_handle_t lambda_handle = am_value_to_handle(top);
     am_value_t node_val = am_ast_get_node(ctx->ast, lambda_handle);
     if (!am_value_is_ptr(node_val)) {
         parser_set_error(ctx, L"lambda node not found");
-        return 0;
+        return -1;
     }
 
     am_list_t *lst = (am_list_t *)am_value_to_ptr(node_val);
     am_list_t *new_lst = am_list_lambda_add_body(ctx->ast->alloc, lst, body);
     if (!new_lst) {
         parser_set_error(ctx, L"failed to add body");
-        return 0;
+        return -1;
     }
 
     if (new_lst != lst) {
         if (am_heap_set(ctx->ast->alloc, ctx->ast->nodes, lambda_handle,
                         am_make_value_of_ptr((am_object_t *)new_lst)) != 0) {
             parser_set_error(ctx, L"failed to update lambda node");
-            return 0;
+            return -1;
         }
     }
 
-    return 1;
+    return 0;
 }
 
 
@@ -609,7 +609,7 @@ static size_t parse_slist_seq(parser_ctx_t *ctx, size_t index) { PARSER_LOG("SLi
         size_t next_index = parse_term(ctx, index);
         if (ctx->error) return index;
 
-        if (!append_child_to_top(ctx)) return index;
+        if (append_child_to_top(ctx) < 0) return index;
 
         // 如果刚解析完 (import ...) 或 (native ...) 的第一个元素，
         // 则对第二个元素推送特殊 application 状态，解析完成后立即弹出
@@ -618,7 +618,7 @@ static size_t parse_slist_seq(parser_ctx_t *ctx, size_t index) { PARSER_LOG("SLi
             special_app_stack_push(ctx, special_app);
             next_index = parse_term(ctx, next_index);
             if (ctx->error) return index;
-            if (!append_child_to_top(ctx)) {
+            if (append_child_to_top(ctx) < 0) {
                 special_app_stack_pop(ctx);
                 return index;
             }
@@ -717,7 +717,7 @@ static size_t parse_arg_list_seq(parser_ctx_t *ctx, size_t index) { PARSER_LOG("
             return index;
         }
 
-        if (!add_parameter_to_top_lambda(ctx, param)) return index;
+        if (add_parameter_to_top_lambda(ctx, param) < 0) return index;
 
         return parse_arg_list_seq(ctx, next_index);
     }
@@ -739,7 +739,7 @@ static size_t parse_body(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Body\n")
     am_value_t body = node_stack_pop(ctx);
     if (ctx->error) return index;
 
-    if (!add_body_to_top_lambda(ctx, body)) return index;
+    if (add_body_to_top_lambda(ctx, body) < 0) return index;
 
     return parse_body_tail(ctx, next_index);
 }
@@ -760,7 +760,7 @@ static size_t parse_body_tail(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Bod
         am_value_t body = node_stack_pop(ctx);
         if (ctx->error) return index;
 
-        if (!add_body_to_top_lambda(ctx, body)) return index;
+        if (add_body_to_top_lambda(ctx, body) < 0) return index;
 
         return parse_body_tail(ctx, next_index);
     }
@@ -995,7 +995,7 @@ static size_t parse_identifier(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Id
                     int special_app = special_app_stack_top(ctx);
                     if (special_app != AM_PARSER_SPECIAL_APP_NONE) {
                         if (am_list_set(ctx->ast->alloc, ctx->ast->var_type, (size_t)tok->id,
-                                        am_make_value_of_uint(AM_VAR_TYPE_OLD)) != 1) {
+                                        am_make_value_of_uint(AM_VAR_TYPE_OLD)) != 0) {
                             free(var_text);
                             parser_set_error(ctx, L"failed to set var_type");
                             return index;
@@ -1006,7 +1006,7 @@ static size_t parse_identifier(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Id
                     // EXT_REF 格式（前缀.后缀）保持原形，不参与 Alpha-renaming
                     else if (am_ast_check_ext_ref(ctx->ast, (am_varid_t)tok->id) == 0) {
                         if (am_list_set(ctx->ast->alloc, ctx->ast->var_type, (size_t)tok->id,
-                                        am_make_value_of_uint(AM_VAR_TYPE_EXT_REF)) != 1) {
+                                        am_make_value_of_uint(AM_VAR_TYPE_EXT_REF)) != 0) {
                             free(var_text);
                             parser_set_error(ctx, L"failed to set var_type");
                             return index;

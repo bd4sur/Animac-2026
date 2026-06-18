@@ -46,6 +46,7 @@ typedef void (*am_list_iter_callback_t)(size_t index, am_value_t item, void *use
 
 am_list_t *am_list_create(am_allocator_t *alloc, size_t capacity, int32_t type, am_handle_t parent); // V8采用的默认初始容量是4
 
+// 销毁列表。lst 为 NULL 时视为成功。成功返回 0，失败返回 -1。
 int32_t am_list_destroy(am_allocator_t *alloc, am_list_t *lst);
 
 am_list_t *am_list_copy(am_allocator_t *alloc, am_list_t *lst);
@@ -60,6 +61,7 @@ uint8_t *am_list_dump(am_allocator_t *alloc, am_list_t *lst, size_t *size);
 
 am_value_t am_list_get(am_allocator_t *alloc, am_list_t *lst, size_t index);
 
+// 设置指定下标元素。成功返回 0；lst 为 NULL 或 index 越界返回 -1。
 int32_t am_list_set(am_allocator_t *alloc, am_list_t *lst, size_t index, am_value_t item);
 
 am_list_t *am_list_push(am_allocator_t *alloc, am_list_t *lst, am_value_t item); // 带动态扩容

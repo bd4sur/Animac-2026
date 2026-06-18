@@ -70,7 +70,7 @@ int32_t am_vocab_destroy(am_allocator_t *alloc, am_vocab_t *vocab) {
         if (vocab->words[i]) am_free(alloc, vocab->words[i]);
     }
     am_free(alloc, vocab);
-    return 1;
+    return 0;
 }
 
 

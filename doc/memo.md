@@ -37,39 +37,6 @@ NOTE 关于本地native函数
 - 谨慎设计VMAPI
 
 
-TODO 返回int的函数，全盘采用“正面非负、负面负数”的语义约定。并将is_xxx改名为check_xxx。以下是初步盘点：
-成功（肯定）0，失败（否定）-1的：
-am_closure_destroy
-am_closure_has_bound_var
-am_closure_has_free_var
-am_closure_is_dirty_var
-am_heap_destroy
-am_heap_set
-am_heap_has_handle
-am_heap_free_handle
-is_number
-is_keyword
-parse_hash_literal
-parse_string
-am_lexer
-am_map_rehash
-am_map_clear
-am_map_destroy
-am_map_set_stable
-am_map_find_slot
-am_map_contains
-am_map_delete
-is_identifier_token -> is_term_start_token
-成功（肯定）1，失败（否定）0：
-am_list_destroy
-am_list_set
-append_child_to_top
-add_parameter_to_top_lambda
-add_body_to_top_lambda
-am_scope_destroy
-am_scope_has_var
-am_vocab_destroy
-
 
 TODO Linker中的跨模块引用换名问题：
 

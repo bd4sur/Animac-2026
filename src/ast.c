@@ -809,7 +809,7 @@ am_handle_t am_ast_find_var_lambda_handle(am_ast_t *ast, am_varid_t varid, am_ha
                     am_value_t scope_val = am_heap_get(ast->alloc, ast->nodes, scope_handle);
                     if (am_value_is_ptr(scope_val)) {
                         am_scope_t *scope = (am_scope_t *)am_value_to_ptr(scope_val);
-                        if (am_scope_has_var(ast->alloc, scope, varid)) {
+                        if (am_scope_has_var(ast->alloc, scope, varid) >= 0) {
                             return current;
                         }
                     }

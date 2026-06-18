@@ -28,7 +28,8 @@ typedef struct am_vocab_t {
 // 创建词典对象，其中vocab->words初始化为长度为capacity的全0数组。
 am_vocab_t *am_vocab_create(am_allocator_t *alloc,size_t capacity);
 
-// 销毁词典对象，穿透销毁vocab->words的每一项指向的字符串
+// 销毁词典对象，穿透销毁vocab->words的每一项指向的字符串。
+// vocab 为 NULL 时视为成功。成功返回 0，失败返回 -1。
 int32_t am_vocab_destroy(am_allocator_t *alloc,am_vocab_t *vocab);
 
 // 深拷贝词典对象

@@ -71,7 +71,7 @@ am_scope_t *am_scope_create(am_allocator_t *alloc, am_handle_t parent_scope_hand
 int32_t am_scope_destroy(am_allocator_t *alloc, am_scope_t *scope) {
     if (!scope) return 0;
     am_free(alloc, scope);
-    return 1;
+    return 0;
 }
 
 
@@ -112,17 +112,17 @@ uint8_t *am_scope_dump(am_allocator_t *alloc, am_scope_t *scope, size_t *size) {
 
 int32_t am_scope_has_var(am_allocator_t *alloc, am_scope_t *scope, am_varid_t variable) {
     (void)alloc;
-    if (!scope) return 0;
+    if (!scope) return -1;
     for (size_t i = 0; i < scope->length; i++) {
-        if (scope->bindings[i].varid == variable) return 1;
+        if (scope->bindings[i].varid == variable) return 0;
     }
-    return 0;
+    return -1;
 }
 
 
 am_scope_t *am_scope_add_var(am_allocator_t *alloc, am_scope_t *scope, am_varid_t variable, am_value_t value) {
     if (!scope) return NULL;
-    if (am_scope_has_var(alloc, scope, variable)) return NULL;
+    if (am_scope_has_var(alloc, scope, variable) >= 0) return NULL;
 
     scope = am_scope_grow_if_needed(alloc, scope);
     if (!scope) return NULL;

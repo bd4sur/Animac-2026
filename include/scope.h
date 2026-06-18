@@ -37,7 +37,7 @@ typedef struct am_scope_t {
 // 创建环境帧。capacity 为 0 时默认使用 16。
 am_scope_t *am_scope_create(am_allocator_t *alloc, am_handle_t parent_scope_handle, am_handle_t parent_lambda_handle, am_handle_t current_lambda_handle, size_t capacity);
 
-// 销毁环境帧。
+// 销毁环境帧。scope 为 NULL 时视为成功。成功返回 0，失败返回 -1。
 int32_t am_scope_destroy(am_allocator_t *alloc, am_scope_t *scope);
 
 // 深拷贝（头部与所有 binding）。value 按位拷贝（与 TS Copy 语义一致，不递归释放对象）。
@@ -47,7 +47,7 @@ am_scope_t *am_closure_copy(am_allocator_t *alloc, am_scope_t *scope);
 //   注意：压缩对象，将capacity压缩到跟length一致，删除多余分配的空闲部分
 uint8_t *am_scope_dump(am_allocator_t *alloc, am_scope_t *scope, size_t *size);
 
-// 查询是否存在变量绑定。存在返回1，不存在返回0。
+// 查询是否存在变量绑定。存在返回 0，不存在或 scope 为 NULL 返回 -1。
 int32_t am_scope_has_var(am_allocator_t *alloc, am_scope_t *scope, am_varid_t variable);
 
 // 新增一个变量绑定。若已存在相同变量，则返回NULL表示失败。
