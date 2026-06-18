@@ -1140,6 +1140,192 @@ static void preprocess_analysis(parser_ctx_t *ctx) {
 
 
 // ===============================================================================
+// 引用模块别名（alias）和外部引用（ext_ref）更名
+// ===============================================================================
+
+typedef struct {
+    parser_ctx_t *ctx;
+    am_varid_t *old_aliases;
+    size_t old_aliases_capacity;
+    size_t old_aliases_length;
+} alias_rename_iter_data_t;
+
+static int alias_rename_record_old_alias(alias_rename_iter_data_t *data, am_varid_t varid) {
+    if (!data) return 0;
+    if (data->old_aliases_length >= data->old_aliases_capacity) {
+        size_t new_cap = data->old_aliases_capacity ? data->old_aliases_capacity * 2 : 8;
+        am_varid_t *new_arr = (am_varid_t *)realloc(data->old_aliases, new_cap * sizeof(am_varid_t));
+        if (!new_arr) return 0;
+        data->old_aliases = new_arr;
+        data->old_aliases_capacity = new_cap;
+    }
+    data->old_aliases[data->old_aliases_length++] = varid;
+    return 1;
+}
+
+static void alias_rename_free_old_aliases(alias_rename_iter_data_t *data) {
+    if (!data) return;
+    free(data->old_aliases);
+    data->old_aliases = NULL;
+    data->old_aliases_capacity = 0;
+    data->old_aliases_length = 0;
+}
+
+static void alias_rename_iter_cb(am_handle_t handle, am_value_t value, void *user_data) {
+    (void)handle;
+    alias_rename_iter_data_t *data = (alias_rename_iter_data_t *)user_data;
+    parser_ctx_t *ctx = data->ctx;
+    am_ast_t *ast = ctx->ast;
+
+    if (!am_value_is_ptr(value)) return;
+
+    am_object_t *obj = am_value_to_ptr(value);
+    if (obj->type != AM_OBJECT_TYPE_LIST) return;
+
+    am_list_t *lst = (am_list_t *)obj;
+
+    // (import <Alias> <Path>)
+    if (lst->type == AM_LIST_TYPE_APPLICATION && lst->length == 3) {
+        am_value_t first = am_list_get(ast->alloc, lst, 0);
+        if (am_value_is_symbol(first) &&
+            am_value_to_symbol(first) == am_value_to_symbol(AM_VALUE_KW_import)) {
+            am_value_t alias_val = am_list_get(ast->alloc, lst, 1);
+            am_value_t path_handle_val = am_list_get(ast->alloc, lst, 2);
+
+            if (!am_value_is_varid(alias_val) || !am_value_is_handle(path_handle_val)) {
+                parser_set_error(ctx, L"invalid import syntax in alias rename");
+                return;
+            }
+
+            am_varid_t old_alias_varid = am_value_to_varid(alias_val);
+            am_varid_t new_alias_varid = am_ast_make_unique_module_alias(ast, old_alias_varid);
+            if (new_alias_varid == SIZE_MAX) {
+                parser_set_error(ctx, L"failed to create unique module alias");
+                return;
+            }
+
+            if (am_list_set(ast->alloc, lst, 1, am_make_value_of_varid(new_alias_varid)) != 0) {
+                parser_set_error(ctx, L"failed to set renamed import alias");
+                return;
+            }
+
+            if (!am_ast_set_dependency(ast, new_alias_varid, am_value_to_handle(path_handle_val))) {
+                parser_set_error(ctx, L"failed to set dependency for renamed alias");
+                return;
+            }
+
+            if (!alias_rename_record_old_alias(data, old_alias_varid)) {
+                parser_set_error(ctx, L"out of memory recording old alias");
+                return;
+            }
+
+            return; // import 节点本身不处理 children 中的 ext_ref
+        }
+    }
+
+    // 其他节点：遍历 children，处理 AM_VAR_TYPE_EXT_REF 且为 IMPORT_REF 的 varid
+    for (size_t i = 0; i < lst->length; i++) {
+        am_value_t child = am_list_get(ast->alloc, lst, i);
+        if (!am_value_is_varid(child)) continue;
+
+        am_varid_t varid = am_value_to_varid(child);
+        am_value_t type_val = am_list_get(ast->alloc, ast->var_type, (size_t)varid);
+        if (!am_value_is_uint(type_val)) continue;
+
+        if (am_value_to_uint(type_val) != AM_VAR_TYPE_EXT_REF) continue;
+
+        if (am_ast_check_import_ref(ast, varid) != 0) continue;
+
+        am_varid_t new_varid = am_ast_make_unique_import_ref(ast, varid);
+        if (new_varid == SIZE_MAX) {
+            parser_set_error(ctx, L"failed to create unique import ref");
+            return;
+        }
+
+        if (am_list_set(ast->alloc, lst, i, am_make_value_of_varid(new_varid)) != 0) {
+            parser_set_error(ctx, L"failed to set renamed import ref");
+            return;
+        }
+    }
+}
+
+
+static void alias_rename_analysis(parser_ctx_t *ctx) {
+    if (!ctx || !ctx->ast) return;
+    alias_rename_iter_data_t data = { ctx, NULL, 0, 0 };
+    am_heap_iter(ctx->ast->alloc, ctx->ast->nodes, alias_rename_iter_cb, &data);
+
+    if (!ctx->error) {
+        for (size_t i = 0; i < data.old_aliases_length; i++) {
+            am_map_delete(ctx->ast->alloc, ctx->ast->dependencies,
+                          am_make_value_of_varid(data.old_aliases[i]));
+        }
+    }
+
+    alias_rename_free_old_aliases(&data);
+}
+
+
+// ===============================================================================
+// 设置顶层 lambda 与顶级变量列表
+// ===============================================================================
+
+static void populate_top_lambda_and_var_top(parser_ctx_t *ctx) {
+    if (!ctx || !ctx->ast) return;
+    am_ast_t *ast = ctx->ast;
+
+    ast->top_lambda_handle = am_ast_get_top_lambda_node_handle(ast);
+    if (ast->top_lambda_handle == AM_HANDLE_NULL) {
+        parser_set_error(ctx, L"failed to get top lambda handle");
+        return;
+    }
+
+    am_value_t *bodies = am_ast_get_global_nodes(ast);
+    if (!bodies) return;
+
+    am_value_t lambda_val = am_ast_get_node(ast, ast->top_lambda_handle);
+    if (!am_value_is_ptr(lambda_val)) {
+        free(bodies);
+        parser_set_error(ctx, L"top lambda node not found");
+        return;
+    }
+
+    am_list_t *lambda = (am_list_t *)am_value_to_ptr(lambda_val);
+    size_t n_body = am_list_lambda_get_body_number(ast->alloc, lambda);
+
+    for (size_t i = 0; i < n_body; i++) {
+        am_value_t body = bodies[i];
+        if (!am_value_is_handle(body)) continue;
+
+        am_value_t node_val = am_ast_get_node(ast, am_value_to_handle(body));
+        if (!am_value_is_ptr(node_val)) continue;
+
+        am_object_t *obj = am_value_to_ptr(node_val);
+        if (obj->type != AM_OBJECT_TYPE_LIST) continue;
+
+        am_list_t *lst = (am_list_t *)obj;
+        if (lst->type != AM_LIST_TYPE_APPLICATION || lst->length < 2) continue;
+
+        am_value_t first = am_list_get(ast->alloc, lst, 0);
+        if (!am_value_is_symbol(first) ||
+            am_value_to_symbol(first) != am_value_to_symbol(AM_VALUE_KW_define)) {
+            continue;
+        }
+
+        am_value_t second = am_list_get(ast->alloc, lst, 1);
+        if (!am_value_is_varid(second)) continue;
+
+        if (!am_ast_add_var_top(ast, am_value_to_varid(second))) {
+            parser_set_error(ctx, L"failed to add top variable");
+            break;
+        }
+    }
+
+    free(bodies);
+}
+
+
+// ===============================================================================
 // 解析器入口
 // ===============================================================================
 
@@ -1197,6 +1383,32 @@ am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path
 
     // 预处理指令解析
     preprocess_analysis(&ctx);
+    if (ctx.error) {
+        fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
+        free(ctx.node_stack);
+        free(ctx.state_stack);
+        free(ctx.lambda_stack);
+        free(ctx.special_app_stack);
+        am_ast_destroy(ast);
+        am_free(alloc, tokens);
+        return NULL;
+    }
+
+    // 引用模块别名（alias）和外部引用（ext_ref）更名
+    alias_rename_analysis(&ctx);
+    if (ctx.error) {
+        fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
+        free(ctx.node_stack);
+        free(ctx.state_stack);
+        free(ctx.lambda_stack);
+        free(ctx.special_app_stack);
+        am_ast_destroy(ast);
+        am_free(alloc, tokens);
+        return NULL;
+    }
+
+    // 设置顶层 lambda 与顶级变量列表
+    populate_top_lambda_and_var_top(&ctx);
     if (ctx.error) {
         fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
         free(ctx.node_stack);

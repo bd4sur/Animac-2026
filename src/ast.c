@@ -895,6 +895,96 @@ am_varid_t am_ast_make_unique_variable(am_ast_t *ast, am_varid_t varid, am_handl
 }
 
 
+// 功能描述：为 import 别名生成模块级唯一变量名。
+am_varid_t am_ast_make_unique_module_alias(am_ast_t *ast, am_varid_t alias_varid) {
+    if (!ast || !ast->var_vocab || !ast->var_type) return SIZE_MAX;
+
+    wchar_t *alias_str = am_vocab_get(ast->alloc, ast->var_vocab, &alias_varid);
+    if (!alias_str) return SIZE_MAX;
+
+    // 生成新变量名：module_id.alias
+    size_t module_id_len = wcslen(ast->module_id);
+    size_t alias_len = wcslen(alias_str);
+    size_t buf_size = module_id_len + 1 + alias_len + 1;
+
+    wchar_t *new_name = (wchar_t *)am_malloc(ast->alloc, buf_size * sizeof(wchar_t));
+    if (!new_name) return SIZE_MAX;
+
+    int n = swprintf(new_name, buf_size, L"%ls.%ls", ast->module_id, alias_str);
+    if (n <= 0 || (size_t)n >= buf_size) {
+        am_free(ast->alloc, new_name);
+        return SIZE_MAX;
+    }
+
+    size_t old_len = ast->var_vocab->length;
+    size_t new_varid = am_vocab_insert(ast->alloc, ast->var_vocab, new_name);
+    am_free(ast->alloc, new_name);
+
+    if (new_varid == SIZE_MAX) return SIZE_MAX;
+
+    // 设置 var_type 为 AM_VAR_TYPE_IMPORT_ALIAS
+    if (new_varid == old_len) {
+        am_list_t *vt = am_list_push(ast->alloc, ast->var_type,
+                                      am_make_value_of_uint(AM_VAR_TYPE_IMPORT_ALIAS));
+        if (!vt) return SIZE_MAX;
+        ast->var_type = vt;
+    }
+    else {
+        if (am_list_set(ast->alloc, ast->var_type, new_varid,
+                        am_make_value_of_uint(AM_VAR_TYPE_IMPORT_ALIAS)) != 0) {
+            return SIZE_MAX;
+        }
+    }
+
+    return (am_varid_t)new_varid;
+}
+
+
+// 功能描述：为 import 外部引用生成模块级唯一变量名。
+am_varid_t am_ast_make_unique_import_ref(am_ast_t *ast, am_varid_t import_ref_varid) {
+    if (!ast || !ast->var_vocab || !ast->var_type) return SIZE_MAX;
+
+    wchar_t *ref_str = am_vocab_get(ast->alloc, ast->var_vocab, &import_ref_varid);
+    if (!ref_str) return SIZE_MAX;
+
+    // 生成新变量名：module_id.import_ref
+    size_t module_id_len = wcslen(ast->module_id);
+    size_t ref_len = wcslen(ref_str);
+    size_t buf_size = module_id_len + 1 + ref_len + 1;
+
+    wchar_t *new_name = (wchar_t *)am_malloc(ast->alloc, buf_size * sizeof(wchar_t));
+    if (!new_name) return SIZE_MAX;
+
+    int n = swprintf(new_name, buf_size, L"%ls.%ls", ast->module_id, ref_str);
+    if (n <= 0 || (size_t)n >= buf_size) {
+        am_free(ast->alloc, new_name);
+        return SIZE_MAX;
+    }
+
+    size_t old_len = ast->var_vocab->length;
+    size_t new_varid = am_vocab_insert(ast->alloc, ast->var_vocab, new_name);
+    am_free(ast->alloc, new_name);
+
+    if (new_varid == SIZE_MAX) return SIZE_MAX;
+
+    // 设置 var_type 为 AM_VAR_TYPE_IMPORT_REF
+    if (new_varid == old_len) {
+        am_list_t *vt = am_list_push(ast->alloc, ast->var_type,
+                                      am_make_value_of_uint(AM_VAR_TYPE_IMPORT_REF));
+        if (!vt) return SIZE_MAX;
+        ast->var_type = vt;
+    }
+    else {
+        if (am_list_set(ast->alloc, ast->var_type, new_varid,
+                        am_make_value_of_uint(AM_VAR_TYPE_IMPORT_REF)) != 0) {
+            return SIZE_MAX;
+        }
+    }
+
+    return (am_varid_t)new_varid;
+}
+
+
 // ===============================================================================
 // AST 基本操作辅助接口
 // ===============================================================================

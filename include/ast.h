@@ -188,6 +188,16 @@ am_handle_t am_ast_find_nearest_lambda_handle(am_ast_t *ast, am_handle_t from_no
 am_varid_t am_ast_make_unique_variable(am_ast_t *ast, am_varid_t varid, am_handle_t lambda_handle);
 
 
+// 功能描述：为 import 别名生成模块级唯一变量名（module_id.alias），并将其注册到 ast->var_vocab，同时设置其 var_type 为 AM_VAR_TYPE_IMPORT_ALIAS。
+// 实现说明：成功返回新的 varid，失败返回 SIZE_MAX。
+am_varid_t am_ast_make_unique_module_alias(am_ast_t *ast, am_varid_t alias_varid);
+
+
+// 功能描述：为 import 外部引用生成模块级唯一变量名（module_id.import_ref），并将其注册到 ast->var_vocab，同时设置其 var_type 为 AM_VAR_TYPE_IMPORT_REF。
+// 实现说明：成功返回新的 varid，失败返回 SIZE_MAX。
+am_varid_t am_ast_make_unique_import_ref(am_ast_t *ast, am_varid_t import_ref_varid);
+
+
 // 功能描述：向 tailcall_handles 中添加一个尾调用节点把柄。
 // 实现说明：成功返回1，失败返回0。
 int32_t am_ast_add_tailcall(am_ast_t *ast, am_handle_t handle);

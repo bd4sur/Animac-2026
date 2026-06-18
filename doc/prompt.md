@@ -661,6 +661,19 @@ void am_ast_batch_rewrite_varids(am_ast_t *ast, am_map_t *rewrite_map) {
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+@src/parser.c 是解释器的parser实现。目前的am_parser实现中，包含两个主要的分析步骤：递归下降语法分析、预处理指令解析。
+
+我的需求是：在预处理指令解析之后，增加一个步骤“引用模块别名（alias）和外部引用（ext_ref）更名”。这个步骤需要完成的事情有：
+
+遍历ast->nodes的全部节点：
+
+对于 (import alias mod_path) 节点中的alias，你需要参照 @src/ast.c 中的 am_ast_make_unique_variable 函数中所描述的逻辑，构造一个新的alias variable，新的alias的格式是“module_id.alias”，也就是直接把module_id和原来的alias以点号拼接起来。例如，在模块“path.to.a”中，旧的alias“Lib”被组装成新的alias“path.to.a.Lib”。我建议你在 @src/ast.c 中参照 am_ast_make_unique_variable 实现一个新的工具函数 am_ast_make_unique_module_alias，通过这个函数构造新alias并获得它的varid，将其var_type设置为AM_VAR_TYPE_IMPORT_ALIAS，再用这个varid取代 (import alias mod_path) 节点中的旧alias。同时，你需要在ast->dependencies中增加新alias的varid到module_path的映射。不需要删除旧varid和旧映射，因为下一步还要用。
+
+对于其他节点，遍历其所有children。对于children中出现的varid，首先检查其在var_type中的变量类型，如果是 AM_VAR_TYPE_EXT_REF 类型的，则通过 @src/ast.c 中的 am_ast_check_import_ref 确认它是否是 AM_VAR_TYPE_IMPORT_REF。如果是，则还是参照 @src/ast.c 中的 am_ast_make_unique_variable 实现一个新的工具函数 am_ast_make_unique_import_ref，构造一个新的 import_ref 格式的变量，其格式为“module_id.import_ref”，也就是直接把module_id和原来的import_ref以点号拼接起来，加入var_vocab，获得varid，再将其var_type设置为AM_VAR_TYPE_IMPORT_REF。例如，在模块“path.to.a”中，原来的import_ref是“Lib.foo”，则替换后的import_ref就是“path.to.a.Lib.foo”，这实际上就是新的模块alias“path.to.a.Lib”与模块内变量“foo”的拼接。调用am_ast_make_unique_import_ref取得新的varid后，用它替换掉children中相应的旧的varid。
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

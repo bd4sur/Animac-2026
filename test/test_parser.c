@@ -461,10 +461,16 @@ static void test_parse_import_native(void) {
     assert(am_value_is_uint(m_type) && am_value_to_uint(m_type) == AM_VAR_TYPE_OLD);
     assert(am_value_is_uint(n_type) && am_value_to_uint(n_type) == AM_VAR_TYPE_OLD);
 
-    am_value_t dep = am_map_get(ast->alloc, ast->dependencies, am_make_value_of_varid(m_varid));
-    assert(am_value_is_handle(dep));
+    // 旧 alias 的依赖映射已被删除
+    am_value_t old_dep = am_map_get(ast->alloc, ast->dependencies, am_make_value_of_varid(m_varid));
+    assert(!am_value_is_handle(old_dep));
 
-    am_wstring_t *ws = handle_to_wstring(ast, am_value_to_handle(dep));
+    // 新 alias（module_id.m）的依赖映射存在
+    am_varid_t new_m_varid = varid_of(ast, L"test.m");
+    am_value_t new_dep = am_map_get(ast->alloc, ast->dependencies, am_make_value_of_varid(new_m_varid));
+    assert(am_value_is_handle(new_dep));
+
+    am_wstring_t *ws = handle_to_wstring(ast, am_value_to_handle(new_dep));
     wchar_t *buf = wstring_to_buf(ws);
     assert(wcscmp(buf, L"\"path/to/m.scm\"") == 0);
     free(buf);
@@ -780,6 +786,19 @@ static void ast_print_handle_list(FILE *out, am_ast_t *ast, am_list_t *lst) {
     fputwc(L']', out);
 }
 
+
+static void ast_print_value_inline(am_ast_t *ast, am_value_t value, FILE *out);
+
+
+static void ast_print_value_list(FILE *out, am_ast_t *ast, am_list_t *lst) {
+    fputwc(L'[', out);
+    for (size_t i = 0; i < lst->length; i++) {
+        if (i > 0) fwprintf(out, L", ");
+        ast_print_value_inline(ast, am_list_get(ast->alloc, lst, i), out);
+    }
+    fputwc(L']', out);
+}
+
 static void ast_print_map_varid_to_handle(FILE *out, am_ast_t *ast, am_map_t *map) {
     fputwc(L'{', out);
     size_t count = am_map_length(ast->alloc, map);
@@ -863,6 +882,48 @@ static void ast_print_var_arn_mapping(FILE *out, am_ast_t *ast, am_map_t *map) {
     fputwc(L'}', out);
 }
 
+static void ast_print_value_inline(am_ast_t *ast, am_value_t value, FILE *out) {
+    if (am_value_is_handle(value)) {
+        fwprintf(out, L"<H:%zu>", (size_t)am_value_to_handle(value));
+    }
+    else if (am_value_is_varid(value)) {
+        am_varid_t varid = am_value_to_varid(value);
+        size_t idx = (size_t)varid;
+        wchar_t *name = am_vocab_get(ast->alloc, ast->var_vocab, &idx);
+        if (name) fwprintf(out, L"\"%ls\"", name);
+        else fwprintf(out, L"<varid=%zu>", (size_t)varid);
+    }
+    else if (am_value_is_symbol(value)) {
+        am_symbol_t sym = am_value_to_symbol(value);
+        size_t idx = (size_t)sym;
+        wchar_t *name = am_vocab_get(ast->alloc, ast->symbol_vocab, &idx);
+        if (name) fwprintf(out, L"\"%ls\"", name);
+        else fwprintf(out, L"<symbol=%zu>", (size_t)sym);
+    }
+    else if (am_value_is_uint(value)) {
+        fwprintf(out, L"%llu", (unsigned long long)am_value_to_uint(value));
+    }
+    else if (am_value_is_int(value)) {
+        fwprintf(out, L"%lld", (long long)am_value_to_int(value));
+    }
+    else if (am_value_is_float(value)) {
+        fwprintf(out, L"%g", (double)am_value_to_float(value));
+    }
+    else if (am_value_is_boolean(value)) {
+        fwprintf(out, L"%ls", am_value_to_boolean(value) ? L"#t" : L"#f");
+    }
+    else if (am_value_is_null(value)) {
+        fwprintf(out, L"#null");
+    }
+    else if (am_value_is_undefined(value)) {
+        fwprintf(out, L"#undefined");
+    }
+    else {
+        fwprintf(out, L"<value=%llu>", (unsigned long long)value);
+    }
+}
+
+
 static void ast_print_node_summary(am_ast_t *ast, am_handle_t handle, FILE *out) {
     am_value_t node_val = am_ast_get_node(ast, handle);
     if (!am_value_is_ptr(node_val)) {
@@ -918,7 +979,13 @@ static void ast_print_node_summary(am_ast_t *ast, am_handle_t handle, FILE *out)
     else {
         fwprintf(out, L" length=%zu", lst->length);
     }
-    fputwc(L'\n', out);
+
+    fwprintf(out, L" children=[");
+    for (size_t i = 0; i < lst->length; i++) {
+        if (i > 0) fwprintf(out, L", ");
+        ast_print_value_inline(ast, am_list_get(ast->alloc, lst, i), out);
+    }
+    fwprintf(out, L"]\n");
 }
 
 
@@ -960,6 +1027,8 @@ static void ast_print(FILE *out, am_ast_t *ast) {
     ast_print_indent(out, 1);
     fwprintf(out, L"module_id: \"%ls\"\n", ast->module_id ? ast->module_id : L"(null)");
     ast_print_indent(out, 1);
+    fwprintf(out, L"top_lambda_handle: <H:%zu>\n", (size_t)ast->top_lambda_handle);
+    ast_print_indent(out, 1);
     fwprintf(out, L"token_count: %zu\n", ast->token_count);
     ast_print_indent(out, 1);
     fwprintf(out, L"symbol_vocab: ");
@@ -987,7 +1056,7 @@ static void ast_print(FILE *out, am_ast_t *ast) {
     fputwc(L'\n', out);
     ast_print_indent(out, 1);
     fwprintf(out, L"var_top: ");
-    ast_print_handle_list(out, ast, ast->var_top);
+    ast_print_value_list(out, ast, ast->var_top);
     fputwc(L'\n', out);
     ast_print_indent(out, 1);
     fwprintf(out, L"dependencies: ");
@@ -1013,6 +1082,102 @@ static void ast_print(FILE *out, am_ast_t *ast) {
     }
 
     fwprintf(out, L"}\n");
+}
+
+
+static void test_parse_import_alias_rename(void) {
+    printf("test_parse_import_alias_rename ... ");
+    test_allocator_reset();
+
+    wchar_t *code = L"((lambda () (import Lib \"path/to/lib.scm\") (Lib.foo x)))";
+    am_ast_t *ast = am_parser(&test_allocator, code, L"/path/to/a.scm");
+    assert(ast != NULL);
+
+    // module_id 应为 path.to.a
+    assert(wcscmp(ast->module_id, L"path.to.a") == 0);
+
+    // 旧别名和旧外部引用仍保留
+    am_varid_t old_alias = varid_of(ast, L"Lib");
+    am_varid_t old_ref = varid_of(ast, L"Lib.foo");
+
+    am_value_t old_alias_type = am_list_get(ast->alloc, ast->var_type, (size_t)old_alias);
+    am_value_t old_ref_type = am_list_get(ast->alloc, ast->var_type, (size_t)old_ref);
+    assert(am_value_is_uint(old_alias_type) && am_value_to_uint(old_alias_type) == AM_VAR_TYPE_OLD);
+    assert(am_value_is_uint(old_ref_type) && am_value_to_uint(old_ref_type) == AM_VAR_TYPE_EXT_REF);
+
+    // 新别名和新外部引用
+    am_varid_t new_alias = varid_of(ast, L"path.to.a.Lib");
+    am_varid_t new_ref = varid_of(ast, L"path.to.a.Lib.foo");
+
+    am_value_t new_alias_type = am_list_get(ast->alloc, ast->var_type, (size_t)new_alias);
+    am_value_t new_ref_type = am_list_get(ast->alloc, ast->var_type, (size_t)new_ref);
+    assert(am_value_is_uint(new_alias_type) && am_value_to_uint(new_alias_type) == AM_VAR_TYPE_IMPORT_ALIAS);
+    assert(am_value_is_uint(new_ref_type) && am_value_to_uint(new_ref_type) == AM_VAR_TYPE_IMPORT_REF);
+
+    // 旧别名的依赖映射已被删除，新别名的依赖映射存在且指向同一 path handle
+    am_value_t old_dep = am_map_get(ast->alloc, ast->dependencies, am_make_value_of_varid(old_alias));
+    am_value_t new_dep = am_map_get(ast->alloc, ast->dependencies, am_make_value_of_varid(new_alias));
+    assert(!am_value_is_handle(old_dep));
+    assert(am_value_is_handle(new_dep));
+
+    // import 节点的别名已被替换为新别名
+    am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
+    am_list_t *lambda = handle_to_list(ast, top_lambda);
+    assert(am_list_lambda_get_body_number(ast->alloc, lambda) == 2);
+
+    am_value_t import_body = am_list_get(ast->alloc, lambda, 2);
+    assert(am_value_is_handle(import_body));
+    am_list_t *import_app = handle_to_list(ast, am_value_to_handle(import_body));
+    assert(import_app->type == AM_LIST_TYPE_APPLICATION);
+    assert(import_app->length == 3);
+    am_value_t alias_child = am_list_get(ast->alloc, import_app, 1);
+    assert(am_value_is_varid(alias_child));
+    assert(am_value_to_varid(alias_child) == new_alias);
+
+    // (Lib.foo x) 应用中 Lib.foo 已被替换
+    am_value_t call_body = am_list_get(ast->alloc, lambda, 3);
+    assert(am_value_is_handle(call_body));
+    am_list_t *call_app = handle_to_list(ast, am_value_to_handle(call_body));
+    assert(call_app->type == AM_LIST_TYPE_APPLICATION);
+    assert(call_app->length == 2);
+    am_value_t op = am_list_get(ast->alloc, call_app, 0);
+    assert(am_value_is_varid(op));
+    assert(am_value_to_varid(op) == new_ref);
+
+    am_ast_destroy(ast);
+    printf("OK\n");
+}
+
+
+static void test_parse_top_lambda_and_var_top(void) {
+    printf("test_parse_top_lambda_and_var_top ... ");
+    test_allocator_reset();
+
+    wchar_t *code = L"((lambda () (define x 1) (define y 2) (define f (lambda (a) a)) (display x)))";
+    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    assert(ast != NULL);
+
+    // top_lambda_handle 已设置
+    assert(ast->top_lambda_handle != AM_HANDLE_NULL);
+    assert(ast->top_lambda_handle == am_ast_get_top_lambda_node_handle(ast));
+
+    // var_top 包含顶层 define 的变量：x, y, f
+    assert(ast->var_top != NULL);
+    assert(ast->var_top->length == 3);
+
+    am_varid_t x_varid = arnid_of(ast, ast->top_lambda_handle, L"x");
+    am_varid_t y_varid = arnid_of(ast, ast->top_lambda_handle, L"y");
+    am_varid_t f_varid = arnid_of(ast, ast->top_lambda_handle, L"f");
+
+    am_value_t v0 = am_list_get(ast->alloc, ast->var_top, 0);
+    am_value_t v1 = am_list_get(ast->alloc, ast->var_top, 1);
+    am_value_t v2 = am_list_get(ast->alloc, ast->var_top, 2);
+    assert(am_value_is_varid(v0) && am_value_to_varid(v0) == x_varid);
+    assert(am_value_is_varid(v1) && am_value_to_varid(v1) == y_varid);
+    assert(am_value_is_varid(v2) && am_value_to_varid(v2) == f_varid);
+
+    am_ast_destroy(ast);
+    printf("OK\n");
 }
 
 
@@ -1119,6 +1284,8 @@ int main(void) {
     test_parse_import_native();
     test_parse_alpha_renaming();
     test_parse_alpha_renaming_nested();
+    test_parse_import_alias_rename();
+    test_parse_top_lambda_and_var_top();
     test_print_tokens();
     test_ast_print();
 
