@@ -19,9 +19,9 @@ static size_t am_map_round_up_capacity(size_t capacity) {
 }
 
 // 查找 key 所在槽位。
-// 返回值：1 表示找到，0 表示未找到。
+// 找到返回 0；未找到返回 -1。
 // 无论是否找到，*out_insert_idx 都会返回可插入位置（首个墓碑或空槽）。
-static size_t am_map_find_slot(const am_map_t *m, am_value_t key, size_t *out_insert_idx) {
+static int32_t am_map_find_slot(const am_map_t *m, am_value_t key, size_t *out_insert_idx) {
     size_t idx = am_value_hash(key) & m->mask;
     size_t insert_idx = UINT32_MAX;
 
@@ -30,13 +30,13 @@ static size_t am_map_find_slot(const am_map_t *m, am_value_t key, size_t *out_in
         if (k == AM_MAP_KEY_EMPTY) {
             if (insert_idx == UINT32_MAX) insert_idx = idx;
             *out_insert_idx = insert_idx;
-            return 0;
+            return -1;
         }
         if (k == AM_MAP_KEY_TOMBSTONE) {
             if (insert_idx == UINT32_MAX) insert_idx = idx;
         } else if (am_value_equal(k, key)) {
             *out_insert_idx = idx;
-            return 1;
+            return 0;
         }
         idx = (idx + 1) & m->mask;
     }
@@ -254,18 +254,18 @@ am_value_t am_map_get(am_allocator_t *alloc, am_map_t *map, am_value_t key) {
     if (m->length == 0) return AM_VALUE_NULL;
 
     size_t idx;
-    if (!am_map_find_slot(m, key, &idx)) return AM_VALUE_NULL;
+    if (am_map_find_slot(m, key, &idx) < 0) return AM_VALUE_NULL;
     return m->slots[idx].value;
 }
 
-// 存在性检查：存在返回 1，不存在返回 0
+// 存在性检查：存在返回 0，不存在返回 -1
 int32_t am_map_contains(am_allocator_t *alloc, am_map_t *map, am_value_t key) {
     (void)alloc;
     am_map_t *m = (am_map_t *)map;
-    if (m->length == 0) return 0;
+    if (m->length == 0) return -1;
 
     size_t idx;
-    return am_map_find_slot(m, key, &idx) ? 1 : 0;
+    return am_map_find_slot(m, key, &idx) < 0 ? -1 : 0;
 }
 
 // 不扩容地插入或修改（stable 版本）。
@@ -297,7 +297,7 @@ int32_t am_map_set_stable(am_allocator_t *alloc, am_map_t *map, am_value_t key, 
     // 存在空槽或墓碑，find_slot 必然终止
     size_t idx;
     int32_t found = am_map_find_slot(m, key, &idx);
-    if (found) {
+    if (found >= 0) {
         if (am_value_is_ptr(m->slots[idx].value)) {
             am_free(alloc, am_value_to_ptr(m->slots[idx].value));
         }
@@ -332,7 +332,7 @@ am_map_t *am_map_set(am_allocator_t *alloc, am_map_t *map, am_value_t key, am_va
 
     size_t idx;
     int32_t found = am_map_find_slot(m, key, &idx);
-    if (found) {
+    if (found >= 0) {
         if (am_value_is_ptr(m->slots[idx].value)) {
             am_free(alloc, am_value_to_ptr(m->slots[idx].value));
         }
@@ -349,13 +349,13 @@ am_map_t *am_map_set(am_allocator_t *alloc, am_map_t *map, am_value_t key, am_va
 }
 
 // 删除指定 key。若存在且 value 为指针则释放。
-// 返回 1 表示删除成功，0 表示 key 不存在。
+// 删除成功返回 0；key 不存在返回 -1。
 int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_value_t key) {
     am_map_t *m = (am_map_t *)map;
-    if (m->length == 0) return 0;
+    if (m->length == 0) return -1;
 
     size_t idx;
-    if (!am_map_find_slot(m, key, &idx)) return 0;
+    if (am_map_find_slot(m, key, &idx) < 0) return -1;
 
     if (am_value_is_ptr(m->slots[idx].value)) {
         am_free(alloc, am_value_to_ptr(m->slots[idx].value));
@@ -371,7 +371,7 @@ int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_value_t key) {
             // 内存不足，重哈希失败；删除操作本身已完成
         }
     }
-    return 1;
+    return 0;
 }
 
 // 当前有效键值对数量

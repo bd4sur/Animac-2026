@@ -63,22 +63,23 @@ static int32_t parse_string(wchar_t *code, int32_t start, int32_t *end_pos) {
 }
 
 // 更严格的数字字面值判断
-static int is_number(wchar_t *code, int32_t start, int32_t len) {
-    if(len == 0) return 0;
+// 是合法数字返回 1；不是数字返回 -1。
+static int32_t is_number(wchar_t *code, int32_t start, int32_t len) {
+    if(len == 0) return -1;
     wchar_t first = code[start];
     // 首字符必须是 +/- 或数字
-    if(!(first == L'-' || first == L'+' || iswdigit(first))) return 0;
+    if(!(first == L'-' || first == L'+' || iswdigit(first))) return -1;
 
     int32_t has_digit = 0, has_dot = 0, has_exp = 0;
     for(int32_t i = 0; i < len; i++) {
         wchar_t c = code[start + i];
         if(iswdigit(c)) { has_digit = 1; }
         else if(c == L'.') {
-            if(has_dot || has_exp) return 0; // 多个. 或 . 在指数后
+            if(has_dot || has_exp) return -1; // 多个. 或 . 在指数后
             has_dot = 1;
         }
         else if(c == L'e' || c == L'E') {
-            if(has_exp || !has_digit) return 0; // 多个e 或 e前无数字
+            if(has_exp || !has_digit) return -1; // 多个e 或 e前无数字
             has_exp = 1;
             // e后可跟 +/-
             if(i+1 < len && (code[start+i+1] == L'+' || code[start+i+1] == L'-')) i++;
@@ -86,16 +87,17 @@ static int is_number(wchar_t *code, int32_t start, int32_t len) {
         }
         else if(c == L'+' || c == L'-') {
             // +/- 只能出现在开头或e/E之后
-            if(i != 0 && code[start+i-1] != L'e' && code[start+i-1] != L'E') return 0;
+            if(i != 0 && code[start+i-1] != L'e' && code[start+i-1] != L'E') return -1;
         }
         else {
-            return 0; // 非法字符
+            return -1; // 非法字符
         }
     }
-    return has_digit; // 必须至少有一个数字
+    return has_digit ? 1 : -1; // 必须至少有一个数字
 }
 
-// 判断是否为关键字，返回关键字在AM_KEYWORDS中的索引；不是关键字返回-1
+// 判断是否为关键字。
+// 是关键字返回在 AM_KEYWORDS 中的索引（非负）；不是关键字返回 -1。
 static int32_t is_keyword(wchar_t *code, int32_t start, int32_t len) {
     if(len == 0) return -1;
     for(int32_t i = 0; AM_KEYWORDS[i]; i++) {
@@ -107,15 +109,16 @@ static int32_t is_keyword(wchar_t *code, int32_t start, int32_t len) {
 }
 
 // 解析 # 开头的特殊字面值
+// 成功返回对应的 AM_TOKEN_TYPE_*（正数），并通过 len_out 输出长度；失败返回 -1。
 static int32_t parse_hash_literal(wchar_t *code, int32_t start, int32_t *len_out) {
-    if(code[start] != L'#') return 0;
+    if(code[start] != L'#') return -1;
     int32_t pos = start + 1;
 
     // #t / #f (布尔值)
     if(code[pos] == L't' || code[pos] == L'f') {
         wchar_t next = code[pos + 1];
         if(!is_delimiter(next) && !is_whitespace(next) && next != L'\0') {
-            return 0; // #ta 不是合法布尔值
+            return -1; // #ta 不是合法布尔值
         }
         *len_out = 2;
         return AM_TOKEN_TYPE_BOOLEAN;
@@ -124,7 +127,7 @@ static int32_t parse_hash_literal(wchar_t *code, int32_t start, int32_t *len_out
     // #undefined
     if(wcsncmp(&code[pos], L"undefined", 9) == 0) {
         wchar_t next = code[pos + 9];
-        if(!is_delimiter(next) && !is_whitespace(next) && next != L'\0') return 0;
+        if(!is_delimiter(next) && !is_whitespace(next) && next != L'\0') return -1;
         *len_out = 10; // # + undefined(9)
         return AM_TOKEN_TYPE_UNDEFINED;
     }
@@ -132,12 +135,12 @@ static int32_t parse_hash_literal(wchar_t *code, int32_t start, int32_t *len_out
     // #null
     if(wcsncmp(&code[pos], L"null", 4) == 0) {
         wchar_t next = code[pos + 4];
-        if(!is_delimiter(next) && !is_whitespace(next) && next != L'\0') return 0;
+        if(!is_delimiter(next) && !is_whitespace(next) && next != L'\0') return -1;
         *len_out = 5; // # + null(4)
         return AM_TOKEN_TYPE_NULL;
     }
 
-    return 0; // 不识别的 # 字面值
+    return -1; // 不识别的 # 字面值
 }
 
 static void update_pos(wchar_t c, int32_t *line, int32_t *column) {
@@ -183,7 +186,7 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
             if(first == L'#') {                                 \
                 int32_t hash_len;                               \
                 int32_t hash_type = parse_hash_literal(code, buf_start, &hash_len); \
-                if(hash_type != 0 && hash_len == len) {         \
+                if(hash_type >= 0 && hash_len == len) {         \
                     t_type = hash_type;                         \
                 } else {                                        \
                     t_type = AM_TOKEN_TYPE_UNEXPECTED;          \
@@ -194,7 +197,7 @@ int32_t am_lexer(wchar_t *code, am_token_t *tokens) {
                 else t_type = AM_TOKEN_TYPE_QUOTE;              \
             }                                                   \
             /* 数字字面值 */                                     \
-            else if(is_number(code, buf_start, len)) {          \
+            else if(is_number(code, buf_start, len) >= 0) {     \
                 t_type = AM_TOKEN_TYPE_NUMBER;                  \
             }                                                   \
             /* 关键字 */                                        \

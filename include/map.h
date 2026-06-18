@@ -106,7 +106,7 @@ uint8_t *am_map_dump(am_allocator_t *alloc, am_map_t *map, size_t *size);
 // 查找：返回对应的 value；若不存在返回 AM_VALUE_NULL
 am_value_t am_map_get(am_allocator_t *alloc, am_map_t *map, am_value_t key);
 
-// 存在性检查：存在返回 1，不存在返回 0
+// 存在性检查：存在返回 0，不存在返回 -1
 int32_t am_map_contains(am_allocator_t *alloc, am_map_t *map, am_value_t key);
 
 // 不扩容地插入或修改（stable 版本）。
@@ -122,7 +122,7 @@ int32_t am_map_set_stable(am_allocator_t *alloc, am_map_t *map, am_value_t key, 
 am_map_t *am_map_set(am_allocator_t *alloc, am_map_t *map, am_value_t key, am_value_t value);
 
 // 删除指定 key。若存在且 value 为指针则释放。
-// 返回 1 表示删除成功，0 表示 key 不存在。
+// 删除成功返回 0；key 不存在返回 -1。
 int32_t am_map_delete(am_allocator_t *alloc, am_map_t *map, am_value_t key);
 
 // 当前有效键值对数量

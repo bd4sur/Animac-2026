@@ -207,11 +207,11 @@ static void test_set_get_contains_uint(void) {
     map = am_map_set(&test_allocator, map, k1, v1);
     assert(map != NULL);
     assert(am_map_length(&test_allocator, map) == 1);
-    assert(am_map_contains(&test_allocator, map, k1) == 1);
+    assert(am_map_contains(&test_allocator, map, k1) == 0);
     assert(am_value_equal(am_map_get(&test_allocator, map, k1), v1));
 
     am_value_t k2 = am_make_value_of_uint(43);
-    assert(am_map_contains(&test_allocator, map, k2) == 0);
+    assert(am_map_contains(&test_allocator, map, k2) == -1);
     assert(am_value_equal(am_map_get(&test_allocator, map, k2), AM_VALUE_NULL));
 
     am_value_t v1_new = am_make_value_of_uint(200);
@@ -267,16 +267,16 @@ static void test_delete_and_tombstones(void) {
     map = am_map_set(&test_allocator, map, k2, am_make_value_of_uint(20)); assert(map != NULL);
     map = am_map_set(&test_allocator, map, k3, am_make_value_of_uint(30)); assert(map != NULL);
 
-    assert(am_map_delete(&test_allocator, map, k2) == 1);
+    assert(am_map_delete(&test_allocator, map, k2) == 0);
     assert(am_map_length(&test_allocator, map) == 2);
-    assert(am_map_contains(&test_allocator, map, k2) == 0);
+    assert(am_map_contains(&test_allocator, map, k2) == -1);
     assert(am_value_equal(am_map_get(&test_allocator, map, k2), AM_VALUE_NULL));
 
     am_value_t k_missing = am_make_value_of_uint(999);
-    assert(am_map_delete(&test_allocator, map, k_missing) == 0);
+    assert(am_map_delete(&test_allocator, map, k_missing) == -1);
 
-    assert(am_map_contains(&test_allocator, map, k1) == 1);
-    assert(am_map_contains(&test_allocator, map, k3) == 1);
+    assert(am_map_contains(&test_allocator, map, k1) == 0);
+    assert(am_map_contains(&test_allocator, map, k3) == 0);
     assert(am_value_equal(am_map_get(&test_allocator, map, k1), am_make_value_of_uint(10)));
     assert(am_value_equal(am_map_get(&test_allocator, map, k3), am_make_value_of_uint(30)));
 
@@ -304,7 +304,7 @@ static void test_resize_and_rehash(void) {
     for (int i = 0; i < N; i++) {
         am_value_t k = am_make_value_of_uint((uint32_t)(1000 + i));
         am_value_t expected = am_make_value_of_uint((uint32_t)i);
-        assert(am_map_contains(&test_allocator, map, k) == 1);
+        assert(am_map_contains(&test_allocator, map, k) == 0);
         assert(am_value_equal(am_map_get(&test_allocator, map, k), expected));
     }
 
@@ -366,8 +366,8 @@ static void test_pointer_value_ownership(void) {
     assert(map != NULL);
     assert(am_value_equal(am_map_get(&test_allocator, map, k), v2));
 
-    assert(am_map_delete(&test_allocator, map, k) == 1);
-    assert(am_map_contains(&test_allocator, map, k) == 0);
+    assert(am_map_delete(&test_allocator, map, k) == 0);
+    assert(am_map_contains(&test_allocator, map, k) == -1);
 
     am_map_destroy(&test_allocator, map);
     printf("OK\n");
@@ -394,7 +394,7 @@ static void test_clear_and_destroy(void) {
 
     for (int i = 0; i < 20; i++) {
         am_value_t k = am_make_value_of_uint((uint32_t)i);
-        assert(am_map_contains(&test_allocator, map, k) == 0);
+        assert(am_map_contains(&test_allocator, map, k) == -1);
     }
 
     assert(am_map_destroy(&test_allocator, map) == 0);
@@ -460,8 +460,8 @@ static void test_set_stable_tombstone_reuse(void) {
     }
     assert(am_map_length(&test_allocator, map) == 6);
 
-    assert(am_map_delete(&test_allocator, map, am_make_value_of_uint(2)) == 1);
-    assert(am_map_delete(&test_allocator, map, am_make_value_of_uint(4)) == 1);
+    assert(am_map_delete(&test_allocator, map, am_make_value_of_uint(2)) == 0);
+    assert(am_map_delete(&test_allocator, map, am_make_value_of_uint(4)) == 0);
     assert(am_map_length(&test_allocator, map) == 4);
 
     assert(am_map_set_stable(&test_allocator, map, am_make_value_of_uint(20), am_make_value_of_uint(200)) == 0);
@@ -490,7 +490,7 @@ static void test_set_stable_pointer_ownership(void) {
 
     assert(am_map_set_stable(&test_allocator, map, k, am_make_value_of_ptr((am_object_t *)payload2)) == 0);
 
-    assert(am_map_delete(&test_allocator, map, k) == 1);
+    assert(am_map_delete(&test_allocator, map, k) == 0);
 
     am_map_destroy(&test_allocator, map);
     printf("OK\n");
@@ -565,7 +565,7 @@ static void test_dump_basic(void) {
 
     // 带墓碑的 map 转储：墓碑应被丢弃
     am_value_t k2 = am_make_value_of_uint(2);
-    assert(am_map_delete(&test_allocator, map, k2) == 1);
+    assert(am_map_delete(&test_allocator, map, k2) == 0);
     assert(am_map_length(&test_allocator, map) == 4);
 
     dump = am_map_dump(&test_allocator, map, &size);
@@ -592,7 +592,7 @@ static void test_dump_vs_copy(void) {
         assert(map != NULL);
     }
     am_value_t k2 = am_make_value_of_uint(2);
-    assert(am_map_delete(&test_allocator, map, k2) == 1);
+    assert(am_map_delete(&test_allocator, map, k2) == 0);
 
     // copy 完整保留源对象：capacity、length、tombstones、所有槽位均不变
     am_map_t *copy = am_map_copy(&test_allocator, map);
@@ -640,7 +640,7 @@ static void test_copy_independence(void) {
     for (int i = 0; i < N; i++) {
         am_value_t k = am_make_value_of_uint((uint32_t)i);
         am_value_t expected = am_make_value_of_int(-i);
-        assert(am_map_contains(&test_allocator, copy, k) == 1);
+        assert(am_map_contains(&test_allocator, copy, k) == 0);
         assert(am_value_equal(am_map_get(&test_allocator, copy, k), expected));
     }
 

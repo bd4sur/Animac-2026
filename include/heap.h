@@ -46,11 +46,14 @@ uint8_t *am_heap_dump(am_allocator_t *alloc, am_heap_t *heap, size_t *size);
 
 
 
+// 存在性检查：存在返回 0，不存在或 heap/table 为空返回 -1。
 int32_t am_heap_has_handle(am_allocator_t *alloc, am_heap_t *heap, am_handle_t handle);
 
 am_handle_t am_heap_alloc_handle(am_allocator_t *alloc, am_heap_t *heap);
 
-int32_t am_heap_free_handle(am_allocator_t *alloc, am_heap_t *heap, am_handle_t handle); // 不仅删除entry，还要穿透free对应的堆对象（被GC调用）
+// 不仅删除entry，还要穿透free对应的堆对象（被GC调用）。
+// 释放成功返回 0；handle 不存在或 heap/table 为空返回 -1。
+int32_t am_heap_free_handle(am_allocator_t *alloc, am_heap_t *heap, am_handle_t handle);
 
 int32_t am_heap_set_metadata(am_allocator_t *alloc, am_heap_t *heap, am_handle_t handle, am_uint_t property); // TODO
 

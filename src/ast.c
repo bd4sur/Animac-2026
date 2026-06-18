@@ -543,7 +543,7 @@ int32_t am_ast_check_native_ref(am_ast_t *ast, am_varid_t v) {
     am_free(ast->alloc, prefix);
     if (native_varid == SIZE_MAX) return -1;
 
-    return am_map_contains(ast->alloc, ast->natives, am_make_value_of_varid(native_varid)) ? 0 : -1;
+    return am_map_contains(ast->alloc, ast->natives, am_make_value_of_varid(native_varid));
 }
 
 
@@ -568,7 +568,7 @@ int32_t am_ast_check_import_ref(am_ast_t *ast, am_varid_t v) {
     am_free(ast->alloc, prefix);
     if (alias_varid == SIZE_MAX) return -1;
 
-    return am_map_contains(ast->alloc, ast->dependencies, am_make_value_of_varid(alias_varid)) ? 0 : -1;
+    return am_map_contains(ast->alloc, ast->dependencies, am_make_value_of_varid(alias_varid));
 }
 
 

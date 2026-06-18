@@ -63,7 +63,7 @@ int32_t am_heap_destroy(am_allocator_t *alloc, am_heap_t *heap) {
     }
 
     am_free(alloc, heap);
-    return 1;
+    return 0;
 }
 
 
@@ -131,7 +131,7 @@ uint8_t *am_heap_dump(am_allocator_t *alloc, am_heap_t *heap, size_t *size) {
 // ===============================================================================
 
 int32_t am_heap_has_handle(am_allocator_t *alloc, am_heap_t *heap, am_handle_t handle) {
-    if (!heap || !heap->table) return 0;
+    if (!heap || !heap->table) return -1;
     return am_map_contains(alloc, heap->table, am_make_value_of_handle(handle));
 }
 
@@ -153,7 +153,7 @@ am_handle_t am_heap_alloc_handle(am_allocator_t *alloc, am_heap_t *heap) {
 
 
 int32_t am_heap_free_handle(am_allocator_t *alloc, am_heap_t *heap, am_handle_t handle) {
-    if (!heap || !heap->table) return 0;
+    if (!heap || !heap->table) return -1;
 
     am_value_t handle_val = am_make_value_of_handle(handle);
     am_value_t v = am_map_get(alloc, heap->table, handle_val);
@@ -198,7 +198,7 @@ int32_t am_heap_set(am_allocator_t *alloc, am_heap_t *heap, am_handle_t handle, 
 
     am_value_t handle_val = am_make_value_of_handle(handle);
     // 把柄必须遵循先申请后使用的原则，不允许直接创建把柄
-    if (!am_map_contains(alloc, heap->table, handle_val)) {
+    if (am_map_contains(alloc, heap->table, handle_val) < 0) {
         return -1;
     }
 
