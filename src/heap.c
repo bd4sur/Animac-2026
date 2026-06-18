@@ -197,11 +197,9 @@ int32_t am_heap_set(am_allocator_t *alloc, am_heap_t *heap, am_handle_t handle, 
     if (!heap || !heap->table) return -1;
 
     am_value_t handle_val = am_make_value_of_handle(handle);
-    // 若把柄不存在，则自动注册（允许合并等场景）
+    // 把柄必须遵循先申请后使用的原则，不允许直接创建把柄
     if (!am_map_contains(alloc, heap->table, handle_val)) {
-        am_map_t *new_table = am_map_set(alloc, heap->table, handle_val, AM_VALUE_NULL);
-        if (!new_table) return -1;
-        heap->table = new_table;
+        return -1;
     }
 
     am_map_t *new_table = am_map_set(alloc, heap->table, handle_val, value);

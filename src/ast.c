@@ -153,6 +153,7 @@ am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_
 
     ast->symbol_vocab = am_vocab_create(alloc, 64);
     ast->var_vocab = am_vocab_create(alloc, 64);
+    ast->var_type = am_list_create(alloc, 64, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
     ast->nodes = am_heap_create(alloc, 1024);
     ast->node_token_mapping = am_map_create(alloc, 64);
     ast->scopes = am_map_create(alloc, 64);
@@ -163,7 +164,7 @@ am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_
     ast->dependencies = am_map_create(alloc, 16);
     ast->natives = am_map_create(alloc, 16);
 
-    if (!ast->symbol_vocab || !ast->var_vocab || !ast->nodes ||
+    if (!ast->symbol_vocab || !ast->var_vocab || !ast->var_type || !ast->nodes ||
         !ast->node_token_mapping || !ast->scopes || !ast->var_arn_mapping ||
         !ast->lambda_handles || !ast->tailcall_handles || !ast->var_top ||
         !ast->dependencies || !ast->natives) {
@@ -184,6 +185,7 @@ int32_t am_ast_destroy(am_ast_t *ast) {
     if (ast->module_id) am_free(alloc, ast->module_id);
     if (ast->symbol_vocab) am_vocab_destroy(alloc, ast->symbol_vocab);
     if (ast->var_vocab) am_vocab_destroy(alloc, ast->var_vocab);
+    if (ast->var_type) am_list_destroy(alloc, ast->var_type);
     if (ast->nodes) am_heap_destroy(alloc, ast->nodes);
     if (ast->node_token_mapping) am_map_destroy(alloc, ast->node_token_mapping);
     if (ast->scopes) am_map_destroy(alloc, ast->scopes);
@@ -219,6 +221,7 @@ am_ast_t *am_ast_copy(am_ast_t *ast) {
 
     copy->symbol_vocab = ast->symbol_vocab ? am_vocab_copy(ast->alloc, ast->symbol_vocab) : NULL;
     copy->var_vocab = ast->var_vocab ? am_vocab_copy(ast->alloc, ast->var_vocab) : NULL;
+    copy->var_type = ast->var_type ? am_list_copy(ast->alloc, ast->var_type) : NULL;
     copy->nodes = ast->nodes ? am_heap_copy(ast->alloc, ast->nodes) : NULL;
     copy->node_token_mapping = ast->node_token_mapping ? am_map_copy(ast->alloc, ast->node_token_mapping) : NULL;
     copy->scopes = ast->scopes ? am_map_copy(ast->alloc, ast->scopes) : NULL;
@@ -229,7 +232,7 @@ am_ast_t *am_ast_copy(am_ast_t *ast) {
     copy->dependencies = ast->dependencies ? am_map_copy(ast->alloc, ast->dependencies) : NULL;
     copy->natives = ast->natives ? am_map_copy(ast->alloc, ast->natives) : NULL;
 
-    if (!copy->symbol_vocab || !copy->var_vocab || !copy->nodes ||
+    if (!copy->symbol_vocab || !copy->var_vocab || !copy->var_type || !copy->nodes ||
         !copy->node_token_mapping || !copy->scopes || !copy->var_arn_mapping ||
         !copy->lambda_handles || !copy->tailcall_handles || !copy->var_top ||
         !copy->dependencies || !copy->natives) {
@@ -265,8 +268,9 @@ size_t am_ast_get_node_token_index(am_ast_t *ast, am_handle_t node_handle) {
 
 
 // 功能描述：融合另一个AST。
-// 注意：此实现假设 am_heap_set 能够为未分配的把柄创建条目（类似TS的Memory.NewHandle+Set）。
-//       若底层堆实现不支持，则需要在 heap.h/heap.c 中增加显式注册指定把柄的接口。
+// 注意：此实现当前假设 am_heap_set 能够为未分配的把柄创建条目。但 heap 已改为严格模式，
+//       把柄必须先通过 am_heap_alloc_handle 申请，不允许直接创建/注册指定把柄。因此该函数
+//       需要后续改造（例如深拷贝源 AST 节点并在 target 中重新申请把柄、重映射内部引用）。
 int32_t am_ast_merge(am_ast_t *target, am_ast_t *source, const wchar_t *order) {
     if (!target || !source || !order) return 0;
     int top_order = (wcscmp(order, L"top") == 0);
@@ -468,7 +472,7 @@ size_t am_build_symbol_vocabulary(am_ast_t *ast) {
 
 // 功能描述：遍历tokens，使用其中的IDENTIFIER构建ast->var_vocab。
 size_t am_build_variable_vocabulary(am_ast_t *ast) {
-    if (!ast || !ast->var_vocab || !ast->tokens) return 0;
+    if (!ast || !ast->var_vocab || !ast->var_type || !ast->tokens) return 0;
 
     for (size_t i = 0; i < ast->token_count; i++) {
         am_token_t *t = &ast->tokens[i];
@@ -477,9 +481,17 @@ size_t am_build_variable_vocabulary(am_ast_t *ast) {
         if (t->type == AM_TOKEN_TYPE_IDENTIFIER) {
             wchar_t *text = am_token_text_dup(t, ast->code);
             if (!text) return 0;
+            size_t old_len = ast->var_vocab->length;
             size_t idx = am_vocab_insert(ast->alloc, ast->var_vocab, text);
             free(text);
             if (idx == SIZE_MAX) return 0;
+            // 新变量加入时，同步在 var_type 中追加默认类型
+            if (idx == old_len) {
+                am_list_t *vt = am_list_push(ast->alloc, ast->var_type,
+                                              am_make_value_of_uint(AM_VAR_TYPE_OLD));
+                if (!vt) return 0;
+                ast->var_type = vt;
+            }
             t->id = idx;
         }
     }
@@ -489,21 +501,36 @@ size_t am_build_variable_vocabulary(am_ast_t *ast) {
 
 
 // ===============================================================================
-// Native调用判断
+// EXT/NATIVE/IMPORT 引用判断
 // ===============================================================================
 
-// 功能描述：判断某个变量是否是Native调用。
-int32_t am_ast_is_native_call(am_ast_t *ast, am_token_t *t) {
-    if (!ast || !ast->var_vocab || !ast->natives || !t) return 0;
+// 功能描述：判断某个变量在形式上是否是“前缀.后缀”的格式（EXT_REF）。
+int32_t am_ast_check_ext_ref(am_ast_t *ast, am_varid_t v) {
+    if (!ast || !ast->var_vocab) return -1;
 
-    // 获取变量字符串
-    wchar_t *var_str = am_vocab_get(ast->alloc, ast->var_vocab, &t->id);
-    if (!var_str) return 0;
+    wchar_t *var_str = am_vocab_get(ast->alloc, ast->var_vocab, &v);
+    if (!var_str) return -1;
 
-    // 复制并提取点号分隔的第1部分
+    // 必须有且仅有一个点号，且不在开头和末尾
+    wchar_t *first_dot = wcschr(var_str, L'.');
+    if (!first_dot || first_dot == var_str || first_dot[1] == L'\0') return -1;
+    if (wcschr(first_dot + 1, L'.')) return -1;
+
+    return 0;
+}
+
+
+// 功能描述：判断某个变量是否是 AM_VAR_TYPE_NATIVE_REF。
+int32_t am_ast_check_native_ref(am_ast_t *ast, am_varid_t v) {
+    if (!ast || !ast->var_vocab || !ast->natives) return -1;
+
+    wchar_t *var_str = am_vocab_get(ast->alloc, ast->var_vocab, &v);
+    if (!var_str) return -1;
+
+    // 提取点号分隔的第1部分
     size_t len = wcslen(var_str);
-    wchar_t *prefix = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
-    if (!prefix) return 0;
+    wchar_t *prefix = (wchar_t *)am_malloc(ast->alloc, (len + 1) * sizeof(wchar_t));
+    if (!prefix) return -1;
 
     size_t i = 0;
     while (i < len && var_str[i] != L'.') {
@@ -512,13 +539,36 @@ int32_t am_ast_is_native_call(am_ast_t *ast, am_token_t *t) {
     }
     prefix[i] = L'\0';
 
-    // 在var_vocab中查找prefix的index
     size_t native_varid = am_vocab_find(ast->alloc, ast->var_vocab, prefix);
-    free(prefix);
-    if (native_varid == SIZE_MAX) return 0;
+    am_free(ast->alloc, prefix);
+    if (native_varid == SIZE_MAX) return -1;
 
-    // 检查natives中是否存在
-    return am_map_contains(ast->alloc, ast->natives, am_make_value_of_varid(native_varid));
+    return am_map_contains(ast->alloc, ast->natives, am_make_value_of_varid(native_varid)) ? 0 : -1;
+}
+
+
+// 功能描述：判断某个变量是否是 AM_VAR_TYPE_IMPORT_REF。
+int32_t am_ast_check_import_ref(am_ast_t *ast, am_varid_t v) {
+    if (!ast || !ast->var_vocab || !ast->dependencies) return -1;
+
+    wchar_t *var_str = am_vocab_get(ast->alloc, ast->var_vocab, &v);
+    if (!var_str) return -1;
+
+    // 提取最后一个点号分隔的第1部分作为 alias
+    wchar_t *last_dot = wcsrchr(var_str, L'.');
+    if (!last_dot || last_dot == var_str) return -1;
+
+    size_t prefix_len = (size_t)(last_dot - var_str);
+    wchar_t *prefix = (wchar_t *)am_malloc(ast->alloc, (prefix_len + 1) * sizeof(wchar_t));
+    if (!prefix) return -1;
+    wcsncpy(prefix, var_str, prefix_len);
+    prefix[prefix_len] = L'\0';
+
+    size_t alias_varid = am_vocab_find(ast->alloc, ast->var_vocab, prefix);
+    am_free(ast->alloc, prefix);
+    if (alias_varid == SIZE_MAX) return -1;
+
+    return am_map_contains(ast->alloc, ast->dependencies, am_make_value_of_varid(alias_varid)) ? 0 : -1;
 }
 
 
@@ -809,7 +859,7 @@ am_handle_t am_ast_find_nearest_lambda_handle(am_ast_t *ast, am_handle_t from_no
 
 // 功能描述：生成模块（AST）内唯一的变量名。
 am_varid_t am_ast_make_unique_variable(am_ast_t *ast, am_varid_t varid, am_handle_t lambda_handle) {
-    if (!ast || !ast->var_vocab) return SIZE_MAX;
+    if (!ast || !ast->var_vocab || !ast->var_type) return SIZE_MAX;
 
     wchar_t *var_str = am_vocab_get(ast->alloc, ast->var_vocab, &varid);
     if (!var_str) return SIZE_MAX;
@@ -829,10 +879,18 @@ am_varid_t am_ast_make_unique_variable(am_ast_t *ast, am_varid_t varid, am_handl
         return SIZE_MAX;
     }
 
+    size_t old_len = ast->var_vocab->length;
     size_t new_varid = am_vocab_insert(ast->alloc, ast->var_vocab, new_name);
     am_free(ast->alloc, new_name);
 
     if (new_varid == SIZE_MAX) return SIZE_MAX;
+    // 新变量加入时，同步在 var_type 中追加默认类型
+    if (new_varid == old_len) {
+        am_list_t *vt = am_list_push(ast->alloc, ast->var_type,
+                                      am_make_value_of_uint(AM_VAR_TYPE_NEW));
+        if (!vt) return SIZE_MAX;
+        ast->var_type = vt;
+    }
     return (am_varid_t)new_varid;
 }
 

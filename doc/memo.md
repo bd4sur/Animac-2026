@@ -2,8 +2,6 @@ TODO ast.am_wstring_create 挪到wstring.c中实现；并补全wstring实现
 
 TODO parser创建wstring对象时要先去掉两端的双引号
 
-TODO heap.am_heap_set 不允许直接创建把柄。把柄必须遵循先申请后使用的原则。因此AST.am_ast_merge等用户必须修改。
-
 TODO 在abcdefg用例中，似乎有把关键字塞进变量表的问题。
 
 TODO 计算object对象size的宏或函数（用于内存管理）
@@ -88,14 +86,6 @@ am_vocab_destroy
 
 TODO Linker中的跨模块引用换名问题：
 
-1) AST增加Map成员variable_type<varid, uint>，用于记录变量的属性（是否是点号分隔变量），其中value是枚举值：
-
-- AM_VAR_TYPE_DEFAULT (0) // 普通变量（没有用点号分隔的普通变量）
-- AM_VAR_TYPE_IMPORT_REF (1) // 点号分隔的引用了外部import模块的变量，例如Mod.foo
-- AM_VAR_TYPE_NATIVE_REF (2) // 点号分隔的对native函数的调用，例如"Math.exp"
-- AM_VAR_TYPE_IMPORT_ALIAS (3) // 引用外部模块的别名，也就是(import Mod "mod.scm")中的Mod
-- AM_VAR_TYPE_NATIVE_ID (4) // native模块名，也就是(native Math)中的Math
-
 
 2) 解析完dep和native后，变量换名之前，对AST再进行一次整体扫描：外部引用扫描。对于【非import和native节点中出现的】所有varid，执行以下动作：
 
@@ -125,34 +115,6 @@ TODO Linker中的跨模块引用换名问题：
 
 am_varid_t am_ast_find_top_varid_of_external_ref(am_ast_t *ast, wchar_t *varstr);
 
-
-
-NOTE 模块链接算法
-
-提前分配相关元数据（模块数上限设定为1024）
-size_t module_counter(mod_index)
-// am_vocab_t module_id -> mod_index
-am_vocab_t module_abs_path -> mod_index
-am_ast_t *ALLAST; // mod_index->ast
-size_t DAG[][2]; // 邻接关系列表 importer_index -> importee_index
-size_t sorted_ast_index[];
-
-1) 从起始代码开始，解析为AST，读取所有导入文件，并逐个解析为AST，递归读取并解析，过程中完成：1收集AST；2构建DAG。
-2) 对DAG做拓扑排序。
-3) 从起始模块开始，按照拓扑排序顺序，逐个吃掉importee。每吃完一个importee，都做一次extref解引用（消歧），不能解引用的就暂时保留，待吃到后面的再处理。
-4) extref解引用算法细节：
-- 对extref变量，分割prefix和suffix
-- 在ALLAST[importer_index]中：prefix(alias)->mod_path->mod_abs_path->importee_index
-- 在ALLAST[importee_index]中：suffix->varid->在var_top中查找，找不到则报错，找到则通过var_ARN_mapping找到new_varid。
-
-
-NOTE AST融合算法说明
-
-merge(ast *importer, ast *importee, order); // 其中importer是大鱼（主引），importee是小鱼（被引），importee被importer吃掉，保留importer
-
-第1步：修改importee。
-- 将importee的symbol_vocab合并到importer的symbol_vocab，拿到新的am_symbol_t，建立old_id->new_id映射。
-- 将importee的var_vocab合并到importer的var_vocab。OLD不重复添加，NEW因为有模块名，所以一定不重复
 
 
 

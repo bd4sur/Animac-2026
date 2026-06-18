@@ -234,6 +234,431 @@ class Closure extends SchemeObject {
 ---------------------
 
 
+# 模块链接算法
+
+## 术语约定
+
+- 模块：一个完整的Scheme源码文件，及其解析得到的AST。模块之间可互相引用。
+- 外部引用：指的是通过import和点号分隔标识符，引用外部模块变量。(import Alias "/path/to/module.scm")表达式，声明对外部模块的导入，并赋予其“别名”Alias，别名属于特殊变量，其类型为AM_VAR_TYPE_IMPORT_ALIAS。代码中通过“别名.标识符”的格式，引用外部模块的变量。“别名.标识符”整体也是一个变量，在parse阶段，其类型为AM_VAR_TYPE_IMPORT_REF。
+- 模块ID：或者叫模块的“全限定名”，是模块源码文件的绝对路径转换得到的、在整个宿主环境中具有唯一性的字符串。模块ID实质上就是模块文件的绝对路径，只是被转换成了点号分隔的标识符格式。模块ID在模块parse和链接阶段，模块ID和模块绝对路径用于唯一确定一个模块，使得参与链接的所有变量都具有全局唯一的字符串形式和varid。
+- importer（主引模块）：代码中通过(import ...)引用其他模块的模块。
+- importee（被引模块）：被其他importer引用的模块。主引被引是相对的。在引用关系有向无环图（DAG）构建过程中，规定importer指向importee。
+- 引用根：链接任务的唯一输入模块，是引用关系图的唯一起点。一般是项目的主模块（main.scm之类的）。
+
+## 演示/测试用例
+
+以下是3个互相依赖的模块，其中各标识符有意设计得容易混淆：
+
+```
+;; root.z
+(define f (lambda (x y z) 666))
+(define x 100)
+(define y 200)
+(define z 300)
+
+;; root.y
+(import z "/root/z.scm")
+(define f (lambda (x y z) 888))
+(define x z.x)
+(define y z.y)
+(define z z.z)
+
+;; root.x
+(import z "/root/y.scm") ;; 注意：故意不对应
+(import y "/root/z.scm")
+(define f (lambda (x y z) 888))
+(define x (+ y.x z.x))
+(define y (+ y.y z.y))
+(define z (+ y.z z.z))
+```
+
+经过Parse+ARN之后：
+
+```
+;; root.z
+varid     =      0            1           2           3           4           5          6
+var_vocab = [root.z.0.f  root.z.1.x  root.z.1.y  root.z.1.z  root.z.0.x  root.z.0.y  root.z.0.z]
+var_type  = [   new          new          new         new        new         new         new   ]
+dep       = { empty }
+
+(define root.z.0.f (lambda (root.z.1.x root.z.1.y root.z.1.z) 666))
+(define root.z.0.x 100)
+(define root.z.0.y 200)
+(define root.z.0.z 300)
+
+
+;; root.y
+varid     =     0          1           2            3           4           5           6            7          8           9         10
+var_vocab = [root.y.z  root.y.0.f  root.y.1.x  root.y.1.y  root.y.1.z  root.y.0.x  root.y.z.x  root.y.0.y  root.y.z.y  root.y.0.z  root.y.z.z]
+var_type  = [ alias        new          new        new       new          new        impref         new       impref      new        impref  ]
+dep       = {  root.y.z : "/root/z.scm"  }
+
+(import root.y.z "/root/z.scm")
+(define root.y.0.f (lambda (root.y.1.x root.y.1.y root.y.1.z) 888))
+(define root.y.0.x root.y.z.x)
+(define root.y.0.y root.y.z.y)
+(define root.y.0.z root.y.z.z)
+
+
+;; root.x
+varid     =     0          1         2                6            7            8         9           10            11         12         13           14
+var_vocab = [root.x.z  root.x.y  root.x.0.f  ...  root.x.0.x  root.x.y.x  root.x.z.x  root.x.0.y  root.x.y.y  root.x.z.y  root.x.0.z  root.x.y.z   root.x.z.z]
+var_type  = [ alias     alias        new     ...     new        impref       impref      new        impref       impref       new       impref       impref  ]
+dep       = {  root.x.z : "/root/y.scm"      root.x.y : "/root/z.scm"          }
+
+H1 (import  V0  H2"/root/y.scm")
+H3 (import  V1  H4"/root/z.scm")
+H5 (define  V2  H6)
+H6 (lambda [V3  V4  V5] 888)
+H7 (define  V6  H8)
+H8 (+       V7  V8)
+...
+
+(import root.x.z "/root/y.scm") ;; 注意：故意不对应
+(import root.x.y "/root/z.scm")
+(define root.x.0.f (lambda (root.x.1.x root.x.1.y root.x.1.z) 888))
+(define root.x.0.x (+ root.x.y.x root.x.z.x))
+(define root.x.0.y (+ root.x.y.y root.x.z.y))
+(define root.x.0.z (+ root.x.y.z root.x.z.z))
+```
+
+## 外部引用的相关约定和分析
+
+约定：import_ref=alias.extvar，其中alias和extvar都不能有点
+
+在Parse+ARN阶段，对于variable：
+
+- builtin、nativeid、native_ref不ARN。它们都有全局符号的地位，与其所在上下文无关。
+- alias是顶级的，避免与其他模块中的同名alias冲突，因此alias应当重命名为mod_id.alias。
+- alias跟同一模块的其他topvar不会重名，因为alias和其他topvar在arn后不是同一个符号（mod_id.alias vs mod_id.TOP.var）。
+- import_ref=alias.extvar在parse阶段需要标记为import_ref类型，再将其前面简单拼接mod_id，变成mod_id.alias.extvar。
+
+
+## 链接器（linker）整体算法
+
+模块链接过程，从一个引用根模块出发，递归地处理所有相关模块，并完成模块合并，最终输出链接后的模块。输出模块是基于输入模块的。
+
+链接过程中，处理的模块数上限设定为1024。
+
+链接器全局上下文数据结构定义：
+
+typedef struct am_linker_ctx_t {
+    size_t module_counter;
+    am_vocab_t *all_module_path; // mod_index -> module_path
+    am_ast_t *ALLAST; // mod_index->ast
+    size_t DAG[][2]; // 邻接关系列表 importer_index -> importee_index
+    size_t sorted_ast_index[];
+    size_t edge_num;
+} am_linker_ctx_t;
+
+### 链接过程1：递归解析所有依赖模块
+
+从起始代码开始，解析为AST，读取其所有导入文件，并逐个解析为AST，递归读取并解析，过程中完成：1收集AST；2构建DAG。伪代码如下：
+
+```
+void import_analyse(am_linker_ctx_t *ctx, wchar_t *importee_path, size_t importer_index) {
+    size_t current_module_index = vocab_find_index(ctx->all_module_path, importee_path);
+    if (current_module_index == SIZE_MAX) {
+        current_module_index = ctx->module_counter;
+        ctx->all_module_path[current_module_index] = importee_path;
+        wchar_t *code = read_from_file(importee_path);
+        am_ast_t *current_ast = am_parser(ctx->alloc, code, importee_path);
+        ctx->ALLAST[current_module_index] = current_ast;
+        foreach (path of current_ast->dependencies) {
+            import_analyse(ctx, path, current_module_index);
+        }
+        ctx->module_counter++;
+    }
+    ctx->DAG[ctx->edge_num] = {importer_index, current_module_index});
+    ctx->edge_num++;
+}
+```
+
+### 链接过程2：对引用关系做拓扑排序，并按照线性顺序逐步融合
+
+// 对DAG进行拓扑排序的工具函数
+size_t *topo_sort(size_t DAG[][2], size_t edge_num); // 输出拓扑排序后的mod_index列表，由调用者负责free；成环则返回NULL
+
+从起始的根引用模块开始，按照拓扑排序顺序，逐个吃掉importee。伪代码如下：
+
+```
+am_linker_ctx_t *ctx;
+// 对DAG做拓扑排序，同时检查是否成环，得到依赖列表
+ctx->sorted_ast_index = topo_sort(ctx->DAG, ctx->edge_num);
+if (ctx->sorted_ast_index == NULL) {
+    error("循环依赖！");
+}
+
+// 以排序后的第一个模块（也就是位于依赖链根部的入口模块）为全局的importer
+am_ast_t *global_ast = ALLAST[ctx->sorted_ast_index[0]];
+// 逐个吃掉依赖模块
+for (size_t i = 1; i < ctx->module_counter; i++) {
+    size_t importee_index = ctx->sorted_ast_index[i];
+    am_ast_merge(global_ast, ALLAST[importee_index]);
+}
+```
+
+两个AST融合算法伪代码：
+
+```
+
+// 返回值：0：成功，-1：失败
+int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
+
+    // 需要合并或修改的AST字段：symbol_vocab、var_vocab、var_type、nodes、lambda_handles、tailcall_handles、var_top、dependencies、natives，除此之外不修改或保留。
+
+    // 第1步：修改importee，将元数据合并到importer。
+
+    // 1.1 修改symbol映射
+
+    // 记录symbol映射关系（importee(旧)->importer(新)）
+    am_map_t *symbol_merge_mapping = am_map_create(importer->alloc, importee->symbol_vocab->length);
+    // 遍历importee的所有symbol
+    for (size_t index < importee->symbol_vocab->length) {
+        // 将importee的symbol_vocab加入importer的symbol_vocab，获得symbol在importer中的新index
+        am_value_t old_symbol_value = am_make_value_of_symbol(index);
+        wchar_t *word = am_vocab_get(importee->alloc, importee->symbol_vocab, index);
+        size_t new_symbol_index = am_vocab_insert(importer->alloc, importer->symbol_vocab, word);
+        am_value_t new_symbol_value = am_make_value_of_symbol(new_symbol_index);
+        // 登记映射关系
+        am_map_set(importer->alloc, symbol_merge_mapping, old_symbol_value, new_symbol_value);
+    }
+
+    // 1.2 修改variable映射及相关元数据
+
+    // 记录varid映射关系（importee(旧)->importer(新)）
+    am_map_t *varid_merge_mapping = am_map_create(importer->alloc, importee->var_vocab->length);
+    // 遍历importee的所有varible
+    for (size_t varid < importee->var_vocab->length) {
+        // 将importee的var_vocab加入importer的var_vocab，获得variable在importer中的新varid
+        am_value_t old_varid_value = am_make_value_of_varid(varid);
+        wchar_t *word = am_vocab_get(importee->alloc, importee->var_vocab, varid);
+        size_t new_varid = am_vocab_insert(importer->alloc, importer->var_vocab, word);
+        am_value_t new_varid_value = am_make_value_of_varid(new_varid);
+        // 登记映射关系
+        am_map_set(importer->alloc, varid_merge_mapping, old_varid_value, new_varid_value);
+        // 迁移var_type
+        am_value_t vtype = am_list_get(importee->alloc, importee->var_type, varid);
+        am_list_set(importer->alloc, importer->var_type, new_varid, vtype);
+        // 迁移var_top
+        for (am_value_t vv of importee->var_top) {
+            if (vv == old_varid_value) am_list_push(importer->alloc, importer->var_top, vv);
+        }
+    }
+
+    // 1.3 修改所有handle
+
+    // 记录handle映射关系（importee(旧)->importer(新)）
+    am_map_t *handle_mapping = am_map_create(importer->alloc, importee->nodes->handle_counter);
+    // 第一遍扫描：在importer->nodes中申请新handle，记录importee->nodes中所有的handle与新handle的映射关系
+    for (am_handle_t hd of importee->nodes) {
+        am_value_t old_handle_value = am_make_value_of_handle(hd);
+        // 在importer->nodes申请新handle
+        am_handle_t new_handle = am_heap_alloc_handle(importer->alloc, importer->nodes);
+        am_value_t new_handle_value = am_make_value_of_handle(new_handle);
+        // 登记映射关系
+        am_map_set(importer->alloc, handle_mapping, old_handle_value, new_handle_value);
+    }
+    // 第二遍扫描：修改并迁移元数据中的handle
+    // 迁移lambda_nodes
+    for (am_value_t hd_value of importee->lambda_nodes) {
+        am_value_t new_hd_value = am_map_get(importer->alloc, handle_mapping, hd_value);
+        am_list_push(importer->alloc, importer->lambda_nodes, new_hd_value);
+    }
+    // 迁移tailcall_handles
+    for (am_value_t hd_value of importee->tailcall_handles) {
+        am_value_t new_hd_value = am_map_get(importer->alloc, handle_mapping, hd_value);
+        am_list_push(importer->alloc, importer->tailcall_handles, new_hd_value);
+    }
+    // 迁移dependencies
+    for ({am_value_t varid_value , am_value_t hd_value} of importee->dependencies) {
+        am_value_t new_varid_value = am_map_get(importer->alloc, varid_merge_mapping, varid_value);
+        am_value_t new_hd_value = am_map_get(importer->alloc, handle_mapping, hd_value);
+        am_map_set(importer->alloc, importer->dependencies, new_varid_value, new_hd_value);
+    }
+    // 迁移natives
+    for ({am_value_t varid_value , am_value_t hd_value} of importee->natives) {
+        am_value_t new_varid_value = am_map_get(importer->alloc, varid_merge_mapping, varid_value);
+        am_value_t new_hd_value = am_map_get(importer->alloc, handle_mapping, hd_value);
+        am_map_set(importer->alloc, importer->natives, new_varid_value, new_hd_value);
+    }
+    // 第三遍扫描：全量遍历importee->nodes中所有的list对象的所有children，针对symbol、varid和handle进行匹配和替换
+    for (am_handle_t hd of importee->nodes) {
+        am_value_t val = am_heap_get(importee->alloc, importee->nodes, am_make_value_of_handle(hd));
+        if (am_value_is_ptr(val)) {
+            am_object_t *obj = am_value_to_ptr(val);
+            int32_t obj_type = obj->base.type;
+            // 如果是list对象，则遍历lst中的所有children，根据value的类型进行匹配和替换
+            if (obj_type == AM_OBJECT_TYPE_LIST) {
+                am_list_t *lst = (am_list_t*)obj;
+                for (am_value_t child in lst->children) {
+                    // 此处判断child的TPV的类型：
+                    // - 如果是AM_VALUE_TYPE_SYMBOL，则通过child在symbol_merge_mapping中找到新的value，并原位替换原value
+                    // - 如果是AM_VALUE_TYPE_VARID，则通过child在varid_merge_mapping中找到新的value，并原位替换原value
+                    // - 如果是AM_VALUE_TYPE_HANDLE，则通过child在handle_mapping中找到新的value，并原位替换原value
+                    // - 其他值类型无动作
+                }
+            }
+        }
+        else 报错
+    }
+
+    // 第2步：将importee的所有nodes拷贝到importer->nodes中
+
+    for (am_handle_t hd of importee->nodes) {
+        am_value_t new_hd_value = am_map_get(importer->alloc, handle_mapping, am_make_value_of_handle(hd));
+        am_value_t val = am_heap_get(importee->alloc, importee->nodes, am_make_value_of_handle(hd));
+        if (am_value_is_ptr(val)) {
+            am_object_t *obj = am_value_to_ptr(val);
+            int32_t obj_type = obj->base.type;
+            // 如果是list对象，则拷贝并将新指针写入heap
+            if (obj_type == AM_OBJECT_TYPE_LIST) {
+                am_list_t *lst = (am_list_t*)obj;
+                am_list_t *new_lst = am_list_copy(importer->alloc, lst);
+                am_heap_set(importer->alloc, importer->nodes, new_hd_value, am_make_value_of_ptr((am_object_t*)new_lst));
+            }
+        }
+        else 报错
+    }
+
+    // 第3步：在importer中更新来自importee的node的list亲子节点结构信息，这是AST融合的核心步骤
+    // 原理简述：模块AST的顶层lambda节点，就是整个模块的“顶层作用域”。在这个lambda节点的直接bodies中的所有child，都是模块的“顶级节点”。AST融合的过程，就是将importee的所有顶级节点，嫁接到importer的顶层作用域上。这个嫁接过程有两个需要注意的细节：一是不仅要将importee的所有顶级节点的新handle（此时importee的所有node已经拷贝到importer->nodes中了）加入顶层作用域的bodies，还要将这些顶级节点的parent字段修改为importer的顶层lambda节点的handle。二是嫁接有方向，受到order参数的控制。默认情况下（order=0），importee是被依赖的，importer需要用到importee提供的信息，因此importee的顶级节点在加入importer的顶层作用域bodies时，应当置于importer原有顶级节点的前面。例如importee的顶级节点是H5、H6、H7，而importer的原有顶级节点是H1、H2、H3，则merge之后，importer的顶层lambda节点的bodies应当是[H5,H6,H7 , H1,H2,H3]。如果order=1，则importee的顶级节点在importer的后面，也即[H1,H2,H3 , H5,H6,H7]。
+    // TODO 在Parse的后处理阶段提前计算 am_ast_get_top_lambda_node_handle 并写入ast结构体
+
+}
+
+```
+
+
+
+### 链接过程3：对所有模块做外部引用解析
+
+// 对所有模块做外部引用解析
+am_linker_import_ref_resolution(ctx);
+// 功能说明：对AST中的import_ref类型的变量进行解析，替换为所在模块中的变量全限定名
+// 实现说明：
+int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx) {
+    for (size_t i = 0; i < ctx->module_counter; i++) {
+        
+    }
+}
+deref(ctx, importer_index)解引用算法：
+- 在importer中，拿到ARN后的import_ref=mod_id.alias.extvar，从最后一个点将其分割为prefix=mod_id.alias和suffix=extvar
+- 在ALLAST[importer_index]中：prefix->importee_path->importee_abs_path->importee_index(importee_id)
+- 在ALLAST[importee_index]中：suffix->[mod_id.top_handle.suffix]->varid，确认其在var_top中，找不到则报错。
+
+
+```
+// 对所有模块做外部引用解析
+int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx) {
+    // 按照拓扑排序的顺序（或者任意顺序，因为依赖的模块必然已经解析完毕且其 var_vocab 已固定）遍历所有模块
+    for (size_t i = 0; i < ctx->module_counter; i++) {
+        am_ast_t *importer_ast = ctx->ALLAST[i];
+        wchar_t *importer_mod_id = ctx->all_module_path[i];
+        
+        // 优化：使用映射表收集当前模块所有需要替换的 varid，最后统一遍历 AST 进行替换
+        // 避免对每个 import_ref 都执行一次 O(N) 的 AST 节点遍历
+        am_map_t *varid_rewrite_map = am_map_create(importer_ast->alloc, 16); 
+
+        // 遍历 importer 的所有变量，寻找 import_ref 类型
+        for (size_t varid = 0; varid < importer_ast->var_vocab->length; varid++) {
+            am_value_t vtype = am_list_get(importer_ast->alloc, importer_ast->var_type, varid);
+            
+            if (am_value_get_var_type(vtype) == AM_VAR_TYPE_IMPORT_REF) {
+                wchar_t *ref_name = am_vocab_get(importer_ast->alloc, importer_ast->var_vocab, varid);
+                
+                // === 解引用算法 (deref) 开始 ===
+                
+                // 1. 分割 prefix 和 suffix
+                // ref_name 格式为 ARN 后的: importer_mod_id.alias.extvar
+                wchar_t *last_dot = wcsrchr(ref_name, L'.');
+                if (!last_dot) {
+                    return error_linker("Invalid import_ref format: %s", ref_name);
+                }
+                
+                size_t prefix_len = last_dot - ref_name;
+                wchar_t *prefix = wcsncpy(alloc_buf, ref_name, prefix_len); // importer_mod_id.alias
+                wchar_t *suffix = last_dot + 1;                             // extvar
+
+                // 2. 通过 prefix (即 alias 的 ARN 形式) 找到对应的 importee 模块索引
+                size_t alias_varid = am_vocab_find(importer_ast->var_vocab, prefix);
+                if (alias_varid == SIZE_MAX) {
+                    return error_linker("Alias mapping not found in vocab: %s", prefix);
+                }
+                
+                // 从 dependencies 中获取 importee 的索引 (在 Process 1 中建立)
+                am_value_t importee_idx_val = am_map_get(importer_ast->alloc, importer_ast->dependencies, am_make_value_of_varid(alias_varid));
+                if (am_value_is_null(importee_idx_val)) {
+                    return error_linker("Dependency mapping missing for alias: %s", prefix);
+                }
+                size_t importee_index = am_value_get_index(importee_idx_val);
+                
+                // 3. 在 importee_ast 中查找 suffix (extvar) 的全限定名
+                am_ast_t *importee_ast = ctx->ALLAST[importee_index];
+                wchar_t *importee_mod_id = ctx->all_module_path[importee_index];
+                
+                // 构造目标变量在 importee 中的全限定名: importee_mod_id.suffix
+                wchar_t *target_name = format_string(L"%s.%s", importee_mod_id, suffix);
+                size_t target_varid = am_vocab_find(importee_ast->var_vocab, target_name);
+                
+                // 4. 确认其在 var_top 中 (即确认它是被引模块导出的顶级变量)
+                if (target_varid == SIZE_MAX) {
+                    return error_linker("Variable '%s' not found in module '%s'", suffix, importee_mod_id);
+                }
+                
+                bool is_top_level = false;
+                for (am_value_t top_var of importee_ast->var_top) {
+                    if (am_value_get_varid(top_var) == target_varid) {
+                        is_top_level = true;
+                        break;
+                    }
+                }
+                
+                if (!is_top_level) {
+                    return error_linker("Variable '%s' is not a top-level exported variable in '%s'", suffix, importee_mod_id);
+                }
+                
+                // 5. 记录替换映射: importer 中的 import_ref_varid -> importee 中的 target_varid
+                am_map_set(importer_ast->alloc, varid_rewrite_map, 
+                           am_make_value_of_varid(varid), 
+                           am_make_value_of_varid(target_varid));
+            }
+        }
+        
+        // 6. 统一遍历 AST nodes 进行批量替换
+        if (am_map_size(varid_rewrite_map) > 0) {
+            am_ast_batch_rewrite_varids(importer_ast, varid_rewrite_map);
+        }
+        
+        am_map_destroy(varid_rewrite_map);
+    }
+    return 0;
+}
+
+// 辅助函数：批量遍历 AST 节点，根据映射表替换 VarID
+void am_ast_batch_rewrite_varids(am_ast_t *ast, am_map_t *rewrite_map) {
+    for (am_handle_t hd = 0; hd < ast->nodes->handle_counter; hd++) {
+        am_value_t val = am_heap_get(ast->alloc, ast->nodes, am_make_value_of_handle(hd));
+        if (am_value_is_ptr(val)) {
+            am_object_t *obj = am_value_to_ptr(val);
+            if (obj->base.type == AM_OBJECT_TYPE_LIST) {
+                am_list_t *lst = (am_list_t*)obj;
+                for (size_t i = 0; i < lst->children_count; i++) {
+                    am_value_t child = lst->children[i];
+                    if (am_value_get_type(child) == AM_VALUE_TYPE_VARID) {
+                        am_value_t mapped_val = am_map_get(ast->alloc, rewrite_map, child);
+                        if (!am_value_is_null(mapped_val)) {
+                            lst->children[i] = mapped_val; // 原位替换为 importee 的 target_varid
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+
 ---------------------
 
 

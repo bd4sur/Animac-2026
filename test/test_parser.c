@@ -451,9 +451,15 @@ static void test_parse_import_native(void) {
     am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
-    am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
-    am_varid_t m_varid = arnid_of(ast, top_lambda, L"m");
-    am_varid_t n_varid = arnid_of(ast, top_lambda, L"N");
+    // import 别名和 native 模块名保持原形，不参与 Alpha-renaming
+    am_varid_t m_varid = varid_of(ast, L"m");
+    am_varid_t n_varid = varid_of(ast, L"N");
+
+    // 验证 var_type 为 AM_VAR_TYPE_OLD
+    am_value_t m_type = am_list_get(ast->alloc, ast->var_type, (size_t)m_varid);
+    am_value_t n_type = am_list_get(ast->alloc, ast->var_type, (size_t)n_varid);
+    assert(am_value_is_uint(m_type) && am_value_to_uint(m_type) == AM_VAR_TYPE_OLD);
+    assert(am_value_is_uint(n_type) && am_value_to_uint(n_type) == AM_VAR_TYPE_OLD);
 
     am_value_t dep = am_map_get(ast->alloc, ast->dependencies, am_make_value_of_varid(m_varid));
     assert(am_value_is_handle(dep));
@@ -798,6 +804,65 @@ static void ast_print_map_varid_to_handle(FILE *out, am_ast_t *ast, am_map_t *ma
     fputwc(L'}', out);
 }
 
+static const wchar_t *var_type_name(am_uint_t type) {
+    switch (type) {
+        case AM_VAR_TYPE_OLD:          return L"OLD";
+        case AM_VAR_TYPE_NEW:          return L"NEW";
+        case AM_VAR_TYPE_BUILTIN:      return L"BUILTIN";
+        case AM_VAR_TYPE_EXT_REF:      return L"EXT_REF";
+        case AM_VAR_TYPE_IMPORT_REF:   return L"IMPORT_REF";
+        case AM_VAR_TYPE_NATIVE_REF:   return L"NATIVE_REF";
+        case AM_VAR_TYPE_IMPORT_ALIAS: return L"IMPORT_ALIAS";
+        case AM_VAR_TYPE_NATIVE_ID:    return L"NATIVE_ID";
+        default:                       return L"UNKNOWN";
+    }
+}
+
+static void ast_print_var_type(FILE *out, am_ast_t *ast, am_list_t *lst) {
+    (void)ast;
+    fputwc(L'[', out);
+    for (size_t i = 0; i < lst->length; i++) {
+        if (i > 0) fwprintf(out, L", ");
+        am_value_t v = am_list_get(ast->alloc, lst, i);
+        if (am_value_is_uint(v)) {
+            am_uint_t t = am_value_to_uint(v);
+            fwprintf(out, L"%ls(%zu)", var_type_name(t), (size_t)t);
+        }
+        else {
+            fwprintf(out, L"?");
+        }
+    }
+    fputwc(L']', out);
+}
+
+static void ast_print_var_arn_mapping(FILE *out, am_ast_t *ast, am_map_t *map) {
+    fputwc(L'{', out);
+    size_t count = am_map_length(ast->alloc, map);
+    am_value_t *keys = am_map_keys(ast->alloc, map);
+    for (size_t i = 0; i < count; i++) {
+        if (i > 0) fwprintf(out, L", ");
+        am_varid_t new_varid = am_value_to_varid(keys[i]);
+        size_t new_idx = (size_t)new_varid;
+        wchar_t *new_name = am_vocab_get(ast->alloc, ast->var_vocab, &new_idx);
+        if (new_name) fwprintf(out, L"\"%ls\": ", new_name);
+        else fwprintf(out, L"<varid=%zu>: ", (size_t)new_varid);
+
+        am_value_t v = am_map_get(ast->alloc, map, keys[i]);
+        if (am_value_is_varid(v)) {
+            am_varid_t old_varid = am_value_to_varid(v);
+            size_t old_idx = (size_t)old_varid;
+            wchar_t *old_name = am_vocab_get(ast->alloc, ast->var_vocab, &old_idx);
+            if (old_name) fwprintf(out, L"\"%ls\"", old_name);
+            else fwprintf(out, L"<varid=%zu>", (size_t)old_varid);
+        }
+        else {
+            fwprintf(out, L"null");
+        }
+    }
+    if (keys) free(keys);
+    fputwc(L'}', out);
+}
+
 static void ast_print_node_summary(am_ast_t *ast, am_handle_t handle, FILE *out) {
     am_value_t node_val = am_ast_get_node(ast, handle);
     if (!am_value_is_ptr(node_val)) {
@@ -905,6 +970,14 @@ static void ast_print(FILE *out, am_ast_t *ast) {
     ast_print_vocab(out, ast, ast->var_vocab);
     fputwc(L'\n', out);
     ast_print_indent(out, 1);
+    fwprintf(out, L"var_type: ");
+    ast_print_var_type(out, ast, ast->var_type);
+    fputwc(L'\n', out);
+    ast_print_indent(out, 1);
+    fwprintf(out, L"var_arn_mapping: ");
+    ast_print_var_arn_mapping(out, ast, ast->var_arn_mapping);
+    fputwc(L'\n', out);
+    ast_print_indent(out, 1);
     fwprintf(out, L"lambda_handles: ");
     ast_print_handle_list(out, ast, ast->lambda_handles);
     fputwc(L'\n', out);
@@ -967,7 +1040,7 @@ static void test_ast_print(void) {
     printf("test_ast_print ... ");
     test_allocator_reset();
 
-    wchar_t *code = L"((lambda ()      (define f (lambda (x y) (define f (lambda (x) (+ x 100))) (+ (f x) y))) (define x 2) (define y 3) (display (f x y))         ))";
+    wchar_t *code = L"((lambda ()     (native Math) (import Lib \"/root/lib.scm\") (define f (lambda (x y) (define f (lambda (x) (+ x Math.PI))) (Lib.foo (f x) y))) (define x 2) (define y 3) (display (f x y))         ))";
     am_ast_t *ast = am_parser(&test_allocator, code, L"/home/bd4sur/animac/demo.scm");
     assert(ast != NULL);
 

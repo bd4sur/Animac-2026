@@ -28,6 +28,7 @@ extern "C" {
 #define AM_VAR_TYPE_BUILTIN      (2) // 全局内置符号（不ARN）
 #define AM_VAR_TYPE_IMPORT_REF   (3) // 导入模块符号引用（不ARN）：点号分隔的引用了外部import模块的变量，例如Mod.foo
 #define AM_VAR_TYPE_NATIVE_REF   (4) // 本地模块符号引用（不ARN）：点号分隔的对native函数的调用，例如"Math.exp"
+#define AM_VAR_TYPE_EXT_REF     (34) // 点号分割形式：实际上就是 AM_VAR_TYPE_IMPORT_REF 或者 AM_VAR_TYPE_NATIVE_REF，用于暂时无法确定是哪种的情况
 #define AM_VAR_TYPE_IMPORT_ALIAS (5) // 导入模块的别名（不ARN）：也就是(import Mod "mod.scm")中的Mod
 #define AM_VAR_TYPE_NATIVE_ID    (6) // 本地模块名（不ARN）：也就是(native Math)中的Math
 
@@ -53,6 +54,7 @@ typedef struct am_ast_t {
     am_map_t *scopes;            // 词法作用域：Map<handle(lambda), handle(scope)>
     am_map_t *var_arn_mapping;   // 变量ARN（Alpha-renaming）前后的映射：Map<varid, varid>，key是ARN后的新varid，value是ARN前的旧varid
 
+    am_handle_t top_lambda_handle; // 最顶层lambda节点的把柄（通过am_ast_get_top_lambda_node_handle计算）
     am_list_t *lambda_handles;   // 记录所有的lambda节点的把柄（对应TS的lambdaHandles）
     am_list_t *tailcall_handles; // 记录所有的尾调用节点的把柄（对应TS的tailcall）
     am_list_t *var_top;          // 顶级变量varid列表（即顶层作用域define的变量）（对应TS的topVariables）
@@ -103,9 +105,22 @@ size_t am_build_variable_vocabulary(am_ast_t *ast);
 
 
 
-// 功能描述：判断某个变量是否是Native调用，是返回1，否返回0（对应TS的AST.IsNativeCall）
+
+// 功能描述：判断某个变量在形式上是否是“前缀.后缀”的格式（统称为EXT_REF，外部引用格式），是返回0，否返回-1
+// 设计说明：parse和ARN阶段，这种形式的变量可能是AM_VAR_TYPE_IMPORT_REF或AM_VAR_TYPE_NATIVE_REF，保留原形，不参与ARN。
+// 实现说明：(varid)--[ast->var_vocab]-->var_str-->判断其是否是被唯一点号分成两部分的形式（只有一个“.”，且不在开头和末尾）
+int32_t am_ast_check_ext_ref(am_ast_t *ast, am_varid_t v);
+
+
+// 功能描述：判断某个变量是否是AM_VAR_TYPE_NATIVE_REF，也就是对本地宿主库native的调用，是返回0，否返回-1（对应TS的AST.IsNativeCall）
 // 实现说明：(varid)(t.id)--[ast->var_vocab]-->var_str-->提取点号分隔的第1部分--[ast->var_vocab]-->native_varid--[ast->natives]-->是否存在
-int32_t am_ast_is_native_call(am_ast_t *ast, am_token_t *t);
+int32_t am_ast_check_native_ref(am_ast_t *ast, am_varid_t v);
+
+
+// 功能描述：判断某个变量是否是AM_VAR_TYPE_IMPORT_REF，即导入模块的外部引用（“别名.标识符”的格式），是返回0，否返回-1
+// 设计说明：外部引用：指的是通过import和点号分隔标识符，引用外部模块变量。(import Alias "/path/to/module.scm")表达式，声明对外部模块的导入，并赋予其“别名”Alias，别名属于特殊变量，其类型为AM_VAR_TYPE_IMPORT_ALIAS。代码中通过“别名.标识符”的格式，引用外部模块的变量。“别名.标识符”整体也是一个变量，在parse阶段，其类型为AM_VAR_TYPE_IMPORT_REF。
+// 实现说明：(varid)--[ast->var_vocab]-->var_str-->提取最后一个点号分隔的第1部分--[ast->var_vocab]-->alias_varid--[ast->dependencies]-->是否存在
+int32_t am_ast_check_import_ref(am_ast_t *ast, am_varid_t v);
 
 
 // 功能描述：根据把柄，从AST->nodes堆中获取相应的am_value_t（由调用者解包并使用）（对应TS的AST.GetNode）
