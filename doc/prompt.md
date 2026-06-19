@@ -533,6 +533,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
 
 ### 链接过程3：对所有模块做外部引用解析
 
+```
 // 对所有模块做外部引用解析
 am_linker_import_ref_resolution(ctx);
 // 功能说明：对AST中的import_ref类型的变量进行解析，替换为所在模块中的变量全限定名
@@ -542,121 +543,16 @@ int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx) {
         
     }
 }
-deref(ctx, importer_index)解引用算法：
-- 在importer中，拿到ARN后的import_ref=mod_id.alias.extvar，从最后一个点将其分割为prefix=mod_id.alias和suffix=extvar
-- 在ALLAST[importer_index]中：prefix->importee_path->importee_abs_path->importee_index(importee_id)
-- 在ALLAST[importee_index]中：suffix->[mod_id.top_handle.suffix]->varid，确认其在var_top中，找不到则报错。
-
-
 ```
-// 对所有模块做外部引用解析
-int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx) {
-    // 按照拓扑排序的顺序（或者任意顺序，因为依赖的模块必然已经解析完毕且其 var_vocab 已固定）遍历所有模块
-    for (size_t i = 0; i < ctx->module_counter; i++) {
-        am_ast_t *importer_ast = ctx->ALLAST[i];
-        wchar_t *importer_mod_id = ctx->all_module_path[i];
-        
-        // 优化：使用映射表收集当前模块所有需要替换的 varid，最后统一遍历 AST 进行替换
-        // 避免对每个 import_ref 都执行一次 O(N) 的 AST 节点遍历
-        am_map_t *varid_rewrite_map = am_map_create(importer_ast->alloc, 16); 
 
-        // 遍历 importer 的所有变量，寻找 import_ref 类型
-        for (size_t varid = 0; varid < importer_ast->var_vocab->length; varid++) {
-            am_value_t vtype = am_list_get(importer_ast->alloc, importer_ast->var_type, varid);
-            
-            if (am_value_get_var_type(vtype) == AM_VAR_TYPE_IMPORT_REF) {
-                wchar_t *ref_name = am_vocab_get(importer_ast->alloc, importer_ast->var_vocab, varid);
-                
-                // === 解引用算法 (deref) 开始 ===
-                
-                // 1. 分割 prefix 和 suffix
-                // ref_name 格式为 ARN 后的: importer_mod_id.alias.extvar
-                wchar_t *last_dot = wcsrchr(ref_name, L'.');
-                if (!last_dot) {
-                    return error_linker("Invalid import_ref format: %s", ref_name);
-                }
-                
-                size_t prefix_len = last_dot - ref_name;
-                wchar_t *prefix = wcsncpy(alloc_buf, ref_name, prefix_len); // importer_mod_id.alias
-                wchar_t *suffix = last_dot + 1;                             // extvar
-
-                // 2. 通过 prefix (即 alias 的 ARN 形式) 找到对应的 importee 模块索引
-                size_t alias_varid = am_vocab_find(importer_ast->var_vocab, prefix);
-                if (alias_varid == SIZE_MAX) {
-                    return error_linker("Alias mapping not found in vocab: %s", prefix);
-                }
-                
-                // 从 dependencies 中获取 importee 的索引 (在 Process 1 中建立)
-                am_value_t importee_idx_val = am_map_get(importer_ast->alloc, importer_ast->dependencies, am_make_value_of_varid(alias_varid));
-                if (am_value_is_null(importee_idx_val)) {
-                    return error_linker("Dependency mapping missing for alias: %s", prefix);
-                }
-                size_t importee_index = am_value_get_index(importee_idx_val);
-                
-                // 3. 在 importee_ast 中查找 suffix (extvar) 的全限定名
-                am_ast_t *importee_ast = ctx->ALLAST[importee_index];
-                wchar_t *importee_mod_id = ctx->all_module_path[importee_index];
-                
-                // 构造目标变量在 importee 中的全限定名: importee_mod_id.suffix
-                wchar_t *target_name = format_string(L"%s.%s", importee_mod_id, suffix);
-                size_t target_varid = am_vocab_find(importee_ast->var_vocab, target_name);
-                
-                // 4. 确认其在 var_top 中 (即确认它是被引模块导出的顶级变量)
-                if (target_varid == SIZE_MAX) {
-                    return error_linker("Variable '%s' not found in module '%s'", suffix, importee_mod_id);
-                }
-                
-                bool is_top_level = false;
-                for (am_value_t top_var of importee_ast->var_top) {
-                    if (am_value_get_varid(top_var) == target_varid) {
-                        is_top_level = true;
-                        break;
-                    }
-                }
-                
-                if (!is_top_level) {
-                    return error_linker("Variable '%s' is not a top-level exported variable in '%s'", suffix, importee_mod_id);
-                }
-                
-                // 5. 记录替换映射: importer 中的 import_ref_varid -> importee 中的 target_varid
-                am_map_set(importer_ast->alloc, varid_rewrite_map, 
-                           am_make_value_of_varid(varid), 
-                           am_make_value_of_varid(target_varid));
-            }
-        }
-        
-        // 6. 统一遍历 AST nodes 进行批量替换
-        if (am_map_size(varid_rewrite_map) > 0) {
-            am_ast_batch_rewrite_varids(importer_ast, varid_rewrite_map);
-        }
-        
-        am_map_destroy(varid_rewrite_map);
-    }
-    return 0;
-}
-
-// 辅助函数：批量遍历 AST 节点，根据映射表替换 VarID
-void am_ast_batch_rewrite_varids(am_ast_t *ast, am_map_t *rewrite_map) {
-    for (am_handle_t hd = 0; hd < ast->nodes->handle_counter; hd++) {
-        am_value_t val = am_heap_get(ast->alloc, ast->nodes, am_make_value_of_handle(hd));
-        if (am_value_is_ptr(val)) {
-            am_object_t *obj = am_value_to_ptr(val);
-            if (obj->base.type == AM_OBJECT_TYPE_LIST) {
-                am_list_t *lst = (am_list_t*)obj;
-                for (size_t i = 0; i < lst->children_count; i++) {
-                    am_value_t child = lst->children[i];
-                    if (am_value_get_type(child) == AM_VALUE_TYPE_VARID) {
-                        am_value_t mapped_val = am_map_get(ast->alloc, rewrite_map, child);
-                        if (!am_value_is_null(mapped_val)) {
-                            lst->children[i] = mapped_val; // 原位替换为 importee 的 target_varid
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-```
+am_linker_import_ref_resolution(ctx, importer_index)解引用算法：
+- 首先要知道，外部引用解析发生在AST大一统之后，所有的名字都是全局唯一无歧义的。
+- 全量遍历整个合并后的AST，在chuldren中寻找IMPORT_REF类型的变量。
+- 从最后一个点将IMPORT_REF分割为 prefix=importer_id.alias 和 suffix。
+- 在全局dependencies中，查询 prefix=importer_id.alias 对应的 importee_path ，转为模块ID：importee_id。
+- 在var_top中查找IMPORT_REF在importee中的变量名：匹配以下模式的变量：importee_id.[top_lambda_node_of_importee].suffix。说明：尽管中间的[top_lambda_node_of_importee]不知道，但是，通过importee_id+顶级变量+suffix三个信息，已经能够在var_top中唯一定位出一个变量。如有任何异常（找不到等）则报错。
+- 用新找到的top_var变量，替换掉旧的IMPORT_REF类型的child。
+- 对所有IMPORT_REF变量的child重复以上过程，直至全部遍历完毕。
 
 
 ---------------------
