@@ -1332,6 +1332,123 @@ static void populate_top_lambda_and_var_top(parser_ctx_t *ctx) {
 
 
 // ===============================================================================
+// 尾位置分析
+// ===============================================================================
+
+static void tail_call_analysis_item(parser_ctx_t *ctx, am_value_t item, int is_tail);
+
+
+static void tail_call_analysis_application(parser_ctx_t *ctx, am_handle_t handle, am_list_t *lst, int is_tail) {
+    if (!ctx || !ctx->ast || !lst) return;
+
+    if (lst->length == 0) {
+        if (is_tail) {
+            if (am_ast_add_tailcall(ctx->ast, handle) < 0) {
+                parser_set_error(ctx, L"failed to add tailcall handle");
+            }
+        }
+        return;
+    }
+
+    am_value_t first = am_list_get(ctx->ast->alloc, lst, 0);
+
+    // if 特殊构造: (if cond then else)
+    if (am_value_is_symbol(first) &&
+        am_value_to_symbol(first) == am_value_to_symbol(AM_VALUE_KW_if)) {
+        if (lst->length > 1) tail_call_analysis_item(ctx, am_list_get(ctx->ast->alloc, lst, 1), 0);
+        if (lst->length > 2) tail_call_analysis_item(ctx, am_list_get(ctx->ast->alloc, lst, 2), is_tail);
+        if (lst->length > 3) tail_call_analysis_item(ctx, am_list_get(ctx->ast->alloc, lst, 3), is_tail);
+    }
+    // cond 特殊构造: (cond (c1 e1) (c2 e2) ...)
+    else if (am_value_is_symbol(first) &&
+             am_value_to_symbol(first) == am_value_to_symbol(AM_VALUE_KW_cond)) {
+        for (size_t i = 1; i < lst->length; i++) {
+            am_value_t clause = am_list_get(ctx->ast->alloc, lst, i);
+            if (!am_value_is_handle(clause)) continue;
+
+            am_value_t clause_val = am_ast_get_node(ctx->ast, am_value_to_handle(clause));
+            if (!am_value_is_ptr(clause_val)) continue;
+
+            am_object_t *clause_obj = am_value_to_ptr(clause_val);
+            if (clause_obj->type != AM_OBJECT_TYPE_LIST) continue;
+
+            am_list_t *clause_lst = (am_list_t *)clause_obj;
+            if (clause_lst->type != AM_LIST_TYPE_APPLICATION) continue;
+
+            if (clause_lst->length > 0) {
+                tail_call_analysis_item(ctx, am_list_get(ctx->ast->alloc, clause_lst, 0), 0);
+            }
+            if (clause_lst->length > 1) {
+                tail_call_analysis_item(ctx, am_list_get(ctx->ast->alloc, clause_lst, 1), is_tail);
+            }
+        }
+    }
+    // 其他构造，含 begin、and、or
+    else {
+        int is_seq_form = am_value_is_symbol(first) &&
+            (am_value_to_symbol(first) == am_value_to_symbol(AM_VALUE_KW_begin) ||
+             am_value_to_symbol(first) == am_value_to_symbol(AM_VALUE_KW_and) ||
+             am_value_to_symbol(first) == am_value_to_symbol(AM_VALUE_KW_or));
+
+        for (size_t i = 0; i < lst->length; i++) {
+            int child_is_tail = 0;
+            if (is_seq_form && i == lst->length - 1) {
+                child_is_tail = is_tail;
+            }
+            tail_call_analysis_item(ctx, am_list_get(ctx->ast->alloc, lst, i), child_is_tail);
+        }
+    }
+
+    if (is_tail) {
+        if (am_ast_add_tailcall(ctx->ast, handle) < 0) {
+            parser_set_error(ctx, L"failed to add tailcall handle");
+        }
+    }
+}
+
+
+static void tail_call_analysis_item(parser_ctx_t *ctx, am_value_t item, int is_tail) {
+    if (!ctx || ctx->error) return;
+    if (!am_value_is_handle(item)) return;
+
+    am_handle_t handle = am_value_to_handle(item);
+    am_value_t node_val = am_ast_get_node(ctx->ast, handle);
+    if (!am_value_is_ptr(node_val)) return;
+
+    am_object_t *obj = am_value_to_ptr(node_val);
+    if (obj->type != AM_OBJECT_TYPE_LIST) return;
+
+    am_list_t *lst = (am_list_t *)obj;
+    if (lst->type == AM_LIST_TYPE_APPLICATION) {
+        tail_call_analysis_application(ctx, handle, lst, is_tail);
+    }
+    else if (lst->type == AM_LIST_TYPE_LAMBDA) {
+        size_t n_body = 0;
+        am_value_t *bodies = am_list_lambda_get_bodies(ctx->ast->alloc, lst, &n_body);
+        if (!bodies) return;
+        for (size_t i = 0; i < n_body; i++) {
+            tail_call_analysis_item(ctx, bodies[i], (i == n_body - 1) ? 1 : 0);
+        }
+        free(bodies);
+    }
+    // QUOTE / QUASIQUOTE / UNQUOTE 不进入深层分析（被引用的代码不参与执行）
+}
+
+
+static void tail_call_analysis(parser_ctx_t *ctx) {
+    if (!ctx || !ctx->ast) return;
+
+    am_handle_t top_app = am_ast_get_top_node_handle(ctx->ast);
+    if (top_app == AM_HANDLE_NULL) {
+        parser_set_error(ctx, L"failed to get top node handle for tail call analysis");
+        return;
+    }
+
+    tail_call_analysis_item(ctx, am_make_value_of_handle(top_app), 1);
+}
+
+
+// ===============================================================================
 // 解析器入口
 // ===============================================================================
 
@@ -1415,6 +1532,19 @@ am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path
 
     // 设置顶层 lambda 与顶级变量列表
     populate_top_lambda_and_var_top(&ctx);
+    if (ctx.error) {
+        fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
+        free(ctx.node_stack);
+        free(ctx.state_stack);
+        free(ctx.lambda_stack);
+        free(ctx.special_app_stack);
+        am_ast_destroy(ast);
+        am_free(alloc, tokens);
+        return NULL;
+    }
+
+    // 尾位置分析
+    tail_call_analysis(&ctx);
     if (ctx.error) {
         fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
         free(ctx.node_stack);

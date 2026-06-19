@@ -677,6 +677,13 @@ void am_ast_batch_rewrite_varids(am_ast_t *ast, am_map_t *rewrite_map) {
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+@src/parser.c 是解释器的parser实现。请你在 am_parser 函数的最后一个环节 populate_top_lambda_and_var_top 后面，再增加一个新的分析环节：尾位置分析。尾位置分析的目的是递归遍历整个AST，按照规则，标记出处于尾位置上的application节点，也就是“尾调用”节点，将尾调用节点的handle加入ast->tailcall_handles字段。
+
+具体的规则，你可以参照 @typescript/src/Analyser.ts 中的 TailCallAnalysis。
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

@@ -1181,6 +1181,64 @@ static void test_parse_top_lambda_and_var_top(void) {
 }
 
 
+static int handle_in_tailcall_list(am_ast_t *ast, am_handle_t handle) {
+    if (!ast || !ast->tailcall_handles) return 0;
+    for (size_t i = 0; i < ast->tailcall_handles->length; i++) {
+        am_value_t v = am_list_get(ast->alloc, ast->tailcall_handles, i);
+        if (am_value_is_handle(v) && am_value_to_handle(v) == handle) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
+static void test_parse_tail_call_analysis(void) {
+    printf("test_parse_tail_call_analysis ... ");
+    test_allocator_reset();
+
+    // 顶层 lambda 最后一个 body 是 (begin ...)，其最后一个子表达式 (display 2) 应为尾调用。
+    // 顶层 application 自身也作为入口点被标记为尾调用。
+    wchar_t *code = L"((lambda () (begin (display 1) (display 2))))";
+    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    assert(ast != NULL);
+
+    am_handle_t top_app = am_ast_get_top_node_handle(ast);
+    am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
+    assert(top_app != AM_HANDLE_NULL);
+    assert(top_lambda != AM_HANDLE_NULL);
+
+    am_list_t *lambda = handle_to_list(ast, top_lambda);
+    size_t n_body = am_list_lambda_get_body_number(ast->alloc, lambda);
+    assert(n_body == 1);
+
+    am_value_t begin_body = am_list_get(ast->alloc, lambda, 2);
+    assert(am_value_is_handle(begin_body));
+    am_handle_t begin_handle = am_value_to_handle(begin_body);
+    am_list_t *begin_lst = handle_to_list(ast, begin_handle);
+    assert(begin_lst->type == AM_LIST_TYPE_APPLICATION);
+    assert(begin_lst->length == 3);
+
+    am_value_t display1_val = am_list_get(ast->alloc, begin_lst, 1);
+    am_value_t display2_val = am_list_get(ast->alloc, begin_lst, 2);
+    assert(am_value_is_handle(display1_val));
+    assert(am_value_is_handle(display2_val));
+    am_handle_t display1 = am_value_to_handle(display1_val);
+    am_handle_t display2 = am_value_to_handle(display2_val);
+
+    // 尾调用应为：顶层 app、begin 节点、(display 2)
+    assert(ast->tailcall_handles->length == 3);
+    assert(handle_in_tailcall_list(ast, top_app));
+    assert(handle_in_tailcall_list(ast, begin_handle));
+    assert(handle_in_tailcall_list(ast, display2));
+    assert(!handle_in_tailcall_list(ast, display1));
+    assert(!handle_in_tailcall_list(ast, top_lambda));
+
+    am_ast_destroy(ast);
+    printf("OK\n");
+}
+
+
 static void test_print_tokens(void) {
     printf("test_print_tokens ... \n");
     test_allocator_reset();
@@ -1286,6 +1344,7 @@ int main(void) {
     test_parse_alpha_renaming_nested();
     test_parse_import_alias_rename();
     test_parse_top_lambda_and_var_top();
+    test_parse_tail_call_analysis();
     test_print_tokens();
     test_ast_print();
 
