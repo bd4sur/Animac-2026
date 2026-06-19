@@ -687,6 +687,15 @@ void am_ast_batch_rewrite_varids(am_ast_t *ast, am_map_t *rewrite_map) {
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+为实现模块链接器中的依赖DAG的拓扑排序，请你在 @src/linker.c 中实现一个对DAG进行拓扑排序的函数。成功返回排序后的列表（由调用者释放），失败返回SIZE_MAX。参数DAG的格式是{{出节点index, 入节点index}, ...}
+
+函数原型为：
+
+size_t *am_topo_sort(size_t DAG[][2], size_t edge_num);
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试（可视化输出算法的输入输出）。
 
 ---------------------
 
