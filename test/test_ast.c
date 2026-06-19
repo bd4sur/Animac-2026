@@ -113,7 +113,7 @@ static void test_ast_create_destroy(void) {
     assert(ast->nodes != NULL);
     assert(wcscmp(ast->module_id, L"home.user.test") == 0);
 
-    assert(am_ast_destroy(ast) == 1);
+    assert(am_ast_destroy(ast) == 0);
     printf("OK\n");
 }
 
@@ -159,7 +159,7 @@ static void test_build_vocabularies(void) {
     }
     assert(found_foo && found_x && found_y);
 
-    assert(am_ast_destroy(ast) == 1);
+    assert(am_ast_destroy(ast) == 0);
     printf("OK\n");
 }
 
@@ -217,7 +217,7 @@ static void test_make_nodes(void) {
     assert(am_value_to_uint(bodies[0]) == 42);
     free(bodies);
 
-    assert(am_ast_destroy(ast) == 1);
+    assert(am_ast_destroy(ast) == 0);
     printf("OK\n");
 }
 
@@ -245,7 +245,7 @@ static void test_make_wstring_node(void) {
     assert(ws->base.type == AM_OBJECT_TYPE_WSTRING);
     assert(ws->length == tokens[0].length);
 
-    assert(am_ast_destroy(ast) == 1);
+    assert(am_ast_destroy(ast) == 0);
     printf("OK\n");
 }
 
@@ -275,7 +275,7 @@ static void test_unique_variable(void) {
     // assert(wcsstr(unique_str, L"V.") == unique_str);
     assert(wcsstr(unique_str, L".7.") != NULL);
 
-    assert(am_ast_destroy(ast) == 1);
+    assert(am_ast_destroy(ast) == 0);
     printf("OK\n");
 }
 
@@ -306,7 +306,7 @@ static void test_find_nearest_lambda(void) {
     am_handle_t found = am_ast_find_nearest_lambda_handle(ast, lambda);
     assert(found == lambda);
 
-    assert(am_ast_destroy(ast) == 1);
+    assert(am_ast_destroy(ast) == 0);
     printf("OK\n");
 }
 
@@ -359,8 +359,8 @@ static void test_copy(void) {
     assert(am_value_to_uint(bodies[0]) == 42);
     free(bodies);
 
-    assert(am_ast_destroy(copy) == 1);
-    assert(am_ast_destroy(ast) == 1);
+    assert(am_ast_destroy(copy) == 0);
+    assert(am_ast_destroy(ast) == 0);
     printf("OK\n");
 }
 
@@ -428,8 +428,8 @@ static void test_merge(void) {
     assert(am_value_to_uint(bodies[1]) == 100);
     free(bodies);
 
-    assert(am_ast_destroy(source) == 1);
-    assert(am_ast_destroy(target) == 1);
+    assert(am_ast_destroy(source) == 0);
+    assert(am_ast_destroy(target) == 0);
     printf("OK\n");
 }
 

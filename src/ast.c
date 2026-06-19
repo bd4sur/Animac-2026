@@ -197,7 +197,7 @@ int32_t am_ast_destroy(am_ast_t *ast) {
     if (ast->natives) am_map_destroy(alloc, ast->natives);
 
     am_free(alloc, ast);
-    return 1;
+    return 0;
 }
 
 
@@ -246,13 +246,13 @@ am_ast_t *am_ast_copy(am_ast_t *ast) {
 
 // 功能描述：设置AST节点把柄对应的token索引。
 int32_t am_ast_set_node_token_index(am_ast_t *ast, am_handle_t node_handle, size_t token_index) {
-    if (!ast || !ast->node_token_mapping) return 0;
+    if (!ast || !ast->node_token_mapping) return -1;
     am_map_t *map = am_map_set(ast->alloc, ast->node_token_mapping,
                                 am_make_value_of_handle(node_handle),
                                 am_make_value_of_uint((am_uint_t)token_index));
-    if (!map) return 0;
+    if (!map) return -1;
     ast->node_token_mapping = map;
-    return 1;
+    return 0;
 }
 
 
@@ -324,7 +324,7 @@ int32_t am_ast_merge(am_ast_t *target, am_ast_t *source, const wchar_t *order) {
         memcpy(new_bodies + target_n_body, source_bodies, source_n_body * sizeof(am_value_t));
     }
 
-    if (!am_ast_set_global_nodes(target, new_bodies, new_n_body)) {
+    if (am_ast_set_global_nodes(target, new_bodies, new_n_body) < 0) {
         free(new_bodies);
         free(source_bodies);
         free(target_bodies);
@@ -760,28 +760,28 @@ am_value_t *am_ast_get_global_nodes(am_ast_t *ast) {
 
 // 功能描述：设置全局作用域（顶层lambda）的node列表（函数体列表）。
 int32_t am_ast_set_global_nodes(am_ast_t *ast, am_value_t *bodies, size_t n_body) {
-    if (!ast || !ast->nodes || !bodies) return 0;
+    if (!ast || !ast->nodes || !bodies) return -1;
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
-    if (top_lambda == AM_HANDLE_NULL) return 0;
+    if (top_lambda == AM_HANDLE_NULL) return -1;
 
     am_value_t lambda_val = am_heap_get(ast->alloc, ast->nodes, top_lambda);
-    if (!am_value_is_ptr(lambda_val)) return 0;
+    if (!am_value_is_ptr(lambda_val)) return -1;
 
     am_list_t *lambda = (am_list_t *)am_value_to_ptr(lambda_val);
 
     am_list_t *new_lambda = am_list_lambda_set_bodies(ast->alloc, lambda, bodies, &n_body);
-    if (!new_lambda) return 0;
+    if (!new_lambda) return -1;
 
     // 如果lambda对象指针发生变化，更新heap中的绑定
     if (new_lambda != lambda) {
         if (am_heap_set(ast->alloc, ast->nodes, top_lambda, am_make_value_of_ptr((am_object_t *)new_lambda)) != 0) {
             am_list_destroy(ast->alloc, new_lambda);
-            return 0;
+            return -1;
         }
     }
 
-    return 1;
+    return 0;
 }
 
 
@@ -991,57 +991,57 @@ am_varid_t am_ast_make_unique_import_ref(am_ast_t *ast, am_varid_t import_ref_va
 
 // 功能描述：向 tailcall_handles 中添加一个尾调用节点把柄。
 int32_t am_ast_add_tailcall(am_ast_t *ast, am_handle_t handle) {
-    if (!ast || !ast->tailcall_handles) return 0;
+    if (!ast || !ast->tailcall_handles) return -1;
     am_list_t *lst = am_list_push(ast->alloc, ast->tailcall_handles, am_make_value_of_handle(handle));
-    if (!lst) return 0;
+    if (!lst) return -1;
     ast->tailcall_handles = lst;
-    return 1;
+    return 0;
 }
 
 
 // 功能描述：向 var_top 中添加一个顶级变量 varid。
 int32_t am_ast_add_var_top(am_ast_t *ast, am_varid_t varid) {
-    if (!ast || !ast->var_top) return 0;
+    if (!ast || !ast->var_top) return -1;
     am_list_t *lst = am_list_push(ast->alloc, ast->var_top, am_make_value_of_varid(varid));
-    if (!lst) return 0;
+    if (!lst) return -1;
     ast->var_top = lst;
-    return 1;
+    return 0;
 }
 
 
 // 功能描述：设置依赖模块记录。
 int32_t am_ast_set_dependency(am_ast_t *ast, am_varid_t alias_varid, am_handle_t path_handle) {
-    if (!ast || !ast->dependencies) return 0;
+    if (!ast || !ast->dependencies) return -1;
     am_map_t *map = am_map_set(ast->alloc, ast->dependencies,
                                 am_make_value_of_varid(alias_varid),
                                 am_make_value_of_handle(path_handle));
-    if (!map) return 0;
+    if (!map) return -1;
     ast->dependencies = map;
-    return 1;
+    return 0;
 }
 
 
 // 功能描述：设置本地库记录。
 int32_t am_ast_set_native(am_ast_t *ast, am_varid_t native_varid, am_handle_t handle) {
-    if (!ast || !ast->natives) return 0;
+    if (!ast || !ast->natives) return -1;
     am_map_t *map = am_map_set(ast->alloc, ast->natives,
                                 am_make_value_of_varid(native_varid),
                                 am_make_value_of_handle(handle));
-    if (!map) return 0;
+    if (!map) return -1;
     ast->natives = map;
-    return 1;
+    return 0;
 }
 
 
 // 功能描述：为lambda节点设置对应的词法作用域把柄。
 int32_t am_ast_set_scope(am_ast_t *ast, am_handle_t lambda_handle, am_handle_t scope_handle) {
-    if (!ast || !ast->scopes) return 0;
+    if (!ast || !ast->scopes) return -1;
     am_map_t *map = am_map_set(ast->alloc, ast->scopes,
                                 am_make_value_of_handle(lambda_handle),
                                 am_make_value_of_handle(scope_handle));
-    if (!map) return 0;
+    if (!map) return -1;
     ast->scopes = map;
-    return 1;
+    return 0;
 }
 
 

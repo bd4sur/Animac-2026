@@ -69,7 +69,7 @@ am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_
 
 
 // 功能描述：销毁AST对象，释放AST自身及其内部所有堆对象。
-// 实现说明：成功返回1，失败返回0。注意不释放调用者传入的code、absolute_path、tokens。
+// 实现说明：成功返回0，失败返回-1。注意不释放调用者传入的code、absolute_path、tokens。
 int32_t am_ast_destroy(am_ast_t *ast);
 
 
@@ -79,7 +79,7 @@ am_ast_t *am_ast_copy(am_ast_t *ast);
 
 
 // 功能描述：设置AST节点把柄对应的token索引。
-// 实现说明：成功返回1，失败返回0。
+// 实现说明：成功返回0，失败返回-1。
 int32_t am_ast_set_node_token_index(am_ast_t *ast, am_handle_t node_handle, size_t token_index);
 
 
@@ -164,7 +164,7 @@ am_value_t *am_ast_get_global_nodes(am_ast_t *ast);
 
 // 功能描述：设置全局作用域（顶层lambda）的node列表（也就是函数体列表）。（对应TS的AST.SetGlobalNodes）
 // 设计说明：用bodies整体替换am_ast_get_top_lambda_node_handle也就是顶层lambda（thunk）的bodies。
-// 实现说明：通过am_list_lambda_set_bodies实现，这个过程可能涉及lambda对象指针的变化，如有变化，则更新AST->nodes中对应handle的值（打包成am_value_t的）。n_body为bodies数组的长度。如有扩容失败等异常情况，返回0。执行成功则返回1。
+// 实现说明：通过am_list_lambda_set_bodies实现，这个过程可能涉及lambda对象指针的变化，如有变化，则更新AST->nodes中对应handle的值（打包成am_value_t的）。n_body为bodies数组的长度。如有扩容失败等异常情况，返回-1。执行成功则返回0。
 int32_t am_ast_set_global_nodes(am_ast_t *ast, am_value_t *bodies, size_t n_body);
 
 
@@ -199,27 +199,27 @@ am_varid_t am_ast_make_unique_import_ref(am_ast_t *ast, am_varid_t import_ref_va
 
 
 // 功能描述：向 tailcall_handles 中添加一个尾调用节点把柄。
-// 实现说明：成功返回1，失败返回0。
+// 实现说明：成功返回0，失败返回-1。
 int32_t am_ast_add_tailcall(am_ast_t *ast, am_handle_t handle);
 
 
 // 功能描述：向 var_top 中添加一个顶级变量 varid。
-// 实现说明：成功返回1，失败返回0。
+// 实现说明：成功返回0，失败返回-1。
 int32_t am_ast_add_var_top(am_ast_t *ast, am_varid_t varid);
 
 
 // 功能描述：设置依赖模块记录。
-// 实现说明：alias_varid 为 import 语句中模块别名对应的 varid；path_handle 为模块路径字符串节点在 ast->nodes 中的把柄。成功返回1，失败返回0。
+// 实现说明：alias_varid 为 import 语句中模块别名对应的 varid；path_handle 为模块路径字符串节点在 ast->nodes 中的把柄。成功返回0，失败返回-1。
 int32_t am_ast_set_dependency(am_ast_t *ast, am_varid_t alias_varid, am_handle_t path_handle);
 
 
 // 功能描述：设置本地库记录。
-// 实现说明：native_varid 为 native 语句中库名对应的 varid；handle 可暂时设置为 AM_VALUE_HANDLE_NULL。成功返回1，失败返回0。
+// 实现说明：native_varid 为 native 语句中库名对应的 varid；handle 可暂时设置为 AM_VALUE_HANDLE_NULL。成功返回0，失败返回-1。
 int32_t am_ast_set_native(am_ast_t *ast, am_varid_t native_varid, am_handle_t handle);
 
 
 // 功能描述：为lambda节点设置对应的词法作用域把柄。
-// 实现说明：成功返回1，失败返回0。
+// 实现说明：成功返回0，失败返回-1。
 int32_t am_ast_set_scope(am_ast_t *ast, am_handle_t lambda_handle, am_handle_t scope_handle);
 
 

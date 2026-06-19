@@ -1118,7 +1118,10 @@ static void preprocess_iter_cb(am_handle_t handle, am_value_t value, void *user_
             return;
         }
 
-        am_ast_set_dependency(ast, alias_varid, path_handle);
+        if (am_ast_set_dependency(ast, alias_varid, path_handle) < 0) {
+            parser_set_error(ctx, L"failed to set dependency");
+            return;
+        }
     }
     // (native <NativeLibName>)
     else if (first_sym == am_value_to_symbol(AM_VALUE_KW_native) && lst->length == 2) {
@@ -1127,7 +1130,10 @@ static void preprocess_iter_cb(am_handle_t handle, am_value_t value, void *user_
             parser_set_error(ctx, L"invalid native syntax");
             return;
         }
-        am_ast_set_native(ast, am_value_to_varid(name_val), AM_HANDLE_NULL);
+        if (am_ast_set_native(ast, am_value_to_varid(name_val), AM_HANDLE_NULL) < 0) {
+            parser_set_error(ctx, L"failed to set native");
+            return;
+        }
     }
 }
 
@@ -1209,7 +1215,7 @@ static void alias_rename_iter_cb(am_handle_t handle, am_value_t value, void *use
                 return;
             }
 
-            if (!am_ast_set_dependency(ast, new_alias_varid, am_value_to_handle(path_handle_val))) {
+            if (am_ast_set_dependency(ast, new_alias_varid, am_value_to_handle(path_handle_val)) < 0) {
                 parser_set_error(ctx, L"failed to set dependency for renamed alias");
                 return;
             }
@@ -1315,7 +1321,7 @@ static void populate_top_lambda_and_var_top(parser_ctx_t *ctx) {
         am_value_t second = am_list_get(ast->alloc, lst, 1);
         if (!am_value_is_varid(second)) continue;
 
-        if (!am_ast_add_var_top(ast, am_value_to_varid(second))) {
+        if (am_ast_add_var_top(ast, am_value_to_varid(second)) < 0) {
             parser_set_error(ctx, L"failed to add top variable");
             break;
         }
