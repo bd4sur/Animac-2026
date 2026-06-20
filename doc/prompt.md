@@ -680,6 +680,42 @@ size_t *am_topo_sort(size_t DAG[][2], size_t edge_num);
 
 ---------------------
 
+在现有的 @src/ast.c 的 am_ast_merge 实现中，虽然融合逻辑是正确的，但是最后没有清理importee被抛弃的、并且已经被复制到importer->nodes的：最顶级application节点和它的唯一的child：最顶级的lambda节点。
+
+举例如下。下面是融合后的AST结构。可见，从融合后的 top_lambda_handle = <H:88> 出发，可以定位到“活”的顶级节点<H:88>和<H:87>。而原本归属于importee的顶级节点<H:105>和<H:108>是遗留的垃圾、在新的融合后AST中是不可达的。
+
+因此，请你在 am_ast_merge 完成之后，在importer->nodes中，清理掉这些垃圾节点。
+
+```
+top_lambda_handle: <H:88>
+lambda_handles: [<H:88>, <H:94>, <H:105>, <H:101>]
+tailcall_handles: [<H:99>, <H:87>, <H:102>, <H:108>]
+nodes: {
+  <H:90>: WSTRING len=27 "\"/home/bd4sur/animac/y.scm\""
+  <H:106>: APPLICATION parent=<H:88> length=3 children=["define", "home.bd4sur.animac.y.102.f", <H:101>]
+  <H:109>: APPLICATION parent=<H:88> length=3 children=["define", "home.bd4sur.animac.y.102.y", "home.bd4sur.animac.y.z.y"]
+  <H:103>: APPLICATION parent=<H:88> length=3 children=["import", "home.bd4sur.animac.y.z", <H:107>]
+  <H:100>: APPLICATION parent=<H:99> length=3 children=["+", "home.bd4sur.animac.x.y.z", "home.bd4sur.animac.x.z.z"]
+  <H:97>: APPLICATION parent=<H:88> length=3 children=["define", "home.bd4sur.animac.x.88.y", <H:98>]
+  <H:107>: WSTRING len=27 "\"/home/bd4sur/animac/z.scm\""
+  <H:98>: APPLICATION parent=<H:97> length=3 children=["+", "home.bd4sur.animac.x.y.y", "home.bd4sur.animac.x.z.y"]
+  <H:99>: APPLICATION parent=<H:88> length=3 children=["define", "home.bd4sur.animac.x.88.z", <H:100>]
+  <H:102>: APPLICATION parent=<H:88> length=3 children=["define", "home.bd4sur.animac.y.102.z", "home.bd4sur.animac.y.z.z"]
+  <H:105>: LAMBDA parent=<H:108> params=0 bodies=5 children=["lambda", 0, <H:103>, <H:106>, <H:104>, <H:109>, <H:102>]
+  <H:88>: LAMBDA parent=<H:87> params=0 bodies=11 children=["lambda", 0, <H:103>, <H:106>, <H:104>, <H:109>, <H:102>, <H:89>, <H:91>, <H:93>, <H:95>, <H:97>, <H:99>]
+  <H:93>: APPLICATION parent=<H:88> length=3 children=["define", "home.bd4sur.animac.x.88.f", <H:94>]
+  <H:91>: APPLICATION parent=<H:88> length=3 children=["import", "home.bd4sur.animac.x.y", <H:92>]
+  <H:94>: LAMBDA parent=<H:93> params=3 bodies=1 children=["lambda", 3, "home.bd4sur.animac.x.94.x", "home.bd4sur.animac.x.94.y", "home.bd4sur.animac.x.94.z", 888]
+  <H:92>: WSTRING len=27 "\"/home/bd4sur/animac/z.scm\""
+  <H:104>: APPLICATION parent=<H:88> length=3 children=["define", "home.bd4sur.animac.y.102.x", "home.bd4sur.animac.y.z.x"]
+  <H:89>: APPLICATION parent=<H:88> length=3 children=["import", "home.bd4sur.animac.x.z", <H:90>]
+  <H:87>: APPLICATION parent=null length=1 children=[<H:88>]
+  <H:101>: LAMBDA parent=<H:106> params=3 bodies=1 children=["lambda", 3, "home.bd4sur.animac.y.106.x", "home.bd4sur.animac.y.106.y", "home.bd4sur.animac.y.106.z", 888]
+  <H:95>: APPLICATION parent=<H:88> length=3 children=["define", "home.bd4sur.animac.x.88.x", <H:96>]
+  <H:96>: APPLICATION parent=<H:95> length=3 children=["+", "home.bd4sur.animac.x.y.x", "home.bd4sur.animac.x.z.x"]
+  <H:108>: APPLICATION parent=null length=1 children=[<H:105>]
+}
+```
 
 ---------------------
 

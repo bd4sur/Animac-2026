@@ -309,6 +309,20 @@ static am_wstring_t *merge_copy_wstring(am_allocator_t *alloc, am_wstring_t *ws)
 }
 
 
+// 从 handle 列表中移除指定的 handle（按值过滤，in-place 缩短 length）。
+static am_list_t *merge_remove_handle_from_list(am_allocator_t *alloc, am_list_t *lst, am_handle_t h) {
+    if (!lst) return NULL;
+    size_t write = 0;
+    for (size_t i = 0; i < lst->length; i++) {
+        am_value_t v = am_list_get(alloc, lst, i);
+        if (am_value_is_handle(v) && am_value_to_handle(v) == h) continue;
+        lst->children[write++] = v;
+    }
+    lst->length = write;
+    return lst;
+}
+
+
 // 功能描述：将importee融合进importer，也就是importer吃掉importee。
 // 实现说明：成功返回0；失败返回-1。
 int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
@@ -597,6 +611,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
         return -1;
     }
     am_list_t *importee_top_lambda_lst = (am_list_t *)am_value_to_ptr(importee_top_lambda_val);
+    am_handle_t importee_top_app = importee_top_lambda_lst->parent;
     size_t n_importee_bodies = 0;
     am_value_t *importee_bodies = am_list_lambda_get_bodies(importee->alloc,
                                                               importee_top_lambda_lst,
@@ -671,7 +686,40 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
 
     int32_t set_result = 0;
     if (total_bodies > 0) {
-        set_result = am_ast_set_global_nodes(importer, new_bodies, total_bodies);
+        am_list_t *new_lambda = am_list_lambda_set_bodies(importer->alloc, importer_top_lambda_lst,
+                                                          new_bodies, &total_bodies);
+        if (!new_lambda) {
+            set_result = -1;
+        } else if (new_lambda != importer_top_lambda_lst) {
+            if (am_heap_set(importer->alloc, importer->nodes, importer_top_lambda,
+                            am_make_value_of_ptr((am_object_t *)new_lambda)) != 0) {
+                set_result = -1;
+            }
+        }
+    }
+
+    // 清理 importee 遗留的、已不可达的顶层 application 与顶层 lambda 节点
+    if (importee_top_app != AM_HANDLE_NULL) {
+        am_value_t dead_app_val = am_map_get(importer->alloc, handle_merge_mapping,
+                                              am_make_value_of_handle(importee_top_app));
+        am_value_t dead_lambda_val = am_map_get(importer->alloc, handle_merge_mapping,
+                                                 am_make_value_of_handle(importee_top_lambda));
+        if (am_value_is_handle(dead_app_val) && am_value_is_handle(dead_lambda_val)) {
+            am_handle_t dead_app_h = am_value_to_handle(dead_app_val);
+            am_handle_t dead_lambda_h = am_value_to_handle(dead_lambda_val);
+
+            // 从 lambda_handles / tailcall_handles 中移除对这些死节点的引用
+            importer->lambda_handles = merge_remove_handle_from_list(importer->alloc,
+                                                                      importer->lambda_handles,
+                                                                      dead_lambda_h);
+            importer->tailcall_handles = merge_remove_handle_from_list(importer->alloc,
+                                                                        importer->tailcall_handles,
+                                                                        dead_app_h);
+
+            // 从 importer->nodes 中释放死节点
+            am_heap_free_handle(importer->alloc, importer->nodes, dead_app_h);
+            am_heap_free_handle(importer->alloc, importer->nodes, dead_lambda_h);
+        }
     }
 
     free(new_bodies);
