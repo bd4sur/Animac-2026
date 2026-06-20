@@ -186,7 +186,7 @@ class Closure extends SchemeObject {
 
 ---------------------
 
-本项目是一个C语言编写的Scheme解释器，尚未完成。请你通读项目C语言代码，并在 @parser.c 中完成以下需求。
+本项目是一个C语言编写的Scheme解释器。请你通读项目C语言代码，并在 @parser.c 中完成以下需求。
 
 首先你需要知道 @parser.c 是一个递归下降解析器，其对应的BNF语法为：
 

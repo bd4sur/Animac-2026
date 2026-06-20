@@ -1,11 +1,25 @@
 ;; 词法作用域
 
-'(lambda 'lambda ,lambda `lambda , ' ` ,(a ,b 'c `d) ,e ,#f `g `(h ,i 'j `k) 'l '(m ,n 'o `p if) ,(d 'e if else ... . , ' ` a)))
+'(lambda 'lambda ,lambda `lambda , ' ` ,(a ,b 'c `d) ,e ,#f `g `(h ,i 'j `k) 'l '(m ,n 'o `p if) ,(d 'e if else ... . , ' ` a))
+
+(native Math)
+(import Lib "/root/lib.scm")
+(define f
+  (lambda (x y)
+    (set! Lib.x y)
+    (define f
+      (lambda (x)
+        (+ x Math.PI)))
+    (Lib.foo (f x) y)))
+
+(define x 2)
+(define y 3)
+(display (f x y))
 
 (define free 100)
 (define foo (lambda () `(,free))) ; 准引用列表也是词法作用域的
 (define bar (lambda (free) (foo)))
-(define aaa (lambda (x ...) (foo)))
+(define aaa (lambda (x) (foo)))
 (bar 200) ; 输出(100)，而不是(200)
 
 

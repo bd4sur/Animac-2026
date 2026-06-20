@@ -12,6 +12,7 @@
 #include "vocab.h"
 #include "wstring.h"
 #include "lexer.h"
+#include "highlight.h"
 
 
 // ===============================================================================
@@ -139,6 +140,45 @@ static am_symbol_t symbol_of(am_ast_t *ast, const wchar_t *name) {
     size_t idx = am_vocab_find(ast->alloc, ast->symbol_vocab, (wchar_t *)name);
     assert(idx != SIZE_MAX);
     return (am_symbol_t)idx;
+}
+
+
+// ===============================================================================
+// 文件读取辅助函数
+// ===============================================================================
+
+static wchar_t *read_file_as_wstring(const wchar_t *path) {
+    size_t path_len = wcstombs(NULL, path, 0);
+    if (path_len == (size_t)-1) return NULL;
+
+    char *mb_path = (char *)malloc(path_len + 1);
+    if (!mb_path) return NULL;
+    wcstombs(mb_path, path, path_len + 1);
+
+    FILE *f = fopen(mb_path, "rb");
+    free(mb_path);
+    if (!f) return NULL;
+
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long size = ftell(f);
+    if (size < 0) { fclose(f); return NULL; }
+    fseek(f, 0, SEEK_SET);
+
+    char *buf = (char *)malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return NULL; }
+
+    size_t n = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    size_t wlen = mbstowcs(NULL, buf, 0);
+    if (wlen == (size_t)-1) { free(buf); return NULL; }
+
+    wchar_t *wbuf = (wchar_t *)malloc(((size_t)wlen + 1) * sizeof(wchar_t));
+    if (!wbuf) { free(buf); return NULL; }
+    mbstowcs(wbuf, buf, wlen + 1);
+    free(buf);
+    return wbuf;
 }
 
 
@@ -1259,15 +1299,38 @@ static void test_print_tokens(void) {
 }
 
 
-static void test_ast_print(void) {
-    printf("test_ast_print ... ");
+static void test_ast_print(wchar_t *path) {
+    printf("test_ast_print ... \n");
     test_allocator_reset();
 
-    wchar_t *code = L"((lambda ()     (native Math) (import Lib \"/root/lib.scm\") (define f (lambda (x y) (define f (lambda (x) (+ x Math.PI))) (Lib.foo (f x) y))) (define x 2) (define y 3) (display (f x y))         ))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/home/bd4sur/animac/demo.scm");
+    wchar_t *file_content = read_file_as_wstring(path);
+    assert(file_content != NULL);
+
+    const wchar_t *prefix = L"((lambda () ";
+    const wchar_t *suffix = L" ))";
+    size_t prefix_len = wcslen(prefix);
+    size_t suffix_len = wcslen(suffix);
+    size_t content_len = wcslen(file_content);
+    size_t code_len = prefix_len + content_len + suffix_len;
+
+    wchar_t *code = (wchar_t *)malloc((code_len + 1) * sizeof(wchar_t));
+    assert(code != NULL);
+    wcscpy(code, prefix);
+    wcscat(code, file_content);
+    wcscat(code, suffix);
+    code[code_len] = L'\0';
+    free(file_content);
+
+    am_ast_t *ast = am_parser(&test_allocator, code, path);
     assert(ast != NULL);
 
+    printf("=== highlighted code ===\n");
+    am_print_highlighted(code, ast->tokens, (int32_t)(ast->token_count));
+    printf("\n=== tokens ===\n");
+
     print_tokens(code, ast->tokens, (size_t)(ast->token_count));
+
+    free(code);
 
     FILE *out = tmpfile();
     assert(out != NULL);
@@ -1346,7 +1409,7 @@ int main(void) {
     test_parse_top_lambda_and_var_top();
     test_parse_tail_call_analysis();
     test_print_tokens();
-    test_ast_print();
+    test_ast_print(L"/home/bd4sur/animac/test.scm");
 
     test_destroy(&test_allocator_state);
 
