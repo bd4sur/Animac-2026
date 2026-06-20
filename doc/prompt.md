@@ -398,7 +398,27 @@ for (size_t i = 1; i < ctx->module_counter; i++) {
 }
 ```
 
-两个AST融合算法伪代码：
+
+
+
+
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+为实现Scheme解释器的AST模块链接器，请你在 @src/ast.c 中，根据下文描述的算法，实现两个AST的融合算法，即 am_ast_merge 函数。
+
+## 术语约定
+
+- 模块：一个完整的Scheme源码文件，及其解析得到的AST。模块之间可互相引用。
+- 外部引用：指的是通过import和点号分隔标识符，引用外部模块变量。(import Alias "/path/to/module.scm")表达式，声明对外部模块的导入，并赋予其“别名”Alias，别名属于特殊变量，其类型为AM_VAR_TYPE_IMPORT_ALIAS。代码中通过“别名.标识符”的格式，引用外部模块的变量。“别名.标识符”整体也是一个变量，在parse阶段，其类型为AM_VAR_TYPE_IMPORT_REF。
+- 模块ID：或者叫模块的“全限定名”，是模块源码文件的绝对路径转换得到的、在整个宿主环境中具有唯一性的字符串。模块ID实质上就是模块文件的绝对路径，只是被转换成了点号分隔的标识符格式。模块ID在模块parse和链接阶段，模块ID和模块绝对路径用于唯一确定一个模块，使得参与链接的所有变量都具有全局唯一的字符串形式和varid。
+- importer（主引模块）：代码中通过(import ...)引用其他模块的模块。
+- importee（被引模块）：被其他importer引用的模块。主引被引是相对的。在引用关系有向无环图（DAG）构建过程中，规定importer指向importee。
+- 引用根：链接任务的唯一输入模块，是引用关系图的唯一起点。一般是项目的主模块（main.scm之类的）。
+
+## 两个AST融合算法的伪代码
+
+注意：以下伪代码完全没有考虑类型检查、错误处理、内存分配和释放等工程细节，你需要补全这些必要细节。你需要特别注意 am_value_t 和 am_handle_t/am_varid_t/am_symbol_t 等类型的区别。am_value_t是解释器的tagged pointer value，是包装了的值，而后面那些是裸值。具体可参考 @include/object.h 。
 
 ```
 
@@ -449,7 +469,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     // 1.3 修改所有handle
 
     // 记录handle映射关系（importee(旧)->importer(新)）
-    am_map_t *handle_mapping = am_map_create(importer->alloc, importee->nodes->handle_counter);
+    am_map_t *handle_merge_mapping = am_map_create(importer->alloc, importee->nodes->handle_counter);
     // 第一遍扫描：在importer->nodes中申请新handle，记录importee->nodes中所有的handle与新handle的映射关系
     for (am_handle_t hd of importee->nodes) {
         am_value_t old_handle_value = am_make_value_of_handle(hd);
@@ -457,29 +477,29 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
         am_handle_t new_handle = am_heap_alloc_handle(importer->alloc, importer->nodes);
         am_value_t new_handle_value = am_make_value_of_handle(new_handle);
         // 登记映射关系
-        am_map_set(importer->alloc, handle_mapping, old_handle_value, new_handle_value);
+        am_map_set(importer->alloc, handle_merge_mapping, old_handle_value, new_handle_value);
     }
     // 第二遍扫描：修改并迁移元数据中的handle
     // 迁移lambda_nodes
     for (am_value_t hd_value of importee->lambda_nodes) {
-        am_value_t new_hd_value = am_map_get(importer->alloc, handle_mapping, hd_value);
+        am_value_t new_hd_value = am_map_get(importer->alloc, handle_merge_mapping, hd_value);
         am_list_push(importer->alloc, importer->lambda_nodes, new_hd_value);
     }
     // 迁移tailcall_handles
     for (am_value_t hd_value of importee->tailcall_handles) {
-        am_value_t new_hd_value = am_map_get(importer->alloc, handle_mapping, hd_value);
+        am_value_t new_hd_value = am_map_get(importer->alloc, handle_merge_mapping, hd_value);
         am_list_push(importer->alloc, importer->tailcall_handles, new_hd_value);
     }
     // 迁移dependencies
     for ({am_value_t varid_value , am_value_t hd_value} of importee->dependencies) {
         am_value_t new_varid_value = am_map_get(importer->alloc, varid_merge_mapping, varid_value);
-        am_value_t new_hd_value = am_map_get(importer->alloc, handle_mapping, hd_value);
+        am_value_t new_hd_value = am_map_get(importer->alloc, handle_merge_mapping, hd_value);
         am_map_set(importer->alloc, importer->dependencies, new_varid_value, new_hd_value);
     }
     // 迁移natives
     for ({am_value_t varid_value , am_value_t hd_value} of importee->natives) {
         am_value_t new_varid_value = am_map_get(importer->alloc, varid_merge_mapping, varid_value);
-        am_value_t new_hd_value = am_map_get(importer->alloc, handle_mapping, hd_value);
+        am_value_t new_hd_value = am_map_get(importer->alloc, handle_merge_mapping, hd_value);
         am_map_set(importer->alloc, importer->natives, new_varid_value, new_hd_value);
     }
     // 第三遍扫描：全量遍历importee->nodes中所有的list对象的所有children，针对symbol、varid和handle进行匹配和替换
@@ -495,7 +515,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
                     // 此处判断child的TPV的类型：
                     // - 如果是AM_VALUE_TYPE_SYMBOL，则通过child在symbol_merge_mapping中找到新的value，并原位替换原value
                     // - 如果是AM_VALUE_TYPE_VARID，则通过child在varid_merge_mapping中找到新的value，并原位替换原value
-                    // - 如果是AM_VALUE_TYPE_HANDLE，则通过child在handle_mapping中找到新的value，并原位替换原value
+                    // - 如果是AM_VALUE_TYPE_HANDLE，则通过child在handle_merge_mapping中找到新的value，并原位替换原value
                     // - 其他值类型无动作
                 }
             }
@@ -506,7 +526,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     // 第2步：将importee的所有nodes拷贝到importer->nodes中
 
     for (am_handle_t hd of importee->nodes) {
-        am_value_t new_hd_value = am_map_get(importer->alloc, handle_mapping, am_make_value_of_handle(hd));
+        am_value_t new_hd_value = am_map_get(importer->alloc, handle_merge_mapping, am_make_value_of_handle(hd));
         am_value_t val = am_heap_get(importee->alloc, importee->nodes, am_make_value_of_handle(hd));
         if (am_value_is_ptr(val)) {
             am_object_t *obj = am_value_to_ptr(val);
@@ -522,12 +542,65 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     }
 
     // 第3步：在importer中更新来自importee的node的list亲子节点结构信息，这是AST融合的核心步骤
-    // 原理简述：模块AST的顶层lambda节点，就是整个模块的“顶层作用域”。在这个lambda节点的直接bodies中的所有child，都是模块的“顶级节点”。AST融合的过程，就是将importee的所有顶级节点，嫁接到importer的顶层作用域上。这个嫁接过程有两个需要注意的细节：一是不仅要将importee的所有顶级节点的新handle（此时importee的所有node已经拷贝到importer->nodes中了）加入顶层作用域的bodies，还要将这些顶级节点的parent字段修改为importer的顶层lambda节点的handle。二是嫁接有方向，受到order参数的控制。默认情况下（order=0），importee是被依赖的，importer需要用到importee提供的信息，因此importee的顶级节点在加入importer的顶层作用域bodies时，应当置于importer原有顶级节点的前面。例如importee的顶级节点是H5、H6、H7，而importer的原有顶级节点是H1、H2、H3，则merge之后，importer的顶层lambda节点的bodies应当是[H5,H6,H7 , H1,H2,H3]。如果order=1，则importee的顶级节点在importer的后面，也即[H1,H2,H3 , H5,H6,H7]。
-    // TODO 在Parse的后处理阶段提前计算 am_ast_get_top_lambda_node_handle 并写入ast结构体
+    // 实现本函数时必须牢记的参考信息：
+    //   Lambda表结构说明：Lambda表采用形参列表扁平化存储的设计，具体如下。
+    //   children = ['lambda , n_param , param0 , ... , param(n-1) , body0 , ...]
+    //   - length = children项数，等于lambda关键字1项+形参数量字段1项+形参数量+函数体项数
+    //   - children[0] = AM_VALUE_KW_lambda
+    //   - children[1] = am_value_t(满足am_value_is_uint) 引数（形参）数量，记为n
+    //   - children[2 ~ (2+n)] = n个形参的am_varid_t，且都必须为am_varid_n类型
+    //   - children[(2+n) ~ length] = lambda函数体各项的am_value_t
+    //   例如：(lambda (x y) 666) 对应列表对象的children为：['lambda , 2 , x_varid , y_varid , 666]，因而形参数为2，函数体项数=length-形参数-2=1
+    // 原理简述：模块AST的顶层lambda节点，其把柄为ast->top_lambda_handle，就是整个模块的“顶层作用域”。在这个lambda节点的直接bodies中的所有children，都是模块的“顶级节点”。AST融合的过程，就是将importee的所有“顶级节点”，“嫁接”到importer的顶层作用域上。
+    // 这个“嫁接”过程有两个需要注意的细节：一是不仅要将importee的所有顶级节点的新handle（此时importee的所有node已经拷贝到importer->nodes中了，其映射关系记录在handle_merge_mapping中）加入顶层作用域的bodies，还要将这些顶级节点的parent字段修改为importer的顶层lambda节点的handle。二是嫁接有方向，受到order参数的控制。默认情况下（order=0），importee是被依赖的，importer需要用到importee提供的信息，因此importee的顶级节点在加入importer的顶层作用域bodies时，应当置于importer原有顶级节点的前面。例如importee的顶级节点是H5、H6、H7，而importer的原有顶级节点是H1、H2、H3，则merge之后，importer的顶层lambda节点的bodies应当是[H5,H6,H7 , H1,H2,H3]。如果order=1，则importee的顶级节点在importer的后面，也即[H1,H2,H3 , H5,H6,H7]。
+
+    // 最后：返回融合后的唯一AST：importer。并完成临时对象析构等收尾工作。
 
 }
 
 ```
+
+## 测试
+
+你需要在 @test/test_parser.c 中，参考现有代码，新增一个测试am_ast_merge的用例。该用例从文件系统读取两个测试文件，分别是 importer: "/home/bd4sur/animac/x.scm" 和 importee: "/home/bd4sur/animac/y.scm"，parse后，执行 am_ast_merge 进行合并，并检查合并结果。
+
+作为参考，我提供的测试Scheme代码和预期结果是：
+
+```
+;; importee: /home/bd4sur/animac/y.scm
+(import z "/home/bd4sur/animac/z.scm")
+(define f (lambda (x y z) 888))
+(define x z.x)
+(define y z.y)
+(define z z.z)
+
+;; importer: /home/bd4sur/animac/x.scm
+(import z "/home/bd4sur/animac/y.scm")
+(import y "/home/bd4sur/animac/z.scm")
+(define f (lambda (x y z) 888))
+(define x (+ y.x z.x))
+(define y (+ y.y z.y))
+(define z (+ y.z z.z))
+
+;; 合并后的AST（对应的代码，供参考）
+;; 需要说明的是：变量名中出现的数字，取决于实际的对象handle分配情况，你不必关心具体的值，只需要大概检查整体结构是否正确即可。
+(import home.bd4sur.animac.y.z "/home/bd4sur/animac/z.scm")
+(define home.bd4sur.animac.y.0.f (lambda (home.bd4sur.animac.y.1.x home.bd4sur.animac.y.1.y home.bd4sur.animac.y.1.z) 888))
+(define home.bd4sur.animac.y.0.x home.bd4sur.animac.y.z.x)
+(define home.bd4sur.animac.y.0.y home.bd4sur.animac.y.z.y)
+(define home.bd4sur.animac.y.0.z home.bd4sur.animac.y.z.z)
+(import home.bd4sur.animac.x.z "/home/bd4sur/animac/y.scm")
+(import home.bd4sur.animac.x.y "/home/bd4sur/animac/z.scm")
+(define home.bd4sur.animac.x.0.f (lambda (home.bd4sur.animac.x.1.x home.bd4sur.animac.x.1.y home.bd4sur.animac.x.1.z) 888))
+(define home.bd4sur.animac.x.0.x (+ home.bd4sur.animac.x.y.x home.bd4sur.animac.x.z.x))
+(define home.bd4sur.animac.x.0.y (+ home.bd4sur.animac.x.y.y home.bd4sur.animac.x.z.y))
+(define home.bd4sur.animac.x.0.z (+ home.bd4sur.animac.x.y.z home.bd4sur.animac.x.z.z))
+
+```
+
+请你实现上述需求。不得修改文件系统中的测试用例Scheme代码。你可以使用WSL进行编译构建和测试。
+
+
 
 
 
@@ -547,7 +620,7 @@ int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx) {
 
 am_linker_import_ref_resolution(ctx, importer_index)解引用算法：
 - 首先要知道，外部引用解析发生在AST大一统之后，所有的名字都是全局唯一无歧义的。
-- 全量遍历整个合并后的AST，在chuldren中寻找IMPORT_REF类型的变量。
+- 全量遍历整个合并后的AST，在children中寻找IMPORT_REF类型的变量。
 - 从最后一个点将IMPORT_REF分割为 prefix=importer_id.alias 和 suffix。
 - 在全局dependencies中，查询 prefix=importer_id.alias 对应的 importee_path ，转为模块ID：importee_id。
 - 在var_top中查找IMPORT_REF在importee中的变量名：匹配以下模式的变量：importee_id.[top_lambda_node_of_importee].suffix。说明：尽管中间的[top_lambda_node_of_importee]不知道，但是，通过importee_id+顶级变量+suffix三个信息，已经能够在var_top中唯一定位出一个变量。如有任何异常（找不到等）则报错。
@@ -595,6 +668,15 @@ size_t *am_topo_sort(size_t DAG[][2], size_t edge_num);
 
 ---------------------
 
+你之前对 @src/ast.c 中的 am_ast_merge 的实现有误：
+
+在“第3步：将 importee 的顶级节点嫁接到 importer 的顶层作用域”中，你首先通过importee->nodes和importee_top_lambda获得了importee_bodies，这是正确的，因为在第一步中，已经将importee的所有node的children替换为新的（在importer->nodes中分配的）handle。
+
+因此，后续过程中，你可以直接使用601行“am_value_t *importee_bodies = am_list_lambda_get_bodies(...”获取的importee_bodies，而不需要再做handle_merge_mapping的映射查表。
+
+在你现在的实现中，引入了mapped_importee_bodies，由于上面的分析，这是多此一举的、画蛇添足的。
+
+因此，我要求你在“第3步：将 importee 的顶级节点嫁接到 importer 的顶层作用域”中，去掉mapped_importee_bodies相关逻辑，直接使用你已经获取的importee_bodies即可。
 
 ---------------------
 

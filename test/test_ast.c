@@ -419,8 +419,12 @@ static void test_merge(void) {
         if (n != lst) am_heap_set(&test_allocator, source->nodes, lambda2, am_make_value_of_ptr((am_object_t *)n));
     }
 
-    // 合并：源前置
-    assert(am_ast_merge(target, source, L"top") == 1);
+    // 设置顶层 lambda 把柄，便于 am_ast_merge 和后续检查定位
+    target->top_lambda_handle = lambda1;
+    source->top_lambda_handle = lambda2;
+
+    // 合并：源前置（order=0 表示 importee 的顶级节点置于 importer 之前）
+    assert(am_ast_merge(target, source, 0) == 0);
 
     am_value_t *bodies = am_ast_get_global_nodes(target);
     assert(bodies != NULL);

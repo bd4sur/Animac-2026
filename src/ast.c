@@ -267,165 +267,424 @@ size_t am_ast_get_node_token_index(am_ast_t *ast, am_handle_t node_handle) {
 }
 
 
-// 功能描述：融合另一个AST。
-// 注意：此实现当前假设 am_heap_set 能够为未分配的把柄创建条目。但 heap 已改为严格模式，
-//       把柄必须先通过 am_heap_alloc_handle 申请，不允许直接创建/注册指定把柄。因此该函数
-//       需要后续改造（例如深拷贝源 AST 节点并在 target 中重新申请把柄、重映射内部引用）。
-int32_t am_ast_merge(am_ast_t *target, am_ast_t *source, const wchar_t *order) {
-    if (!target || !source || !order) return 0;
-    int top_order = (wcscmp(order, L"top") == 0);
-    int bottom_order = (wcscmp(order, L"bottom") == 0);
-    if (!top_order && !bottom_order) return 0;
+// am_ast_merge 内部辅助：收集 importee->nodes 中所有把柄与值
 
-    // 1. 融合 nodes：将source的所有节点按位拷贝到target（与TS当前行为一致；TODO 建议深拷贝）
-    size_t source_node_count = am_map_length(source->alloc, source->nodes->table);
-    am_value_t *source_handles = am_map_keys(source->alloc, source->nodes->table);
-    if (source_node_count > 0 && !source_handles) return 0;
-    for (size_t i = 0; i < source_node_count; i++) {
-        am_handle_t hd = am_value_to_handle(source_handles[i]);
-        am_value_t v = am_heap_get(source->alloc, source->nodes, hd);
-        // 将source的对象指针也设置到target的同一把柄下
-        am_heap_set(target->alloc, target->nodes, hd, v);
+typedef struct {
+    am_handle_t old_handle;
+    am_value_t  old_value;
+} merge_node_entry_t;
+
+typedef struct {
+    merge_node_entry_t *entries;
+    size_t              length;
+    size_t              capacity;
+} merge_node_collect_ctx_t;
+
+static void merge_collect_node_cb(am_handle_t handle, am_value_t value, void *user_data) {
+    merge_node_collect_ctx_t *ctx = (merge_node_collect_ctx_t *)user_data;
+    if (ctx->length >= ctx->capacity) {
+        size_t new_cap = ctx->capacity ? ctx->capacity * 2 : 16;
+        merge_node_entry_t *new_entries = (merge_node_entry_t *)realloc(ctx->entries,
+                                                                         new_cap * sizeof(merge_node_entry_t));
+        if (!new_entries) return;
+        ctx->entries = new_entries;
+        ctx->capacity = new_cap;
     }
-    free(source_handles);
+    ctx->entries[ctx->length].old_handle = handle;
+    ctx->entries[ctx->length].old_value = value;
+    ctx->length++;
+}
 
-    // 2. 重组全局节点
-    am_handle_t source_top_lambda = am_ast_get_top_lambda_node_handle(source);
-    am_handle_t target_top_lambda = am_ast_get_top_lambda_node_handle(target);
-    if (source_top_lambda == AM_HANDLE_NULL || target_top_lambda == AM_HANDLE_NULL) return 0;
+static am_wstring_t *merge_copy_wstring(am_allocator_t *alloc, am_wstring_t *ws) {
+    if (!ws) return NULL;
+    size_t total_size = sizeof(am_wstring_t) + ws->length * sizeof(am_value_t);
+    am_wstring_t *copy = (am_wstring_t *)am_malloc(alloc, total_size);
+    if (!copy) return NULL;
+    copy->base = ws->base;
+    copy->length = ws->length;
+    if (ws->length > 0) {
+        memcpy(copy->content, ws->content, ws->length * sizeof(am_value_t));
+    }
+    return copy;
+}
 
-    am_value_t *source_bodies = am_ast_get_global_nodes(source);
-    am_value_t *target_bodies = am_ast_get_global_nodes(target);
-    if (!source_bodies || !target_bodies) {
-        free(source_bodies);
-        free(target_bodies);
-        return 0;
+
+// 功能描述：将importee融合进importer，也就是importer吃掉importee。
+// 实现说明：成功返回0；失败返回-1。
+int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
+    if (!importer || !importee || !importer->alloc || !importee->alloc) return -1;
+
+    // =============================================================================
+    // 第1步：修改importee的元数据，将其映射/合并到importer
+    // =============================================================================
+
+    // 1.1 symbol 映射
+    size_t symbol_count = importee->symbol_vocab ? importee->symbol_vocab->length : 0;
+    am_map_t *symbol_merge_mapping = am_map_create(importer->alloc,
+                                                    symbol_count > 0 ? symbol_count : 8);
+    if (!symbol_merge_mapping) return -1;
+
+    for (size_t i = 0; i < symbol_count; i++) {
+        wchar_t *word = am_vocab_get(importee->alloc, importee->symbol_vocab, &i);
+        if (!word) return -1;
+        size_t new_idx = am_vocab_insert(importer->alloc, importer->symbol_vocab, word);
+        if (new_idx == SIZE_MAX) return -1;
+
+        am_map_t *m = am_map_set(importer->alloc, symbol_merge_mapping,
+                                  am_make_value_of_symbol((am_symbol_t)i),
+                                  am_make_value_of_symbol((am_symbol_t)new_idx));
+        if (!m) return -1;
+        symbol_merge_mapping = m;
     }
 
-    size_t source_n_body = am_list_lambda_get_body_number(source->alloc,
-        value_to_list(am_heap_get(source->alloc, source->nodes, source_top_lambda)));
-    size_t target_n_body = am_list_lambda_get_body_number(target->alloc,
-        value_to_list(am_heap_get(target->alloc, target->nodes, target_top_lambda)));
+    // 1.2 variable 映射及相关元数据
+    size_t var_count = importee->var_vocab ? importee->var_vocab->length : 0;
+    am_map_t *varid_merge_mapping = am_map_create(importer->alloc,
+                                                   var_count > 0 ? var_count : 8);
+    if (!varid_merge_mapping) return -1;
 
-    size_t new_n_body = source_n_body + target_n_body;
-    am_value_t *new_bodies = (am_value_t *)malloc(new_n_body * sizeof(am_value_t));
-    if (!new_bodies) {
-        free(source_bodies);
-        free(target_bodies);
-        return 0;
-    }
+    for (size_t i = 0; i < var_count; i++) {
+        wchar_t *word = am_vocab_get(importee->alloc, importee->var_vocab, &i);
+        if (!word) return -1;
+        size_t new_varid = am_vocab_insert(importer->alloc, importer->var_vocab, word);
+        if (new_varid == SIZE_MAX) return -1;
 
-    if (top_order) {
-        memcpy(new_bodies, source_bodies, source_n_body * sizeof(am_value_t));
-        memcpy(new_bodies + source_n_body, target_bodies, target_n_body * sizeof(am_value_t));
-    }
-    else {
-        memcpy(new_bodies, target_bodies, target_n_body * sizeof(am_value_t));
-        memcpy(new_bodies + target_n_body, source_bodies, source_n_body * sizeof(am_value_t));
-    }
+        am_map_t *m = am_map_set(importer->alloc, varid_merge_mapping,
+                                  am_make_value_of_varid((am_varid_t)i),
+                                  am_make_value_of_varid((am_varid_t)new_varid));
+        if (!m) return -1;
+        varid_merge_mapping = m;
 
-    if (am_ast_set_global_nodes(target, new_bodies, new_n_body) < 0) {
-        free(new_bodies);
-        free(source_bodies);
-        free(target_bodies);
-        return 0;
-    }
-
-    // 修改被挂载节点的parent字段（仅对handle类型的子节点有效）
-    for (size_t i = 0; i < source_n_body; i++) {
-        if (!am_value_is_handle(source_bodies[i])) continue;
-        am_value_t node_val = am_heap_get(target->alloc, target->nodes, am_value_to_handle(source_bodies[i]));
-        if (am_value_is_ptr(node_val)) {
-            am_list_t *lst = value_to_list(node_val);
-            lst->parent = target_top_lambda;
+        am_value_t vtype = am_list_get(importee->alloc, importee->var_type, i);
+        if (new_varid >= importer->var_type->length) {
+            am_list_t *vt = am_list_push(importer->alloc, importer->var_type, vtype);
+            if (!vt) return -1;
+            importer->var_type = vt;
+        } else {
+            if (am_list_set(importer->alloc, importer->var_type, new_varid, vtype) != 0) return -1;
         }
     }
 
+    // var_top 迁移：将 importee 的顶级变量 varid 映射后追加到 importer
+    if (importee->var_top) {
+        for (size_t i = 0; i < importee->var_top->length; i++) {
+            am_value_t vv = am_list_get(importee->alloc, importee->var_top, i);
+            if (!am_value_is_varid(vv)) continue;
+            am_value_t mapped = am_map_get(importer->alloc, varid_merge_mapping, vv);
+            if (!am_value_is_varid(mapped)) continue;
+            am_list_t *lst = am_list_push(importer->alloc, importer->var_top, mapped);
+            if (!lst) return -1;
+            importer->var_top = lst;
+        }
+    }
+
+    // 预先收集 importee->nodes 中所有节点，便于多遍扫描
+    merge_node_collect_ctx_t node_ctx = { NULL, 0, 0 };
+    if (importee->nodes) {
+        am_heap_iter(importee->alloc, importee->nodes, merge_collect_node_cb, &node_ctx);
+    }
+    size_t n_nodes = node_ctx.length;
+
+    // 1.3 handle 映射
+    am_map_t *handle_merge_mapping = am_map_create(importer->alloc,
+                                                    n_nodes > 0 ? n_nodes : 8);
+    if (!handle_merge_mapping) {
+        free(node_ctx.entries);
+        return -1;
+    }
+
+    for (size_t i = 0; i < n_nodes; i++) {
+        am_handle_t new_handle = am_heap_alloc_handle(importer->alloc, importer->nodes);
+        if (new_handle == AM_HANDLE_NULL) {
+            free(node_ctx.entries);
+            return -1;
+        }
+        am_map_t *m = am_map_set(importer->alloc, handle_merge_mapping,
+                                  am_make_value_of_handle(node_ctx.entries[i].old_handle),
+                                  am_make_value_of_handle(new_handle));
+        if (!m) {
+            free(node_ctx.entries);
+            return -1;
+        }
+        handle_merge_mapping = m;
+    }
+
+    // 迁移 lambda_handles
+    if (importee->lambda_handles) {
+        for (size_t i = 0; i < importee->lambda_handles->length; i++) {
+            am_value_t old_hv = am_list_get(importee->alloc, importee->lambda_handles, i);
+            am_value_t new_hv = am_map_get(importer->alloc, handle_merge_mapping, old_hv);
+            if (!am_value_is_handle(new_hv)) continue;
+            am_list_t *lst = am_list_push(importer->alloc, importer->lambda_handles, new_hv);
+            if (!lst) {
+                free(node_ctx.entries);
+                return -1;
+            }
+            importer->lambda_handles = lst;
+        }
+    }
+
+    // 迁移 tailcall_handles
+    if (importee->tailcall_handles) {
+        for (size_t i = 0; i < importee->tailcall_handles->length; i++) {
+            am_value_t old_hv = am_list_get(importee->alloc, importee->tailcall_handles, i);
+            am_value_t new_hv = am_map_get(importer->alloc, handle_merge_mapping, old_hv);
+            if (!am_value_is_handle(new_hv)) continue;
+            am_list_t *lst = am_list_push(importer->alloc, importer->tailcall_handles, new_hv);
+            if (!lst) {
+                free(node_ctx.entries);
+                return -1;
+            }
+            importer->tailcall_handles = lst;
+        }
+    }
+
+    // 迁移 dependencies
+    if (importee->dependencies) {
+        size_t dep_count = am_map_length(importee->alloc, importee->dependencies);
+        am_value_t *dep_keys = am_map_keys(importee->alloc, importee->dependencies);
+        for (size_t i = 0; i < dep_count; i++) {
+            am_value_t old_varid_val = dep_keys[i];
+            am_value_t old_h_val = am_map_get(importee->alloc, importee->dependencies, old_varid_val);
+            am_value_t new_varid_val = am_map_get(importer->alloc, varid_merge_mapping, old_varid_val);
+            am_value_t new_h_val = am_map_get(importer->alloc, handle_merge_mapping, old_h_val);
+            if (am_value_is_varid(new_varid_val) && am_value_is_handle(new_h_val)) {
+                am_map_t *m = am_map_set(importer->alloc, importer->dependencies,
+                                          new_varid_val, new_h_val);
+                if (!m) {
+                    free(dep_keys);
+                    free(node_ctx.entries);
+                    return -1;
+                }
+                importer->dependencies = m;
+            }
+        }
+        if (dep_keys) free(dep_keys);
+    }
+
+    // 迁移 natives
+    if (importee->natives) {
+        size_t nat_count = am_map_length(importee->alloc, importee->natives);
+        am_value_t *nat_keys = am_map_keys(importee->alloc, importee->natives);
+        for (size_t i = 0; i < nat_count; i++) {
+            am_value_t old_varid_val = nat_keys[i];
+            am_value_t old_h_val = am_map_get(importee->alloc, importee->natives, old_varid_val);
+            am_value_t new_varid_val = am_map_get(importer->alloc, varid_merge_mapping, old_varid_val);
+            am_value_t new_h_val = am_map_get(importer->alloc, handle_merge_mapping, old_h_val);
+            if (am_value_is_varid(new_varid_val) && am_value_is_handle(new_h_val)) {
+                am_map_t *m = am_map_set(importer->alloc, importer->natives,
+                                          new_varid_val, new_h_val);
+                if (!m) {
+                    free(nat_keys);
+                    free(node_ctx.entries);
+                    return -1;
+                }
+                importer->natives = m;
+            }
+        }
+        if (nat_keys) free(nat_keys);
+    }
+
+    // 第三遍扫描：替换所有 list 节点 children 中的 symbol/varid/handle
+    for (size_t i = 0; i < n_nodes; i++) {
+        am_value_t val = node_ctx.entries[i].old_value;
+        if (!am_value_is_ptr(val)) {
+            free(node_ctx.entries);
+            return -1;
+        }
+        am_object_t *obj = am_value_to_ptr(val);
+        if (obj->type != AM_OBJECT_TYPE_LIST) continue;
+
+        am_list_t *lst = (am_list_t *)obj;
+        for (size_t j = 0; j < lst->length; j++) {
+            am_value_t child = am_list_get(importee->alloc, lst, j);
+            am_value_t new_child = child;
+            int replaced = 0;
+            if (am_value_is_symbol(child)) {
+                new_child = am_map_get(importer->alloc, symbol_merge_mapping, child);
+                if (am_value_is_symbol(new_child)) replaced = 1;
+            } else if (am_value_is_varid(child)) {
+                new_child = am_map_get(importer->alloc, varid_merge_mapping, child);
+                if (am_value_is_varid(new_child)) replaced = 1;
+            } else if (am_value_is_handle(child)) {
+                new_child = am_map_get(importer->alloc, handle_merge_mapping, child);
+                if (am_value_is_handle(new_child)) replaced = 1;
+            }
+            if (replaced && new_child != child) {
+                if (am_list_set(importee->alloc, lst, j, new_child) != 0) {
+                    free(node_ctx.entries);
+                    return -1;
+                }
+            }
+        }
+    }
+
+    // 在拷贝节点之前先确定 importer / importee 的顶层 lambda，
+    // 避免 importee 顶层 application 也被拷贝到 importer 后产生查找歧义。
+    am_handle_t importer_top_lambda = importer->top_lambda_handle;
+    if (importer_top_lambda == AM_HANDLE_NULL ||
+        am_heap_has_handle(importer->alloc, importer->nodes, importer_top_lambda) != 0) {
+        importer_top_lambda = am_ast_get_top_lambda_node_handle(importer);
+    }
+    am_handle_t importee_top_lambda = importee->top_lambda_handle;
+    if (importee_top_lambda == AM_HANDLE_NULL ||
+        am_heap_has_handle(importee->alloc, importee->nodes, importee_top_lambda) != 0) {
+        importee_top_lambda = am_ast_get_top_lambda_node_handle(importee);
+    }
+    if (importer_top_lambda == AM_HANDLE_NULL || importee_top_lambda == AM_HANDLE_NULL) {
+        free(node_ctx.entries);
+        return -1;
+    }
+
+    // =============================================================================
+    // 第2步：将 importee 的所有 nodes 深拷贝到 importer->nodes 中
+    // =============================================================================
+    for (size_t i = 0; i < n_nodes; i++) {
+        am_value_t old_h_val = am_make_value_of_handle(node_ctx.entries[i].old_handle);
+        am_value_t new_h_val = am_map_get(importer->alloc, handle_merge_mapping, old_h_val);
+        if (!am_value_is_handle(new_h_val)) continue;
+        am_handle_t new_h = am_value_to_handle(new_h_val);
+
+        am_value_t val = node_ctx.entries[i].old_value;
+        if (!am_value_is_ptr(val)) {
+            free(node_ctx.entries);
+            return -1;
+        }
+        am_object_t *obj = am_value_to_ptr(val);
+        am_value_t new_val;
+        if (obj->type == AM_OBJECT_TYPE_LIST) {
+            am_list_t *old_lst = (am_list_t *)obj;
+            am_list_t *new_lst = am_list_copy(importer->alloc, old_lst);
+            if (!new_lst) {
+                free(node_ctx.entries);
+                return -1;
+            }
+            if (new_lst->parent != AM_HANDLE_NULL) {
+                am_value_t mapped_parent = am_map_get(importer->alloc, handle_merge_mapping,
+                                                       am_make_value_of_handle(new_lst->parent));
+                if (am_value_is_handle(mapped_parent)) {
+                    new_lst->parent = am_value_to_handle(mapped_parent);
+                }
+            }
+            new_val = am_make_value_of_ptr((am_object_t *)new_lst);
+        } else if (obj->type == AM_OBJECT_TYPE_WSTRING) {
+            am_wstring_t *new_ws = merge_copy_wstring(importer->alloc, (am_wstring_t *)obj);
+            if (!new_ws) {
+                free(node_ctx.entries);
+                return -1;
+            }
+            new_val = am_make_value_of_ptr((am_object_t *)new_ws);
+        } else {
+            free(node_ctx.entries);
+            return -1;
+        }
+
+        if (am_heap_set(importer->alloc, importer->nodes, new_h, new_val) != 0) {
+            free(node_ctx.entries);
+            return -1;
+        }
+    }
+
+    // =============================================================================
+    // 第3步：将 importee 的顶级节点嫁接到 importer 的顶层作用域
+    // =============================================================================
+
+    // importee 顶层 lambda 的函数体
+    am_value_t importee_top_lambda_val = am_heap_get(importee->alloc, importee->nodes,
+                                                       importee_top_lambda);
+    if (!am_value_is_ptr(importee_top_lambda_val)) {
+        free(node_ctx.entries);
+        return -1;
+    }
+    am_list_t *importee_top_lambda_lst = (am_list_t *)am_value_to_ptr(importee_top_lambda_val);
+    size_t n_importee_bodies = 0;
+    am_value_t *importee_bodies = am_list_lambda_get_bodies(importee->alloc,
+                                                              importee_top_lambda_lst,
+                                                              &n_importee_bodies);
+
+    // importee_bodies 中的 handle 已在第1步第三遍扫描中被替换为 importer->nodes 中的新 handle，
+    // 因此可以直接使用，无需再次查表映射。
+    if (n_importee_bodies > 0 && !importee_bodies) {
+        free(node_ctx.entries);
+        return -1;
+    }
+
+    // 将嫁接到 importer 的顶级节点的 parent 修正为 importer 顶层 lambda
+    for (size_t i = 0; i < n_importee_bodies; i++) {
+        am_value_t body = importee_bodies[i];
+        if (am_value_is_handle(body)) {
+            am_handle_t body_h = am_value_to_handle(body);
+            am_value_t body_val = am_heap_get(importer->alloc, importer->nodes, body_h);
+            if (am_value_is_ptr(body_val)) {
+                am_object_t *body_obj = am_value_to_ptr(body_val);
+                if (body_obj->type == AM_OBJECT_TYPE_LIST) {
+                    ((am_list_t *)body_obj)->parent = importer_top_lambda;
+                }
+            }
+        }
+    }
+
+    // importer 现有的顶层函数体
+    am_value_t importer_top_lambda_val = am_heap_get(importer->alloc, importer->nodes,
+                                                       importer_top_lambda);
+    if (!am_value_is_ptr(importer_top_lambda_val)) {
+        free(importee_bodies);
+        free(node_ctx.entries);
+        return -1;
+    }
+    am_list_t *importer_top_lambda_lst = (am_list_t *)am_value_to_ptr(importer_top_lambda_val);
+    size_t n_importer_bodies = 0;
+    am_value_t *importer_bodies = am_list_lambda_get_bodies(importer->alloc,
+                                                              importer_top_lambda_lst,
+                                                              &n_importer_bodies);
+
+    size_t total_bodies = n_importee_bodies + n_importer_bodies;
+    am_value_t *new_bodies = NULL;
+    if (total_bodies > 0) {
+        new_bodies = (am_value_t *)malloc(total_bodies * sizeof(am_value_t));
+        if (!new_bodies) {
+            free(importer_bodies);
+            free(importee_bodies);
+            free(node_ctx.entries);
+            return -1;
+        }
+        if (order == 0) {
+            if (n_importee_bodies > 0) {
+                memcpy(new_bodies, importee_bodies,
+                       n_importee_bodies * sizeof(am_value_t));
+            }
+            if (n_importer_bodies > 0) {
+                memcpy(new_bodies + n_importee_bodies, importer_bodies,
+                       n_importer_bodies * sizeof(am_value_t));
+            }
+        } else {
+            if (n_importer_bodies > 0) {
+                memcpy(new_bodies, importer_bodies,
+                       n_importer_bodies * sizeof(am_value_t));
+            }
+            if (n_importee_bodies > 0) {
+                memcpy(new_bodies + n_importer_bodies, importee_bodies,
+                       n_importee_bodies * sizeof(am_value_t));
+            }
+        }
+    }
+
+    int32_t set_result = 0;
+    if (total_bodies > 0) {
+        set_result = am_ast_set_global_nodes(importer, new_bodies, total_bodies);
+    }
+
     free(new_bodies);
-    free(source_bodies);
-    free(target_bodies);
+    free(importer_bodies);
+    free(importee_bodies);
+    free(node_ctx.entries);
 
-    // 3. 删除source原来的顶级App和顶级Lambda节点
-    am_handle_t source_top_app = am_ast_get_top_node_handle(source);
-    if (source_top_app != AM_HANDLE_NULL) {
-        am_heap_free_handle(target->alloc, target->nodes, source_top_app);
-    }
-    if (source_top_lambda != AM_HANDLE_NULL) {
-        am_heap_free_handle(target->alloc, target->nodes, source_top_lambda);
-    }
+    am_map_destroy(importer->alloc, symbol_merge_mapping);
+    am_map_destroy(importer->alloc, varid_merge_mapping);
+    am_map_destroy(importer->alloc, handle_merge_mapping);
 
-    // 4. 合并 node_token_mapping
-    size_t ntm_count = am_map_length(source->alloc, source->node_token_mapping);
-    am_value_t *ntm_keys = am_map_keys(source->alloc, source->node_token_mapping);
-    if (ntm_count > 0 && !ntm_keys) return 0;
-    for (size_t i = 0; i < ntm_count; i++) {
-        am_value_t v = am_map_get(source->alloc, source->node_token_mapping, ntm_keys[i]);
-        am_map_t *map = am_map_set(target->alloc, target->node_token_mapping, ntm_keys[i], v);
-        if (!map) { free(ntm_keys); return 0; }
-        target->node_token_mapping = map;
-    }
-    free(ntm_keys);
-
-    // 5. 合并 lambda_handles（去掉source的顶级lambda）
-    for (size_t i = 0; i < source->lambda_handles->length; i++) {
-        am_value_t h = am_list_get(source->alloc, source->lambda_handles, i);
-        if (am_value_to_handle(h) == source_top_lambda) continue;
-        am_list_t *lst = am_list_push(target->alloc, target->lambda_handles, h);
-        if (!lst) return 0;
-        target->lambda_handles = lst;
-    }
-
-    // 6. 合并 tailcall_handles（去掉source的顶级app）
-    for (size_t i = 0; i < source->tailcall_handles->length; i++) {
-        am_value_t h = am_list_get(source->alloc, source->tailcall_handles, i);
-        if (am_value_to_handle(h) == source_top_app) continue;
-        am_list_t *lst = am_list_push(target->alloc, target->tailcall_handles, h);
-        if (!lst) return 0;
-        target->tailcall_handles = lst;
-    }
-
-    // 7. 合并 var_arn_mapping、var_top、dependencies、natives
-    size_t vm_count = am_map_length(source->alloc, source->var_arn_mapping);
-    am_value_t *vm_keys = am_map_keys(source->alloc, source->var_arn_mapping);
-    if (vm_count > 0 && !vm_keys) return 0;
-    for (size_t i = 0; i < vm_count; i++) {
-        am_value_t v = am_map_get(source->alloc, source->var_arn_mapping, vm_keys[i]);
-        am_map_t *map = am_map_set(target->alloc, target->var_arn_mapping, vm_keys[i], v);
-        if (!map) { free(vm_keys); return 0; }
-        target->var_arn_mapping = map;
-    }
-    free(vm_keys);
-
-    for (size_t i = 0; i < source->var_top->length; i++) {
-        am_value_t v = am_list_get(source->alloc, source->var_top, i);
-        am_list_t *lst = am_list_push(target->alloc, target->var_top, v);
-        if (!lst) return 0;
-        target->var_top = lst;
-    }
-
-    size_t dep_count = am_map_length(source->alloc, source->dependencies);
-    am_value_t *dep_keys = am_map_keys(source->alloc, source->dependencies);
-    if (dep_count > 0 && !dep_keys) return 0;
-    for (size_t i = 0; i < dep_count; i++) {
-        am_value_t v = am_map_get(source->alloc, source->dependencies, dep_keys[i]);
-        am_map_t *map = am_map_set(target->alloc, target->dependencies, dep_keys[i], v);
-        if (!map) { free(dep_keys); return 0; }
-        target->dependencies = map;
-    }
-    free(dep_keys);
-
-    size_t native_count = am_map_length(source->alloc, source->natives);
-    am_value_t *native_keys = am_map_keys(source->alloc, source->natives);
-    if (native_count > 0 && !native_keys) return 0;
-    for (size_t i = 0; i < native_count; i++) {
-        am_value_t v = am_map_get(source->alloc, source->natives, native_keys[i]);
-        am_map_t *map = am_map_set(target->alloc, target->natives, native_keys[i], v);
-        if (!map) { free(native_keys); return 0; }
-        target->natives = map;
-    }
-    free(native_keys);
-
-    return 1;
+    if (set_result != 0) return -1;
+    return 0;
 }
 
 

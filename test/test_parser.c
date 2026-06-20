@@ -1125,6 +1125,38 @@ static void ast_print(FILE *out, am_ast_t *ast) {
 }
 
 
+// 将 ast_print 的结果输出到 stdout。
+// 由于 stdout 可能已被 printf 置为字节取向，直接对 stdout 使用 fwprintf 可能无输出，
+// 因此先写入 tmpfile 再读取到 wchar_t 缓冲区，最后用 printf("%ls") 输出。
+static void ast_print_to_stdout(am_ast_t *ast) {
+    FILE *out = tmpfile();
+    assert(out != NULL);
+
+    ast_print(out, ast);
+    rewind(out);
+
+    size_t cap = 4096;
+    size_t len = 0;
+    wchar_t *buf = (wchar_t *)malloc(cap * sizeof(wchar_t));
+    assert(buf != NULL);
+
+    wint_t c;
+    while ((c = fgetwc(out)) != WEOF) {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            buf = (wchar_t *)realloc(buf, cap * sizeof(wchar_t));
+            assert(buf != NULL);
+        }
+        buf[len++] = (wchar_t)c;
+    }
+    buf[len] = L'\0';
+    fclose(out);
+
+    printf("\n%ls\n", buf);
+    free(buf);
+}
+
+
 static void test_parse_import_alias_rename(void) {
     printf("test_parse_import_alias_rename ... ");
     test_allocator_reset();
@@ -1381,6 +1413,194 @@ static void test_ast_print(wchar_t *path) {
 
 
 // ===============================================================================
+// AST merge 测试辅助函数
+// ===============================================================================
+
+static am_ast_t *parse_file(const wchar_t *path) {
+    wchar_t *file_content = read_file_as_wstring(path);
+    assert(file_content != NULL);
+
+    const wchar_t *prefix = L"((lambda () ";
+    const wchar_t *suffix = L" ))";
+    size_t code_len = wcslen(prefix) + wcslen(file_content) + wcslen(suffix);
+
+    wchar_t *code = (wchar_t *)am_malloc(&test_allocator, (code_len + 1) * sizeof(wchar_t));
+    assert(code != NULL);
+    wcscpy(code, prefix);
+    wcscat(code, file_content);
+    wcscat(code, suffix);
+    code[code_len] = L'\0';
+    free(file_content);
+
+    am_ast_t *ast = am_parser(&test_allocator, code, (wchar_t *)path);
+    assert(ast != NULL);
+    return ast;
+}
+
+
+static void assert_unique_var_exists(am_ast_t *ast, const wchar_t *module_id,
+                                      am_handle_t lambda_handle, const wchar_t *name) {
+    wchar_t buf[256];
+    int n = swprintf(buf, 256, L"%ls.%zu.%ls", module_id, lambda_handle, name);
+    assert(n > 0 && n < 256);
+    assert(am_vocab_find(ast->alloc, ast->var_vocab, buf) != SIZE_MAX);
+}
+
+
+static am_varid_t unique_varid_of(am_ast_t *ast, const wchar_t *module_id,
+                                   am_handle_t lambda_handle, const wchar_t *name) {
+    wchar_t buf[256];
+    int n = swprintf(buf, 256, L"%ls.%zu.%ls", module_id, lambda_handle, name);
+    assert(n > 0 && n < 256);
+    size_t idx = am_vocab_find(ast->alloc, ast->var_vocab, buf);
+    assert(idx != SIZE_MAX);
+    return (am_varid_t)idx;
+}
+
+
+static int var_top_contains_varid(am_ast_t *ast, am_varid_t varid) {
+    for (size_t i = 0; i < ast->var_top->length; i++) {
+        am_value_t v = am_list_get(ast->alloc, ast->var_top, i);
+        if (am_value_is_varid(v) && am_value_to_varid(v) == varid) return 1;
+    }
+    return 0;
+}
+
+
+static void test_ast_merge(const wchar_t *importer_path, const wchar_t *importee_path) {
+    printf("test_ast_merge ... \n");
+    test_allocator_reset();
+
+    am_ast_t *importer = parse_file(importer_path);
+    am_ast_t *importee = parse_file(importee_path);
+
+    am_handle_t importer_top_lambda = importer->top_lambda_handle;
+    am_handle_t importee_top_lambda = importee->top_lambda_handle;
+    assert(importer_top_lambda != AM_HANDLE_NULL);
+    assert(importee_top_lambda != AM_HANDLE_NULL);
+
+    // merge 前分别输出 importer 与 importee 的 AST
+    printf("=== importer AST before merge ===\n");
+    ast_print_to_stdout(importer);
+    printf("=== importee AST before merge ===\n");
+    ast_print_to_stdout(importee);
+
+    int32_t merge_result = am_ast_merge(importer, importee, 0);
+    assert(merge_result == 0);
+
+    // module_id 保持不变
+    assert(wcscmp(importer->module_id, L"home.bd4sur.animac.x") == 0);
+
+    // 验证 symbol / var 词汇表已合并
+    assert_unique_var_exists(importer, L"home.bd4sur.animac.y", importee_top_lambda, L"f");
+    assert_unique_var_exists(importer, L"home.bd4sur.animac.y", importee_top_lambda, L"x");
+    assert_unique_var_exists(importer, L"home.bd4sur.animac.y", importee_top_lambda, L"y");
+    assert_unique_var_exists(importer, L"home.bd4sur.animac.y", importee_top_lambda, L"z");
+    assert_unique_var_exists(importer, L"home.bd4sur.animac.x", importer_top_lambda, L"f");
+    assert_unique_var_exists(importer, L"home.bd4sur.animac.x", importer_top_lambda, L"x");
+    assert_unique_var_exists(importer, L"home.bd4sur.animac.x", importer_top_lambda, L"y");
+    assert_unique_var_exists(importer, L"home.bd4sur.animac.x", importer_top_lambda, L"z");
+
+    // 验证 dependencies 已合并：共 3 条
+    size_t dep_count = am_map_length(importer->alloc, importer->dependencies);
+    assert(dep_count == 3);
+
+    am_varid_t y_z_alias = varid_of(importer, L"home.bd4sur.animac.y.z");
+    am_varid_t x_z_alias = varid_of(importer, L"home.bd4sur.animac.x.z");
+    am_varid_t x_y_alias = varid_of(importer, L"home.bd4sur.animac.x.y");
+
+    am_value_t y_z_path = am_map_get(importer->alloc, importer->dependencies,
+                                      am_make_value_of_varid(y_z_alias));
+    am_value_t x_z_path = am_map_get(importer->alloc, importer->dependencies,
+                                      am_make_value_of_varid(x_z_alias));
+    am_value_t x_y_path = am_map_get(importer->alloc, importer->dependencies,
+                                      am_make_value_of_varid(x_y_alias));
+    assert(am_value_is_handle(y_z_path));
+    assert(am_value_is_handle(x_z_path));
+    assert(am_value_is_handle(x_y_path));
+
+    am_wstring_t *y_z_ws = handle_to_wstring(importer, am_value_to_handle(y_z_path));
+    am_wstring_t *x_z_ws = handle_to_wstring(importer, am_value_to_handle(x_z_path));
+    am_wstring_t *x_y_ws = handle_to_wstring(importer, am_value_to_handle(x_y_path));
+    wchar_t *y_z_str = wstring_to_buf(y_z_ws);
+    wchar_t *x_z_str = wstring_to_buf(x_z_ws);
+    wchar_t *x_y_str = wstring_to_buf(x_y_ws);
+    assert(wcscmp(y_z_str, L"\"/home/bd4sur/animac/z.scm\"") == 0);
+    assert(wcscmp(x_z_str, L"\"/home/bd4sur/animac/y.scm\"") == 0);
+    assert(wcscmp(x_y_str, L"\"/home/bd4sur/animac/z.scm\"") == 0);
+    free(y_z_str); free(x_z_str); free(x_y_str);
+
+    // 验证顶层 lambda 的函数体数量：importee 5 个 + importer 6 个 = 11
+    am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(importer);
+    am_list_t *lambda = handle_to_list(importer, top_lambda);
+    size_t n_body = am_list_lambda_get_body_number(importer->alloc, lambda);
+    assert(n_body == 11);
+
+    // 验证顺序：order=0 时 importee 的顶级节点在前
+    // importee 第一个节点是 (import home.bd4sur.animac.y.z "...")
+    am_value_t first_body = am_list_get(importer->alloc, lambda, 2);
+    assert(am_value_is_handle(first_body));
+    am_list_t *first_app = handle_to_list(importer, am_value_to_handle(first_body));
+    assert(first_app->type == AM_LIST_TYPE_APPLICATION);
+    assert(first_app->length == 3);
+    am_value_t first_sym = am_list_get(importer->alloc, first_app, 0);
+    assert(am_value_is_symbol(first_sym));
+    assert(am_value_to_symbol(first_sym) == symbol_of(importer, L"import"));
+    am_value_t first_alias = am_list_get(importer->alloc, first_app, 1);
+    assert(am_value_is_varid(first_alias));
+    assert(am_value_to_varid(first_alias) == y_z_alias);
+    am_value_t first_path = am_list_get(importer->alloc, first_app, 2);
+    assert(am_value_is_handle(first_path));
+    am_wstring_t *first_path_ws = handle_to_wstring(importer, am_value_to_handle(first_path));
+    wchar_t *first_path_str = wstring_to_buf(first_path_ws);
+    assert(wcscmp(first_path_str, L"\"/home/bd4sur/animac/z.scm\"") == 0);
+    free(first_path_str);
+
+    // importer 第一个节点在 importee 5 个节点之后：(import home.bd4sur.animac.x.z "...")
+    am_value_t x_first_body = am_list_get(importer->alloc, lambda, 2 + 5);
+    assert(am_value_is_handle(x_first_body));
+    am_list_t *x_first_app = handle_to_list(importer, am_value_to_handle(x_first_body));
+    assert(x_first_app->type == AM_LIST_TYPE_APPLICATION);
+    assert(x_first_app->length == 3);
+    am_value_t x_first_alias = am_list_get(importer->alloc, x_first_app, 1);
+    assert(am_value_is_varid(x_first_alias));
+    assert(am_value_to_varid(x_first_alias) == x_z_alias);
+    am_value_t x_first_path = am_list_get(importer->alloc, x_first_app, 2);
+    assert(am_value_is_handle(x_first_path));
+    am_wstring_t *x_first_path_ws = handle_to_wstring(importer, am_value_to_handle(x_first_path));
+    wchar_t *x_first_path_str = wstring_to_buf(x_first_path_ws);
+    assert(wcscmp(x_first_path_str, L"\"/home/bd4sur/animac/y.scm\"") == 0);
+    free(x_first_path_str);
+
+    // 验证 var_top 已合并：共 8 个顶级变量
+    assert(importer->var_top->length == 8);
+    assert(var_top_contains_varid(importer, unique_varid_of(importer, L"home.bd4sur.animac.y",
+                                                              importee_top_lambda, L"f")));
+    assert(var_top_contains_varid(importer, unique_varid_of(importer, L"home.bd4sur.animac.y",
+                                                              importee_top_lambda, L"x")));
+    assert(var_top_contains_varid(importer, unique_varid_of(importer, L"home.bd4sur.animac.y",
+                                                              importee_top_lambda, L"y")));
+    assert(var_top_contains_varid(importer, unique_varid_of(importer, L"home.bd4sur.animac.y",
+                                                              importee_top_lambda, L"z")));
+    assert(var_top_contains_varid(importer, unique_varid_of(importer, L"home.bd4sur.animac.x",
+                                                              importer_top_lambda, L"f")));
+    assert(var_top_contains_varid(importer, unique_varid_of(importer, L"home.bd4sur.animac.x",
+                                                              importer_top_lambda, L"x")));
+    assert(var_top_contains_varid(importer, unique_varid_of(importer, L"home.bd4sur.animac.x",
+                                                              importer_top_lambda, L"y")));
+    assert(var_top_contains_varid(importer, unique_varid_of(importer, L"home.bd4sur.animac.x",
+                                                              importer_top_lambda, L"z")));
+
+    // 输出合并后的 AST 便于直观检查
+    ast_print_to_stdout(importer);
+
+    am_ast_destroy(importee);
+    am_ast_destroy(importer);
+    printf("OK\n");
+}
+
+
+// ===============================================================================
 // 主函数
 // ===============================================================================
 
@@ -1410,6 +1630,7 @@ int main(void) {
     test_parse_tail_call_analysis();
     test_print_tokens();
     test_ast_print(L"/home/bd4sur/animac/test.scm");
+    test_ast_merge(L"/home/bd4sur/animac/x.scm", L"/home/bd4sur/animac/y.scm");
 
     test_destroy(&test_allocator_state);
 

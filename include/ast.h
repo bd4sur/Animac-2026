@@ -88,10 +88,9 @@ int32_t am_ast_set_node_token_index(am_ast_t *ast, am_handle_t node_handle, size
 size_t am_ast_get_node_token_index(am_ast_t *ast, am_handle_t node_handle);
 
 
-// 功能描述：融合另一个AST（对应TS的AST.MergeAST）
-// 设计说明：将源AST的全局节点按order指定的顺序合并到目标AST中，并合并两个AST的nodes、映射关系、lambda_handles、tailcall_handles、var_arn_mapping、topVariables、dependencies、natives。
-// 实现说明：order为L"top"时源AST全局节点前置，为L"bottom"时后置。成功返回1，失败返回0。
-int32_t am_ast_merge(am_ast_t *target, am_ast_t *source, const wchar_t *order);
+// 功能描述：将importee融合进importer，也就是importer吃掉importee。
+// 实现说明：成功返回0；失败返回-1。
+int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order);
 
 
 // 功能描述：遍历tokens，使用其中的KEYWORD和SYMBOL构建ast->symbol_vocab，同时等于是注册了am_symbol_t，并将am_symbol_t记录在token中
