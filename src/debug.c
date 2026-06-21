@@ -432,24 +432,53 @@ void am_debug_ast_print_node_summary(FILE *out, am_ast_t *ast, am_handle_t handl
 
 
 typedef struct {
-    am_ast_t *ast;
-    FILE *out;
-} debug_ast_print_nodes_ctx_t;
+    am_handle_t *handles;
+    size_t count;
+    size_t capacity;
+} debug_ast_collect_handles_ctx_t;
 
 
-static void debug_ast_print_nodes_iter_cb(am_handle_t handle, am_value_t value, void *user_data) {
+static void debug_ast_collect_handles_cb(am_handle_t handle, am_value_t value, void *user_data) {
     (void)value;
-    debug_ast_print_nodes_ctx_t *ctx = (debug_ast_print_nodes_ctx_t *)user_data;
-    debug_ast_print_indent(ctx->out, 2);
-    am_debug_ast_print_node_summary(ctx->out, ctx->ast, handle);
+    debug_ast_collect_handles_ctx_t *ctx = (debug_ast_collect_handles_ctx_t *)user_data;
+
+    if (ctx->count >= ctx->capacity) {
+        size_t new_capacity = ctx->capacity ? ctx->capacity * 2 : 16;
+        am_handle_t *new_handles = (am_handle_t *)realloc(ctx->handles, new_capacity * sizeof(am_handle_t));
+        if (!new_handles) return;
+        ctx->handles = new_handles;
+        ctx->capacity = new_capacity;
+    }
+
+    ctx->handles[ctx->count++] = handle;
+}
+
+
+static int debug_ast_compare_handles(const void *a, const void *b) {
+    am_handle_t ha = *(const am_handle_t *)a;
+    am_handle_t hb = *(const am_handle_t *)b;
+    if (ha < hb) return -1;
+    if (ha > hb) return 1;
+    return 0;
 }
 
 
 static void debug_ast_print_nodes_map(FILE *out, am_ast_t *ast) {
     debug_ast_print_indent(out, 1);
     fwprintf(out, L"nodes: {\n");
-    debug_ast_print_nodes_ctx_t ctx = { ast, out };
-    am_heap_iter(ast->alloc, ast->nodes, debug_ast_print_nodes_iter_cb, &ctx);
+
+    debug_ast_collect_handles_ctx_t ctx = { NULL, 0, 0 };
+    am_heap_iter(ast->alloc, ast->nodes, debug_ast_collect_handles_cb, &ctx);
+
+    if (ctx.handles) {
+        qsort(ctx.handles, ctx.count, sizeof(am_handle_t), debug_ast_compare_handles);
+        for (size_t i = 0; i < ctx.count; i++) {
+            debug_ast_print_indent(out, 2);
+            am_debug_ast_print_node_summary(out, ast, ctx.handles[i]);
+        }
+        free(ctx.handles);
+    }
+
     debug_ast_print_indent(out, 1);
     fwprintf(out, L"}\n");
 }
