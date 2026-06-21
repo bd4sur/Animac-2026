@@ -16,10 +16,10 @@ test_map: test/test_map.c src/map.c src/object.c
 test_ast: test/test_ast.c src/ast.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_parser: test/test_parser.c src/parser.c src/ast.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c
+test_parser: test/test_parser.c src/parser.c src/ast.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_linker: test/test_linker.c src/linker.c
+test_linker: test/test_linker.c src/linker.c src/parser.c src/ast.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 clean:

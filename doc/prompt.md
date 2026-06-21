@@ -236,6 +236,10 @@ class Closure extends SchemeObject {
 
 # 模块链接算法
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+为实现Scheme解释器的AST模块链接器，请你在 @src/linker.c 中，根据下文描述的算法，实现模块的递归链接算法。
+
 ## 术语约定
 
 - 模块：一个完整的Scheme源码文件，及其解析得到的AST。模块之间可互相引用。
@@ -340,8 +344,9 @@ H8 (+       V7  V8)
 
 链接过程中，处理的模块数上限设定为1024。
 
-链接器全局上下文数据结构定义：
+链接器全局上下文数据结构定义（供参考）：
 
+```
 typedef struct am_linker_ctx_t {
     size_t module_counter;
     am_vocab_t *all_module_path; // mod_index -> module_path
@@ -350,13 +355,18 @@ typedef struct am_linker_ctx_t {
     size_t sorted_ast_index[];
     size_t edge_num;
 } am_linker_ctx_t;
+```
+
+链接器入口函数定义：
+
+am_ast_t *am_link(am_ast_t *main_ast, wchar_t *base_dir); // main_ast就是引用根模块
 
 ### 链接过程1：递归解析所有依赖模块
 
 从起始代码开始，解析为AST，读取其所有导入文件，并逐个解析为AST，递归读取并解析，过程中完成：1收集AST；2构建DAG。伪代码如下：
 
 ```
-void import_analyse(am_linker_ctx_t *ctx, wchar_t *importee_path, size_t importer_index) {
+void import_analysis(am_linker_ctx_t *ctx, wchar_t *importee_path, size_t importer_index) {
     size_t current_module_index = vocab_find_index(ctx->all_module_path, importee_path);
     if (current_module_index == SIZE_MAX) {
         current_module_index = ctx->module_counter;
@@ -365,7 +375,7 @@ void import_analyse(am_linker_ctx_t *ctx, wchar_t *importee_path, size_t importe
         am_ast_t *current_ast = am_parser(ctx->alloc, code, importee_path);
         ctx->ALLAST[current_module_index] = current_ast;
         foreach (path of current_ast->dependencies) {
-            import_analyse(ctx, path, current_module_index);
+            import_analysis(ctx, path, current_module_index);
         }
         ctx->module_counter++;
     }
@@ -377,12 +387,13 @@ void import_analyse(am_linker_ctx_t *ctx, wchar_t *importee_path, size_t importe
 ### 链接过程2：对引用关系做拓扑排序，并按照线性顺序逐步融合
 
 // 对DAG进行拓扑排序的工具函数
-size_t *topo_sort(size_t DAG[][2], size_t edge_num); // 输出拓扑排序后的mod_index列表，由调用者负责free；成环则返回NULL
+size_t *am_topo_sort(size_t DAG[][2], size_t edge_num);
 
 从起始的根引用模块开始，按照拓扑排序顺序，逐个吃掉importee。伪代码如下：
 
 ```
 am_linker_ctx_t *ctx;
+
 // 对DAG做拓扑排序，同时检查是否成环，得到依赖列表
 ctx->sorted_ast_index = topo_sort(ctx->DAG, ctx->edge_num);
 if (ctx->sorted_ast_index == NULL) {
@@ -391,15 +402,73 @@ if (ctx->sorted_ast_index == NULL) {
 
 // 以排序后的第一个模块（也就是位于依赖链根部的入口模块）为全局的importer
 am_ast_t *global_ast = ALLAST[ctx->sorted_ast_index[0]];
-// 逐个吃掉依赖模块
+// 从第一个importer（也就是main_ast，应用根模块）开始，遍历依赖排序，逐个吃掉importee模块
 for (size_t i = 1; i < ctx->module_counter; i++) {
     size_t importee_index = ctx->sorted_ast_index[i];
-    am_ast_merge(global_ast, ALLAST[importee_index]);
+    am_ast_merge(global_ast, ALLAST[importee_index], 0);
 }
+
+// 链接器最后返回链接后的global_ast
+```
+
+## 测试与测试用例
+
+参照 @test/test_parser.c ，实现完整的测试程序。
+
+你可以使用 /home/bd4sur/animac/x.scm 作为链接器的输入（起始AST），对其parse之后，按照上述算法，递归parse所有依赖模块并链接成一个大模块。
+
+测试用的文件及其引用关系如下：
+
+```
+;; /home/bd4sur/animac/x.scm
+(import z "/home/bd4sur/animac/y.scm") ;; 注意：故意不对应
+(import y "/home/bd4sur/animac/z.scm")
+(define f (lambda (x y z) 888))
+(define x (+ y.x z.x))
+(define y (+ y.y z.y))
+(define z (+ y.z z.z))
+
+;; /home/bd4sur/animac/y.scm
+(import z "/home/bd4sur/animac/z.scm")
+(define f (lambda (x y z) 888))
+(define x z.x)
+(define y z.y)
+(define z z.z)
+
+;; /home/bd4sur/animac/z.scm
+(define f (lambda (x y z) 666))
+(define x 100)
+(define y 200)
+(define z 300)
+```
+
+引用关系为（从importer指向importee）：x->y,x->z,y->z。拓扑排序后：[x, y, z]
+
+链接后的AST为（以代码形式给出，供参考）：
+
+```
+(define home.bd4sur.animac.z.0.f (lambda (home.bd4sur.animac.z.1.x home.bd4sur.animac.z.1.y home.bd4sur.animac.z.1.z) 666))
+(define home.bd4sur.animac.z.0.x 100)
+(define home.bd4sur.animac.z.0.y 200)
+(define home.bd4sur.animac.z.0.z 300)
+(import home.bd4sur.animac.y.z "/home/bd4sur/animac/z.scm")
+(define home.bd4sur.animac.y.0.f (lambda (home.bd4sur.animac.y.1.x home.bd4sur.animac.y.1.y home.bd4sur.animac.y.1.z) 888))
+(define home.bd4sur.animac.y.0.x home.bd4sur.animac.y.z.x)
+(define home.bd4sur.animac.y.0.y home.bd4sur.animac.y.z.y)
+(define home.bd4sur.animac.y.0.z home.bd4sur.animac.y.z.z)
+(import home.bd4sur.animac.x.z "/home/bd4sur/animac/y.scm")
+(import home.bd4sur.animac.x.y "/home/bd4sur/animac/z.scm")
+(define home.bd4sur.animac.x.0.f (lambda (home.bd4sur.animac.x.1.x home.bd4sur.animac.x.1.y home.bd4sur.animac.x.1.z) 888))
+(define home.bd4sur.animac.x.0.x (+ home.bd4sur.animac.x.y.x home.bd4sur.animac.x.z.x))
+(define home.bd4sur.animac.x.0.y (+ home.bd4sur.animac.x.y.y home.bd4sur.animac.x.z.y))
+(define home.bd4sur.animac.x.0.z (+ home.bd4sur.animac.x.y.z home.bd4sur.animac.x.z.z))
 ```
 
 
+请你实现上述需求。你可以使用WSL进行编译构建和测试。测试输入文件 /home/bd4sur/animac/x.scm 位于WSL的文件系统内，你可以在WSL内直接读取。
 
+
+---------------------
 
 
 
@@ -602,7 +671,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
 
 
 
-
+---------------------
 
 ### 链接过程3：对所有模块做外部引用解析
 

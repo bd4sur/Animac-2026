@@ -155,8 +155,8 @@ wchar_t* read_file_to_wchar(char* filename) {
         return NULL;
     }
 
-    // 执行实际转换
-    (void)_mbstowcs(wstr, buffer, wlen + 1);
+    // 执行实际转换（length 为 buffer 中实际字节数，不含结尾额外 \0）
+    (void)_mbstowcs(wstr, buffer, size);
     free(buffer);
 
     return wstr; // 调用者负责 free()
