@@ -238,6 +238,12 @@ am_handle_t am_ast_get_scope(am_ast_t *ast, am_handle_t lambda_handle);
 wchar_t *am_absolute_path_to_module_id(am_allocator_t *alloc, const wchar_t *absolute_path);
 
 
+// 功能描述：将AST中的某个节点转成Scheme代码字符串（对应TS的AST.NodeToString）。
+// 实现说明：返回使用 alloc 分配器分配的以 L'\0' 结尾的宽字符串，失败返回 NULL。
+//         若 length 不为 NULL，则将字符串的逻辑长度（字符数）写入 *length。
+wchar_t *am_ast_node_to_string(am_allocator_t *alloc, am_ast_t *ast, am_handle_t node_handle, size_t *length);
+
+
 #ifdef __cplusplus
 }
 #endif

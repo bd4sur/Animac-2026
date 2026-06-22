@@ -365,6 +365,178 @@ static void test_copy(void) {
 }
 
 
+static void test_node_to_string(void) {
+    printf("test_node_to_string ... ");
+    test_allocator_reset();
+
+    wchar_t code[] = L"\"hello world\" ((lambda (x y) (+ x y) 42))";
+    wchar_t path[] = L"/test.scm";
+    am_token_t tokens[64];
+    int32_t count = am_lexer(code, tokens);
+    assert(count > 0);
+
+    am_ast_t *ast = am_ast_create(&test_allocator, code, path, tokens, (size_t)count);
+    assert(ast != NULL);
+
+    am_build_symbol_vocabulary(ast);
+    am_build_variable_vocabulary(ast);
+
+    // 创建顶层 application: ((lambda (x y) (+ x y) 42))
+    am_handle_t app = am_ast_make_slist_node(ast, AM_TOP_NODE_HANDLE, AM_LIST_TYPE_APPLICATION);
+    assert(app != AM_HANDLE_NULL);
+
+    am_handle_t lambda = am_ast_make_lambda_node(ast, app);
+    assert(lambda != AM_HANDLE_NULL);
+
+    // app -> lambda
+    {
+        am_value_t v = am_ast_get_node(ast, app);
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
+        am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_handle(lambda));
+        assert(n != NULL);
+        if (n != lst) {
+            assert(am_heap_set(&test_allocator, ast->nodes, app, am_make_value_of_ptr((am_object_t *)n)) == 0);
+        }
+    }
+
+    // lambda 参数 x, y
+    am_varid_t x_varid = am_vocab_find(&test_allocator, ast->var_vocab, L"x");
+    am_varid_t y_varid = am_vocab_find(&test_allocator, ast->var_vocab, L"y");
+    assert(x_varid != SIZE_MAX && y_varid != SIZE_MAX);
+    {
+        am_value_t v = am_ast_get_node(ast, lambda);
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
+        am_list_t *n = am_list_lambda_add_parameter(&test_allocator, lst, am_make_value_of_varid(x_varid));
+        assert(n != NULL);
+        if (n != lst) {
+            assert(am_heap_set(&test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
+        }
+    }
+    {
+        am_value_t v = am_ast_get_node(ast, lambda);
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
+        am_list_t *n = am_list_lambda_add_parameter(&test_allocator, lst, am_make_value_of_varid(y_varid));
+        assert(n != NULL);
+        if (n != lst) {
+            assert(am_heap_set(&test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
+        }
+    }
+
+    // lambda body1: (+ x y)
+    am_handle_t body1 = am_ast_make_slist_node(ast, lambda, AM_LIST_TYPE_APPLICATION);
+    assert(body1 != AM_HANDLE_NULL);
+    {
+        am_varid_t plus_varid = am_vocab_find(&test_allocator, ast->var_vocab, L"+");
+        assert(plus_varid != SIZE_MAX);
+
+        am_value_t v = am_ast_get_node(ast, body1);
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
+        am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_varid(plus_varid));
+        assert(n != NULL);
+        if (n != lst) {
+            assert(am_heap_set(&test_allocator, ast->nodes, body1, am_make_value_of_ptr((am_object_t *)n)) == 0);
+        }
+    }
+    {
+        am_value_t v = am_ast_get_node(ast, body1);
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
+        am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_varid(x_varid));
+        assert(n != NULL);
+        if (n != lst) {
+            assert(am_heap_set(&test_allocator, ast->nodes, body1, am_make_value_of_ptr((am_object_t *)n)) == 0);
+        }
+    }
+    {
+        am_value_t v = am_ast_get_node(ast, body1);
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
+        am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_varid(y_varid));
+        assert(n != NULL);
+        if (n != lst) {
+            assert(am_heap_set(&test_allocator, ast->nodes, body1, am_make_value_of_ptr((am_object_t *)n)) == 0);
+        }
+    }
+
+    // 将 body1 加入 lambda
+    {
+        am_value_t v = am_ast_get_node(ast, lambda);
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
+        am_list_t *n = am_list_lambda_add_body(&test_allocator, lst, am_make_value_of_handle(body1));
+        assert(n != NULL);
+        if (n != lst) {
+            assert(am_heap_set(&test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
+        }
+    }
+    // lambda body2: 42
+    {
+        am_value_t v = am_ast_get_node(ast, lambda);
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
+        am_list_t *n = am_list_lambda_add_body(&test_allocator, lst, am_make_value_of_uint(42));
+        assert(n != NULL);
+        if (n != lst) {
+            assert(am_heap_set(&test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
+        }
+    }
+
+    // 测试顶层 application 输出
+    size_t len = 0;
+    wchar_t *s = am_ast_node_to_string(&test_allocator, ast, app, &len);
+    assert(s != NULL);
+    assert(wcscmp(s, L"((lambda (x y) (+ x y) 42))") == 0);
+    assert(len == wcslen(s));
+
+    // 测试 lambda 节点输出
+    s = am_ast_node_to_string(&test_allocator, ast, lambda, &len);
+    assert(s != NULL);
+    assert(wcscmp(s, L"(lambda (x y) (+ x y) 42)") == 0);
+
+    // 测试 application 节点输出
+    s = am_ast_node_to_string(&test_allocator, ast, body1, &len);
+    assert(s != NULL);
+    assert(wcscmp(s, L"(+ x y)") == 0);
+
+    // 测试 quote 列表: '(x y)
+    am_handle_t quote = am_ast_make_slist_node(ast, lambda, AM_LIST_TYPE_QUOTE);
+    assert(quote != AM_HANDLE_NULL);
+    {
+        am_value_t v = am_ast_get_node(ast, quote);
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
+        am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_varid(x_varid));
+        assert(n != NULL);
+        if (n != lst) am_heap_set(&test_allocator, ast->nodes, quote, am_make_value_of_ptr((am_object_t *)n));
+    }
+    {
+        am_value_t v = am_ast_get_node(ast, quote);
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
+        am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_varid(y_varid));
+        assert(n != NULL);
+        if (n != lst) am_heap_set(&test_allocator, ast->nodes, quote, am_make_value_of_ptr((am_object_t *)n));
+    }
+    s = am_ast_node_to_string(&test_allocator, ast, quote, &len);
+    assert(s != NULL);
+    assert(wcscmp(s, L"'(x y)") == 0);
+
+    // 测试空 quote 列表: '()
+    am_handle_t empty_quote = am_ast_make_slist_node(ast, lambda, AM_LIST_TYPE_QUOTE);
+    assert(empty_quote != AM_HANDLE_NULL);
+    s = am_ast_node_to_string(&test_allocator, ast, empty_quote, &len);
+    assert(s != NULL);
+    assert(wcscmp(s, L"'()") == 0);
+
+    // 测试字符串节点
+    am_token_t str_tok;
+    str_tok.index = 0;
+    str_tok.length = 13; // "hello world"
+    am_handle_t str_handle = am_ast_make_wstring_node(ast, &str_tok);
+    assert(str_handle != AM_HANDLE_NULL);
+    s = am_ast_node_to_string(&test_allocator, ast, str_handle, &len);
+    assert(s != NULL);
+    assert(wcscmp(s, L"\"hello world\"") == 0);
+
+    assert(am_ast_destroy(ast) == 0);
+    printf("OK\n");
+}
+
+
 static void test_merge(void) {
     printf("test_merge ... ");
     test_allocator_reset();
@@ -458,6 +630,7 @@ int main(void) {
     test_unique_variable();
     test_find_nearest_lambda();
     test_copy();
+    test_node_to_string();
     test_merge();
 
     test_destroy(test_allocator.state);

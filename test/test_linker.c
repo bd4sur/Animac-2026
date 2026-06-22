@@ -369,6 +369,15 @@ static void test_linker_recursive(void) {
     printf("=== loaded AST (from dumped nodes) ===\n");
     am_debug_ast_print_to_stdout(&loaded_ast);
 
+    // 将加载后的 AST 根节点转回 Scheme 代码并打印
+    am_handle_t loaded_top = am_ast_get_top_node_handle(&loaded_ast);
+    assert(loaded_top != AM_HANDLE_NULL);
+    size_t root_code_len = 0;
+    wchar_t *code_str = am_ast_node_to_string(&test_allocator, &loaded_ast, loaded_top, &root_code_len);
+    assert(code_str != NULL);
+    printf("=== loaded AST root as Scheme code (length=%zu) ===\n", root_code_len);
+    printf("%ls\n", code_str);
+
     free(dump_buffer);
     // nodes_copy 在深dump后 table value 已变为偏移量，不再有效，故不销毁
     // loaded_nodes 可由测试分配器统一回收

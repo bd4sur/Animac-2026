@@ -455,6 +455,42 @@ static void test_parse_quote_keyword(void) {
 }
 
 
+static void test_node_to_string(void) {
+    printf("test_node_to_string ... ");
+    test_allocator_reset();
+
+    wchar_t *code = L"((lambda (x) (define y 10) (+ x y) '(a b) #t \"hi\"))";
+    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    assert(ast != NULL);
+
+    am_handle_t top_app = am_ast_get_top_node_handle(ast);
+    assert(top_app != AM_HANDLE_NULL);
+
+    size_t len = 0;
+    wchar_t *s = am_ast_node_to_string(&test_allocator, ast, top_app, &len);
+    assert(s != NULL);
+    assert(len == wcslen(s));
+
+    // 顶层 application 的字符串应包含 lambda 及其函数体
+    assert(wcsstr(s, L"(lambda (") != NULL);
+    assert(wcsstr(s, L"(define ") != NULL);
+    assert(wcsstr(s, L"(+ ") != NULL);
+    assert(wcsstr(s, L"'(a b)") != NULL);
+    assert(wcsstr(s, L"#t") != NULL);
+    assert(wcsstr(s, L"\"hi\"") != NULL);
+
+    // 测试单独输出顶层 lambda
+    am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
+    assert(top_lambda != AM_HANDLE_NULL);
+    s = am_ast_node_to_string(&test_allocator, ast, top_lambda, &len);
+    assert(s != NULL);
+    assert(wcsstr(s, L"(lambda (") == s);
+
+    am_ast_destroy(ast);
+    printf("OK\n");
+}
+
+
 static void test_parse_unquote_in_quasiquote(void) {
     printf("test_parse_unquote_in_quasiquote ... ");
     test_allocator_reset();
@@ -1098,6 +1134,7 @@ int main(void) {
     test_parse_quote_shorthand();
     test_parse_quote_list();
     test_parse_quote_keyword();
+    test_node_to_string();
     test_parse_unquote_in_quasiquote();
     test_parse_import_native();
     test_parse_alpha_renaming();
