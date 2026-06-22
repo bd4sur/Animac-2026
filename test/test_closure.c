@@ -274,6 +274,137 @@ static void test_capacity_zero_defaults(void) {
     printf("OK\n");
 }
 
+static int closure_equal(am_obj_closure_t *a, am_obj_closure_t *b) {
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    if (a->base.type != b->base.type) return 0;
+    if (a->iaddr != b->iaddr) return 0;
+    if (a->parent != b->parent) return 0;
+    if (a->length != b->length) return 0;
+    for (size_t i = 0; i < a->length; i++) {
+        if (a->bindings[i].varid != b->bindings[i].varid) return 0;
+        if (a->bindings[i].type != b->bindings[i].type) return 0;
+        if (a->bindings[i].dirty_flag != b->bindings[i].dirty_flag) return 0;
+        if (a->bindings[i].value != b->bindings[i].value) return 0;
+    }
+    return 1;
+}
+
+static void test_dump_load_empty(void) {
+    printf("test_dump_load_empty ... ");
+
+    am_obj_closure_t *closure = am_closure_create(&test_allocator, 42, 7, 8);
+    assert(closure != NULL);
+
+    size_t size = am_closure_dump(&test_allocator, closure, NULL, 0);
+    assert(size != SIZE_MAX);
+    assert(size == sizeof(am_obj_closure_t));
+
+    uint8_t *buffer = (uint8_t *)malloc(size);
+    assert(buffer != NULL);
+    assert(am_closure_dump(&test_allocator, closure, buffer, 0) == size);
+
+    am_obj_closure_t *loaded = am_closure_load(&test_allocator, buffer, 0);
+    assert(loaded != NULL);
+    assert(closure_equal(closure, loaded));
+    assert(loaded->base.type == AM_OBJECT_TYPE_CLOSURE);
+    assert(loaded->capacity == 0);
+    assert(loaded->length == 0);
+    assert(loaded->iaddr == 42);
+    assert(loaded->parent == 7);
+
+    free(buffer);
+    am_closure_destroy(&test_allocator, closure);
+    am_closure_destroy(&test_allocator, loaded);
+    printf("OK\n");
+}
+
+static void test_dump_load_with_bindings(void) {
+    printf("test_dump_load_with_bindings ... ");
+
+    am_obj_closure_t *closure = am_closure_create(&test_allocator, 100, 200, 8);
+    assert(closure != NULL);
+
+    closure = am_closure_init_bound_var(&test_allocator, closure, 1, am_make_value_of_uint(10));
+    assert(closure != NULL);
+    closure = am_closure_init_bound_var(&test_allocator, closure, 2, am_make_value_of_uint(20));
+    assert(closure != NULL);
+    closure = am_closure_set_bound_var(&test_allocator, closure, 2, am_make_value_of_uint(25));
+    assert(closure != NULL);
+    closure = am_closure_init_free_var(&test_allocator, closure, 10, am_make_value_of_int(-5));
+    assert(closure != NULL);
+
+    size_t size = am_closure_dump(&test_allocator, closure, NULL, 0);
+    assert(size != SIZE_MAX);
+    assert(size == sizeof(am_obj_closure_t) + 3 * sizeof(am_binding_t));
+
+    uint8_t *buffer = (uint8_t *)malloc(size);
+    assert(buffer != NULL);
+    assert(am_closure_dump(&test_allocator, closure, buffer, 0) == size);
+
+    am_obj_closure_t *loaded = am_closure_load(&test_allocator, buffer, 0);
+    assert(loaded != NULL);
+    assert(closure_equal(closure, loaded));
+    assert(loaded->base.type == AM_OBJECT_TYPE_CLOSURE);
+    assert(loaded->capacity == 3);
+    assert(loaded->length == 3);
+    assert(loaded->iaddr == 100);
+    assert(loaded->parent == 200);
+    assert(am_closure_is_dirty_var(&test_allocator, loaded, 2) == 0);
+
+    free(buffer);
+    am_closure_destroy(&test_allocator, closure);
+    am_closure_destroy(&test_allocator, loaded);
+    printf("OK\n");
+}
+
+static void test_dump_load_with_offset(void) {
+    printf("test_dump_load_with_offset ... ");
+
+    am_obj_closure_t *closure = am_closure_create(&test_allocator, 1, 2, 4);
+    assert(closure != NULL);
+    closure = am_closure_init_bound_var(&test_allocator, closure, 0, am_make_value_of_uint(99));
+    assert(closure != NULL);
+
+    size_t size = am_closure_dump(&test_allocator, closure, NULL, 0);
+    assert(size != SIZE_MAX);
+
+    uint8_t *buffer = (uint8_t *)malloc(size + 16);
+    assert(buffer != NULL);
+    memset(buffer, 0xEE, size + 16);
+
+    assert(am_closure_dump(&test_allocator, closure, buffer, 16) == size);
+
+    am_obj_closure_t *loaded = am_closure_load(&test_allocator, buffer, 16);
+    assert(loaded != NULL);
+    assert(closure_equal(closure, loaded));
+
+    free(buffer);
+    am_closure_destroy(&test_allocator, closure);
+    am_closure_destroy(&test_allocator, loaded);
+    printf("OK\n");
+}
+
+static void test_load_invalid_type(void) {
+    printf("test_load_invalid_type ... ");
+
+    uint8_t buffer[64];
+    memset(buffer, 0, sizeof(buffer));
+    am_obj_closure_t *fake = (am_obj_closure_t *)buffer;
+    fake->base.type = AM_OBJECT_TYPE_LIST;
+    fake->length = 0;
+
+    assert(am_closure_load(&test_allocator, buffer, 0) == NULL);
+    printf("OK\n");
+}
+
+static void test_load_null_buffer(void) {
+    printf("test_load_null_buffer ... ");
+
+    assert(am_closure_load(&test_allocator, NULL, 0) == NULL);
+    printf("OK\n");
+}
+
 // ===============================================================================
 // 入口
 // ===============================================================================
@@ -289,6 +420,11 @@ int main(void) {
     test_copy();
     test_init_overwrite_clears_dirty();
     test_capacity_zero_defaults();
+    test_dump_load_empty();
+    test_dump_load_with_bindings();
+    test_dump_load_with_offset();
+    test_load_invalid_type();
+    test_load_null_buffer();
 
     printf("All closure tests passed.\n");
     return 0;

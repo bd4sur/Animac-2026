@@ -67,9 +67,15 @@ am_obj_closure_t *am_closure_copy(am_allocator_t *alloc, am_obj_closure_t *closu
 // 对象二进制转储 TODO
 // ===============================================================================
 
-// 将对象的二进制内存布局从alloc管理的内存中倒出来，返回一个系统malloc的二进制序列，以及序列长度
-//   注意：压缩对象，将capacity压缩到跟length一致，删除多余分配的空闲部分
-uint8_t *am_closure_dump(am_allocator_t *alloc, am_obj_closure_t *closure, size_t *size);
+// 功能说明：将闭包对象序列化成二进制序列，并转储到buffer[offset]
+// 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
+// 注意：若buffer设为NULL，或者offset设为SIZE_MAX，则仅计算转储后的二进制序列的字节数，不实际写入buffer。
+//       压缩对象，将capacity压缩到跟length一致，删除多余分配的空闲部分。
+size_t am_closure_dump(am_allocator_t *alloc, am_obj_closure_t *closure, uint8_t *buffer, size_t offset);
+
+// 功能说明：转储（dump）操作的逆操作。从二进制字节序列buffer[offset]开始，读取转储的闭包对象，构造闭包对象并返回其指针。
+// 实现说明：offset是读取buffer的起点offset。成功则返回加载后am_obj_closure_t对象的指针，失败则返回NULL。
+am_obj_closure_t *am_closure_load(am_allocator_t *alloc, uint8_t *buffer, size_t offset);
 
 
 // ===============================================================================

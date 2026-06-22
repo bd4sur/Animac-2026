@@ -114,33 +114,47 @@ void am_list_iter(am_allocator_t *alloc, am_list_t *lst, am_list_iter_callback_t
 // 对象二进制转储
 // ===============================================================================
 
-uint8_t *am_list_dump(am_allocator_t *alloc, am_list_t *lst, size_t *size) {
+// 功能说明：将列表对象序列化成二进制序列，并转储到buffer[offset]
+// 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
+// 注意：若buffer设为NULL，或者offset设为SIZE_MAX，则仅计算转储后的二进制序列的字节数，不实际写入buffer。
+//       压缩对象，将capacity压缩到跟length一致，删除多余分配的空闲部分。
+size_t am_list_dump(am_allocator_t *alloc, am_list_t *lst, uint8_t *buffer, size_t offset) {
     (void)alloc;
-    if (!lst) {
-        if (size) *size = 0;
-        return NULL;
-    }
+    if (!lst) return SIZE_MAX;
 
     size_t dump_size = sizeof(am_list_t) + lst->length * sizeof(am_value_t);
-    uint8_t *buf = (uint8_t *)malloc(dump_size);
-    if (!buf) {
-        if (size) *size = 0;
-        return NULL;
+
+    if (buffer != NULL && offset != SIZE_MAX) {
+        am_list_t *dump = (am_list_t *)&buffer[offset];
+        dump->base = lst->base;
+        dump->capacity = lst->length;
+        dump->length = lst->length;
+        dump->type = lst->type;
+        dump->parent = lst->parent;
+
+        if (lst->length > 0) {
+            memcpy(dump->children, lst->children, lst->length * sizeof(am_value_t));
+        }
     }
 
-    am_list_t *dump = (am_list_t *)buf;
-    dump->base = lst->base;
-    dump->capacity = lst->length;
-    dump->length = lst->length;
-    dump->type = lst->type;
-    dump->parent = lst->parent;
+    return dump_size;
+}
 
-    if (lst->length > 0) {
-        memcpy(dump->children, lst->children, lst->length * sizeof(am_value_t));
-    }
 
-    if (size) *size = dump_size;
-    return buf;
+// 功能说明：转储（dump）操作的逆操作。从二进制字节序列buffer[offset]开始，读取转储的列表对象，构造列表对象并返回其指针。
+// 实现说明：offset是读取buffer的起点offset。成功则返回加载后am_list_t对象的指针，失败则返回NULL。
+am_list_t *am_list_load(am_allocator_t *alloc, uint8_t *buffer, size_t offset) {
+    if (!alloc || !buffer) return NULL;
+
+    am_list_t *dump = (am_list_t *)&buffer[offset];
+    if (dump->base.type != AM_OBJECT_TYPE_LIST) return NULL;
+
+    size_t total_size = sizeof(am_list_t) + dump->length * sizeof(am_value_t);
+    am_list_t *lst = (am_list_t *)am_malloc(alloc, total_size);
+    if (!lst) return NULL;
+
+    memcpy(lst, dump, total_size);
+    return lst;
 }
 
 

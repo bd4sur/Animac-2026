@@ -35,12 +35,16 @@ int32_t am_vocab_destroy(am_allocator_t *alloc,am_vocab_t *vocab);
 // 深拷贝词典对象
 am_vocab_t *am_vocab_copy(am_allocator_t *alloc, am_vocab_t *vocab);
 
-// 将对象的二进制内存布局从alloc管理的内存中倒出来，返回一个系统malloc的二进制序列，以及序列长度
-// 实现说明：将words所指向的wchar_t*宽字符串依次展平拼接，各字符串之间以L'\0'为间隔符，最后一个字符串以L'\0'结束。
-//          压缩对象，将capacity压缩到跟length一致，删除多余分配的空闲部分。
-//          这样，最终的内存布局就是 [size_t capacity , size_t length , wchar_t , ... , L'\0' , wchar_t , ... , ... , L'\0' ]
-//          将这个结构以uint8_t数组（指针）的形式返回，size参数用于传回这个结构的字节数。
-uint8_t *am_vocab_dump(am_allocator_t *alloc, am_vocab_t *vocab, size_t *size);
+// 功能说明：将词典对象序列化成二进制序列，并转储到buffer[offset]
+// 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
+// 注意：若buffer设为NULL，或者offset设为SIZE_MAX，则仅计算转储后的二进制序列的字节数，不实际写入buffer。
+//       将words所指向的wchar_t*宽字符串依次展平拼接，各字符串之间以L'\0'为间隔符，最后一个字符串以L'\0'结束。
+//       压缩对象，将capacity压缩到跟length一致，删除多余分配的空闲部分。
+size_t am_vocab_dump(am_allocator_t *alloc, am_vocab_t *vocab, uint8_t *buffer, size_t offset);
+
+// 功能说明：转储（dump）操作的逆操作。从二进制字节序列buffer[offset]开始，读取转储的词典对象，构造词典对象并返回其指针。
+// 实现说明：offset是读取buffer的起点offset。成功则返回加载后am_vocab_t对象的指针，失败则返回NULL。
+am_vocab_t *am_vocab_load(am_allocator_t *alloc, uint8_t *buffer, size_t offset);
 
 
 // 检查词典中是否存在某个词，返回其在vocab->words中的index。

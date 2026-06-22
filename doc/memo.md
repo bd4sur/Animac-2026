@@ -1,5 +1,3 @@
-TODO ast.am_wstring_create 挪到wstring.c中实现；并补全wstring实现
-
 TODO parser创建wstring对象时要先去掉两端的双引号
 
 TODO 在abcdefg用例中，似乎有把关键字塞进变量表的问题。

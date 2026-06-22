@@ -788,6 +788,32 @@ nodes: {
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+在 @src/wstring.c 中，实现以下函数：
+
+```
+// 创建并初始化一个字符串对象。字符串对象是不可变的。
+am_wstring_t *am_wstring_create(am_allocator_t *alloc, wchar_t *str, size_t length);
+
+// 销毁对象。成功返回0，失败返回-1。
+int32_t am_wstring_destroy(am_allocator_t *alloc, am_wstring_t *obj);
+
+// 功能说明：拷贝wstring对象。成功则返回新副本对象的指针，失败则返回NULL。
+am_wstring_t *am_wstring_copy(am_allocator_t *alloc, am_wstring_t *obj);
+
+// 功能说明：将字符串对象序列化成二进制序列，并转储到buffer[offset]
+// 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
+// 注意：若buffer设为NULL，或者offset设为SIZE_MAX，则仅计算转储后的二进制序列的字节数，不实际写入buffer。
+size_t am_wstring_dump(am_allocator_t *alloc, am_wstring_t *obj, uint8_t *buffer, size_t offset);
+
+// 功能说明：转储（dump）操作的逆操作。从二进制字节序列buffer[offset]开始，读取转储的字符串对象，构造字符串对象并返回其指针。
+// 实现说明：offset是读取buffer的起点offset。成功则返回加载后am_wstring_t对象的指针，失败则返回NULL。
+am_wstring_t *am_wstring_load(am_allocator_t *alloc, uint8_t *buffer, size_t offset);
+```
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。
+
 
 ---------------------
 

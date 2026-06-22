@@ -95,23 +95,6 @@ static wchar_t *am_token_text_dup(am_token_t *tok, wchar_t *code) {
 }
 
 
-// 创建宽字符串对象。
-// 注意：am_wstring_t.content是am_value_t数组，每个元素是一个am_wchar_t。
-static am_wstring_t *am_wstring_create(am_allocator_t *alloc, const wchar_t *str, size_t len) {
-    if (!str) return NULL;
-
-    am_wstring_t *ws = (am_wstring_t *)am_malloc(alloc, sizeof(am_wstring_t) + len * sizeof(am_value_t));
-    if (!ws) return NULL;
-
-    ws->base.type = AM_OBJECT_TYPE_WSTRING;
-    ws->length = len;
-    for (size_t i = 0; i < len; i++) {
-        ws->content[i] = am_make_value_of_wchar((am_wchar_t)str[i]);
-    }
-    return ws;
-}
-
-
 // 根据token文本查找关键字在AM_KEYWORDS中的索引。
 static size_t keyword_index(const wchar_t *text) {
     for (size_t i = 0; AM_KEYWORDS[i]; i++) {

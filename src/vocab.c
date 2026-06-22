@@ -105,12 +105,14 @@ am_vocab_t *am_vocab_copy(am_allocator_t *alloc, am_vocab_t *vocab) {
 // 对象二进制转储
 // ===============================================================================
 
-uint8_t *am_vocab_dump(am_allocator_t *alloc, am_vocab_t *vocab, size_t *size) {
+// 功能说明：将词典对象序列化成二进制序列，并转储到buffer[offset]
+// 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
+// 注意：若buffer设为NULL，或者offset设为SIZE_MAX，则仅计算转储后的二进制序列的字节数，不实际写入buffer。
+//       将words所指向的wchar_t*宽字符串依次展平拼接，各字符串之间以L'\0'为间隔符，最后一个字符串以L'\0'结束。
+//       压缩对象，将capacity压缩到跟length一致，删除多余分配的空闲部分。
+size_t am_vocab_dump(am_allocator_t *alloc, am_vocab_t *vocab, uint8_t *buffer, size_t offset) {
     (void)alloc;
-    if (!vocab) {
-        if (size) *size = 0;
-        return NULL;
-    }
+    if (!vocab) return SIZE_MAX;
 
     size_t content_size = 0;
     for (size_t i = 0; i < vocab->length; i++) {
@@ -118,27 +120,55 @@ uint8_t *am_vocab_dump(am_allocator_t *alloc, am_vocab_t *vocab, size_t *size) {
     }
 
     size_t dump_size = sizeof(am_vocab_t) + vocab->length * sizeof(wchar_t *) + content_size;
-    uint8_t *buf = (uint8_t *)malloc(dump_size);
-    if (!buf) {
-        if (size) *size = 0;
-        return NULL;
+    if (buffer != NULL && offset != SIZE_MAX) {
+        am_vocab_t *dump = (am_vocab_t *)&buffer[offset];
+        dump->base = vocab->base;
+        dump->capacity = vocab->length;
+        dump->length = vocab->length;
+
+        wchar_t *content_ptr = (wchar_t *)&buffer[offset + sizeof(am_vocab_t) + vocab->length * sizeof(wchar_t *)];
+        for (size_t i = 0; i < vocab->length; i++) {
+            size_t len = wcslen(vocab->words[i]);
+            dump->words[i] = content_ptr; // 运行时指针，指向 dump 内部的字符串区域
+            wcscpy(content_ptr, vocab->words[i]);
+            content_ptr += (len + 1);
+        }
     }
 
-    am_vocab_t *dump = (am_vocab_t *)buf;
-    dump->base = vocab->base;
-    dump->capacity = vocab->length;
-    dump->length = vocab->length;
+    return dump_size;
+}
 
-    wchar_t *content_ptr = (wchar_t *)(buf + sizeof(am_vocab_t) + vocab->length * sizeof(wchar_t *));
+
+// 功能说明：转储（dump）操作的逆操作。从二进制字节序列buffer[offset]开始，读取转储的词典对象，构造词典对象并返回其指针。
+// 实现说明：offset是读取buffer的起点offset。成功则返回加载后am_vocab_t对象的指针，失败则返回NULL。
+am_vocab_t *am_vocab_load(am_allocator_t *alloc, uint8_t *buffer, size_t offset) {
+    if (!alloc || !buffer) return NULL;
+
+    am_vocab_t *dump = (am_vocab_t *)&buffer[offset];
+    if (dump->base.type != AM_OBJECT_TYPE_VOCAB) return NULL;
+
+    size_t content_size = 0;
+    for (size_t i = 0; i < dump->length; i++) {
+        content_size += (wcslen(dump->words[i]) + 1) * sizeof(wchar_t);
+    }
+
+    size_t total_size = sizeof(am_vocab_t) + dump->length * sizeof(wchar_t *) + content_size;
+    am_vocab_t *vocab = (am_vocab_t *)am_malloc(alloc, total_size);
+    if (!vocab) return NULL;
+
+    vocab->base = dump->base;
+    vocab->capacity = dump->length;
+    vocab->length = dump->length;
+
+    wchar_t *content_ptr = (wchar_t *)((uint8_t *)vocab + sizeof(am_vocab_t) + vocab->length * sizeof(wchar_t *));
     for (size_t i = 0; i < vocab->length; i++) {
-        size_t len = wcslen(vocab->words[i]);
-        dump->words[i] = content_ptr; // 运行时指针，指向 dump 内部的字符串区域
-        wcscpy(content_ptr, vocab->words[i]);
+        size_t len = wcslen(dump->words[i]);
+        wcscpy(content_ptr, dump->words[i]);
+        vocab->words[i] = content_ptr;
         content_ptr += (len + 1);
     }
 
-    if (size) *size = dump_size;
-    return buf;
+    return vocab;
 }
 
 

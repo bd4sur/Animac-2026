@@ -519,10 +519,12 @@ static void test_dump_basic(void) {
 
     // 空 map 转储
     am_map_t *map = am_map_create(&test_allocator, 8);
-    size_t size = 0;
-    uint8_t *dump = am_map_dump(&test_allocator, map, &size);
-    assert(dump != NULL);
+    size_t size = am_map_dump(&test_allocator, map, NULL, 0);
+    assert(size != SIZE_MAX);
     assert(size == sizeof(am_map_t));
+    uint8_t *dump = (uint8_t *)malloc(size);
+    assert(dump != NULL);
+    assert(am_map_dump(&test_allocator, map, dump, 0) == size);
     am_map_t *d = (am_map_t *)dump;
     assert(d->length == 0);
     assert(d->capacity == 0);
@@ -541,9 +543,12 @@ static void test_dump_basic(void) {
     assert(am_map_length(&test_allocator, map) == 5);
     assert(am_map_capacity(&test_allocator, map) == 8);
 
-    dump = am_map_dump(&test_allocator, map, &size);
-    assert(dump != NULL);
+    size = am_map_dump(&test_allocator, map, NULL, 0);
+    assert(size != SIZE_MAX);
     assert(size == sizeof(am_map_t) + 5 * sizeof(am_map_entry_t));
+    dump = (uint8_t *)malloc(size);
+    assert(dump != NULL);
+    assert(am_map_dump(&test_allocator, map, dump, 0) == size);
     d = (am_map_t *)dump;
     assert(d->length == 5);
     assert(d->capacity == 5);
@@ -568,9 +573,12 @@ static void test_dump_basic(void) {
     assert(am_map_delete(&test_allocator, map, k2) == 0);
     assert(am_map_length(&test_allocator, map) == 4);
 
-    dump = am_map_dump(&test_allocator, map, &size);
-    assert(dump != NULL);
+    size = am_map_dump(&test_allocator, map, NULL, 0);
+    assert(size != SIZE_MAX);
     assert(size == sizeof(am_map_t) + 4 * sizeof(am_map_entry_t));
+    dump = (uint8_t *)malloc(size);
+    assert(dump != NULL);
+    assert(am_map_dump(&test_allocator, map, dump, 0) == size);
     d = (am_map_t *)dump;
     assert(d->length == 4);
     assert(d->capacity == 4);
@@ -602,9 +610,11 @@ static void test_dump_vs_copy(void) {
     assert(copy->length == map->length);
 
     // dump 压缩对象：capacity 与 length 一致，丢弃墓碑和空闲槽位
-    size_t dump_size = 0;
-    uint8_t *dump = am_map_dump(&test_allocator, map, &dump_size);
+    size_t dump_size = am_map_dump(&test_allocator, map, NULL, 0);
+    assert(dump_size != SIZE_MAX);
+    uint8_t *dump = (uint8_t *)malloc(dump_size);
     assert(dump != NULL);
+    assert(am_map_dump(&test_allocator, map, dump, 0) == dump_size);
     am_map_t *d = (am_map_t *)dump;
     assert(d->capacity == d->length);
     assert(d->tombstones == 0);
@@ -655,6 +665,100 @@ static void test_copy_independence(void) {
     printf("OK\n");
 }
 
+static int map_equal(am_map_t *a, am_map_t *b) {
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    if (a->length != b->length) return 0;
+    if (a->base.type != b->base.type) return 0;
+    for (size_t i = 0; i < a->capacity; i++) {
+        am_value_t k = a->slots[i].key;
+        if (k != AM_MAP_KEY_EMPTY && k != AM_MAP_KEY_TOMBSTONE) {
+            if (!am_value_equal(am_map_get(&test_allocator, b, k), a->slots[i].value)) return 0;
+        }
+    }
+    return 1;
+}
+
+static void test_load_roundtrip(void) {
+    printf("test_load_roundtrip ... ");
+
+    am_map_t *map = am_map_create(&test_allocator, 8);
+    assert(map != NULL);
+
+    for (int i = 0; i < 5; i++) {
+        am_value_t k = am_make_value_of_uint((uint32_t)i);
+        am_value_t v = am_make_value_of_int(-i);
+        map = am_map_set(&test_allocator, map, k, v);
+        assert(map != NULL);
+    }
+
+    size_t size = am_map_dump(&test_allocator, map, NULL, 0);
+    assert(size != SIZE_MAX);
+
+    uint8_t *buffer = (uint8_t *)malloc(size);
+    assert(buffer != NULL);
+    assert(am_map_dump(&test_allocator, map, buffer, 0) == size);
+
+    am_map_t *loaded = am_map_load(&test_allocator, buffer, 0);
+    assert(loaded != NULL);
+    assert(loaded->base.type == AM_OBJECT_TYPE_MAP);
+    assert(map_equal(map, loaded));
+    assert(loaded->tombstones == 0);
+
+    free(buffer);
+    am_map_destroy(&test_allocator, map);
+    printf("OK\n");
+}
+
+static void test_load_with_offset(void) {
+    printf("test_load_with_offset ... ");
+
+    am_map_t *map = am_map_create(&test_allocator, 4);
+    assert(map != NULL);
+    map = am_map_set(&test_allocator, map, am_make_value_of_uint(1), am_make_value_of_uint(10));
+    assert(map != NULL);
+
+    size_t size = am_map_dump(&test_allocator, map, NULL, 0);
+    assert(size != SIZE_MAX);
+
+    uint8_t *buffer = (uint8_t *)malloc(size + 8);
+    assert(buffer != NULL);
+    memset(buffer, 0xDD, size + 8);
+
+    assert(am_map_dump(&test_allocator, map, buffer, 8) == size);
+
+    am_map_t *loaded = am_map_load(&test_allocator, buffer, 8);
+    assert(loaded != NULL);
+    assert(map_equal(map, loaded));
+
+    free(buffer);
+    am_map_destroy(&test_allocator, map);
+    printf("OK\n");
+}
+
+static void test_load_invalid_type(void) {
+    printf("test_load_invalid_type ... ");
+
+    uint8_t buffer[64];
+    memset(buffer, 0, sizeof(buffer));
+    am_map_t *fake = (am_map_t *)buffer;
+    fake->base.type = AM_OBJECT_TYPE_LIST;
+    fake->length = 0;
+    fake->capacity = 0;
+    fake->mask = 0;
+    fake->tombstones = 0;
+
+    assert(am_map_load(&test_allocator, buffer, 0) == NULL);
+    printf("OK\n");
+}
+
+static void test_load_null_buffer(void) {
+    printf("test_load_null_buffer ... ");
+
+    assert(am_map_load(&test_allocator, NULL, 0) == NULL);
+    printf("OK\n");
+}
+
 // ===============================================================================
 // 入口
 // ===============================================================================
@@ -681,6 +785,10 @@ int main(void) {
     RUN_TEST(test_dump_basic);
     RUN_TEST(test_dump_vs_copy);
     RUN_TEST(test_copy_independence);
+    RUN_TEST(test_load_roundtrip);
+    RUN_TEST(test_load_with_offset);
+    RUN_TEST(test_load_invalid_type);
+    RUN_TEST(test_load_null_buffer);
 
     test_destroy(test_allocator.state);
     printf("All map tests passed.\n");

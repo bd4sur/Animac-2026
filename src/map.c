@@ -210,38 +210,63 @@ am_map_t *am_map_copy(am_allocator_t *alloc, am_map_t *map) {
 // 对象二进制转储 TODO
 // ===============================================================================
 
-// 将对象的二进制内存布局从alloc管理的内存中倒出来，返回一个系统malloc的二进制序列，以及序列长度
-//   注意：压缩对象，将capacity压缩到跟length一致，删除多余分配的空闲部分
-uint8_t *am_map_dump(am_allocator_t *alloc, am_map_t *map, size_t *size) {
+// 功能说明：将散列表对象序列化成二进制序列，并转储到buffer[offset]
+// 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
+// 注意：若buffer设为NULL，或者offset设为SIZE_MAX，则仅计算转储后的二进制序列的字节数，不实际写入buffer。
+//       压缩对象，将capacity压缩到跟length一致，丢弃墓碑和空闲槽位。
+size_t am_map_dump(am_allocator_t *alloc, am_map_t *map, uint8_t *buffer, size_t offset) {
     (void)alloc;
     am_map_t *m = (am_map_t *)map;
 
-    if (size) *size = 0;
-    if (!m) return NULL;
+    if (!m) return SIZE_MAX;
 
     size_t dump_size = sizeof(am_map_t) + m->length * sizeof(am_map_entry_t);
-    uint8_t *buf = (uint8_t *)malloc(dump_size);
-    if (!buf) return NULL;
+    if (buffer != NULL && offset != SIZE_MAX) {
+        am_map_t *dump = (am_map_t *)&buffer[offset];
+        dump->base = m->base;
+        dump->length = m->length;
+        dump->capacity = m->length;
+        dump->mask = (m->length > 0) ? (m->length - 1) : 0;
+        dump->tombstones = 0;
 
-    am_map_t *dump = (am_map_t *)buf;
-    dump->base = m->base;
-    dump->length = m->length;
-    dump->capacity = m->length;
-    dump->mask = (m->length > 0) ? (m->length - 1) : 0;
-    dump->tombstones = 0;
-
-    size_t idx = 0;
-    for (size_t i = 0; i < m->capacity; i++) {
-        if (m->slots[i].key != AM_MAP_KEY_EMPTY && m->slots[i].key != AM_MAP_KEY_TOMBSTONE) {
-            dump->slots[idx].key = m->slots[i].key;
-            dump->slots[idx].value = m->slots[i].value;
-            idx++;
+        size_t idx = 0;
+        for (size_t i = 0; i < m->capacity; i++) {
+            if (m->slots[i].key != AM_MAP_KEY_EMPTY && m->slots[i].key != AM_MAP_KEY_TOMBSTONE) {
+                dump->slots[idx].key = m->slots[i].key;
+                dump->slots[idx].value = m->slots[i].value;
+                idx++;
+            }
         }
     }
 
-    if (size) *size = dump_size;
-    return buf;
+    return dump_size;
 }
+
+
+// 功能说明：转储（dump）操作的逆操作。从二进制字节序列buffer[offset]开始，读取转储的散列表对象，构造散列表对象并返回其指针。
+// 实现说明：offset是读取buffer的起点offset。成功则返回加载后am_map_t对象的指针，失败则返回NULL。
+am_map_t *am_map_load(am_allocator_t *alloc, uint8_t *buffer, size_t offset) {
+    if (!alloc || !buffer) return NULL;
+
+    am_map_t *dump = (am_map_t *)&buffer[offset];
+    if (dump->base.type != AM_OBJECT_TYPE_MAP) return NULL;
+
+    // 重新构造一个功能完整的散列表（capacity 取不小于 length 的 2 的幂，留有空槽）。
+    am_map_t *map = am_map_create(alloc, dump->length);
+    if (!map) return NULL;
+
+    for (size_t i = 0; i < dump->length; i++) {
+        am_map_t *new_map = am_map_set(alloc, map, dump->slots[i].key, dump->slots[i].value);
+        if (!new_map) {
+            am_map_destroy(alloc, map);
+            return NULL;
+        }
+        map = new_map;
+    }
+
+    return map;
+}
+
 
 // ===============================================================================
 // 基本操作
