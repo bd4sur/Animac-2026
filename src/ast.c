@@ -24,7 +24,7 @@
 // 将模块绝对路径转换为模块ID。
 // 规则（对应TS的PathUtils.PathToModuleID）：将斜杠/反斜杠替换为点号，空格替换为下划线，去掉冒号，去掉.scm后缀。
 // 返回新分配的 wchar_t*（使用ast分配器），失败返回NULL。
-static wchar_t *path_to_module_id(am_allocator_t *alloc, const wchar_t *absolute_path) {
+wchar_t *am_absolute_path_to_module_id(am_allocator_t *alloc, const wchar_t *absolute_path) {
     if (!absolute_path) return NULL;
 
     size_t len = wcslen(absolute_path);
@@ -128,7 +128,7 @@ am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_
     ast->tokens = tokens;
     ast->token_count = token_count;
     ast->absolute_path = absolute_path;
-    ast->module_id = path_to_module_id(alloc, absolute_path);
+    ast->module_id = am_absolute_path_to_module_id(alloc, absolute_path);
     if (!ast->module_id) {
         am_free(alloc, ast);
         return NULL;
@@ -196,7 +196,7 @@ am_ast_t *am_ast_copy(am_ast_t *ast) {
     copy->tokens = ast->tokens;
     copy->token_count = ast->token_count;
     copy->absolute_path = ast->absolute_path;
-    copy->module_id = path_to_module_id(ast->alloc, ast->absolute_path);
+    copy->module_id = am_absolute_path_to_module_id(ast->alloc, ast->absolute_path);
     if (!copy->module_id) {
         am_free(ast->alloc, copy);
         return NULL;

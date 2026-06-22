@@ -334,8 +334,12 @@ static void test_linker_recursive(void) {
     assert(y_count == 4);
     assert(x_count == 4);
 
-    // 可视化输出链接后的 AST
-    printf("=== linked AST ===\n");
+    // 执行外部引用解析
+    int32_t resolution_result = am_linker_import_ref_resolution(NULL, linked);
+    assert(resolution_result == 0);
+
+    // 可视化输出解析后的 AST
+    printf("=== resolved AST ===\n");
     am_debug_ast_print_to_stdout(linked);
 
     // 将 ast->nodes 深度转储后再加载，验证 dump/load 正确性

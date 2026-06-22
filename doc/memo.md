@@ -1,3 +1,11 @@
+TODO capturecc指令的参数改成iaddr，其返回的把柄直接入栈
+
+TODO TS：tailcall实现，复用CallAsync函数
+
+TODO eq? eqv? equal? +typeof
+
+TODO 长远：不许使用系统malloc
+
 TODO parser创建wstring对象时要先去掉两端的双引号
 
 TODO 在abcdefg用例中，似乎有把关键字塞进变量表的问题。
@@ -5,6 +13,8 @@ TODO 在abcdefg用例中，似乎有把关键字塞进变量表的问题。
 TODO 计算object对象size的宏或函数（用于内存管理）
 
 TODO 计算object对象的hash（map也要计算？），用于相等性比较（内涵的、外延的，需精密考虑）
+
+TODO 模块二进制文件的格式：魔数、版本号、module_id
 
 TODO 作为基础设施的字符串操作函数
 
@@ -28,48 +38,29 @@ TODO 变量Alpha-renaming(ARN)规则：
 TODO 将PathUtils单独实现出来。
 
 
-
+NOTE 内存池在编译期和运行期之间要发生一次彻底重分配：编译期和运行期，都可以使用完整的内存池。编译完成后，将模块dump成一个完整的二进制文件，随后彻底清空内存池。
 
 NOTE 关于本地native函数
 - 所有的内置函数+运算符都是本地函数，作为顶级符号绑定在顶级作用域中，全局可见。
 - 谨慎设计VMAPI
 
 
-
-TODO Linker中的跨模块引用换名问题：
-
-
-2) 解析完dep和native后，变量换名之前，对AST再进行一次整体扫描：外部引用扫描。对于【非import和native节点中出现的】所有varid，执行以下动作：
-
-- 首先从var_vocab中取到变量字符串，判断它是不是点号分隔的形式。
--- 如果不是，则为普通变量，在variable_type中，将其varid的属性值设为make_value(AM_VAR_TYPE_DEFAULT, uint)。
--- 如果是，则将其按“.”一分为二，分成prefix和suffix两部分。
---- 从var_vocab查询prefix对应的varid。
----- 如果没查到，则报错。
----- 如果查到了，则检查prefix对应的varid是否位于dependencies或natives中。
------ 如果都不存在，则报错（非外部依赖模块或native函数调用）。
------ 如果在dependencies中查到了，则在variable_type中，将该varid的属性值设为am_make_value_of_uint(AM_VAR_TYPE_IMPORT_REF)，将prefix对应的varid的属性值设为am_make_value_of_uint(AM_VAR_TYPE_IMPORT_ALIAS)。
------ 如果在natives中查到了，则在variable_type中，将该varid的属性值设为am_make_value_of_uint(AM_VAR_TYPE_NATIVE_REF)，将prefix对应的varid的属性值设为am_make_value_of_uint(AM_VAR_TYPE_NATIVE_ID)。
------ 如果两个都查到了，则报错退出（因为一个prefix不能既是import的又是native的）。
-
-3) 在做alpha-renaming时，对于点号分隔的形式，不做替换。native和import节点中的变量也不做替换（已有）。
-
-4) Alpha-renaming时，要拷贝variable_type属性。
-
-4) 增加ast成员函数如下
-
-// 功能描述：通过传入的变量名，找到该变量对应的顶级变量的varid。该函数用于链接过程中主引模块获得被引模块的ARN换名后varid。
-// 设计说明：一般情况下，一个ARN前的varid，可能对应多个ARN后的varid。因此，单凭ARN前的varid，无法确定唯一的ARN后的varid。但是我们有以下规则：通过import机制引用其他模块的变量时，必须引用定义在顶层作用域的变量，也就是var_top列表中的变量，而顶层作用域的变量是唯一的。这样，在模块链接过程中，主引模块通过一个ARN前的变量字符串，可以唯一地确定一个ARN后的varid，这个varid必然是var_top。
-// 实现说明：
-// - 在ast->var_vocab中反查出varstr的varid
-// - 遍历ast->var_top中的每个varid=v，通过ast->var_arn_mapping找到v对应的ARN换名前的varid，并与上一步反查出的varid比较。如果一致，则返回对应的v。
-// - 这个v就是varstr在ARN换名后的varid，同时它也是模块的顶级变量。
-
-am_varid_t am_ast_find_top_varid_of_external_ref(am_ast_t *ast, wchar_t *varstr);
+NOTE linker的输入参数保持AST不变：这样可以兼容文件、repl等多种场景。TODO REPL如何实现？
 
 
+TODO 指令集设计变动
 
+- capturecc iaddr 捕获当前Continuation，以iaddr为返回地址，并将其把柄入栈
+- 算术逻辑运算：add、sub、mul、div、mod、eq、eqv、ge、le、gt、lt、not、and、or、typeof
+- 列表运算：car、cdr、cons、get_item、set_item、append(->push)、(+pop)、length、concat、duplicate、、、
+- fork机制要仔细考虑
 
+TODO ILCode的序列化和反序列化
 
+- 务必注意结构体填充和对齐问题
+- 序列化时，opcode只占用一个字节（uint8_t）以减小代码长度。
 
-
+TODO make_label
+// 功能说明：根据handle、varid等值，构造一个全局唯一的临时label（增加值类型AM_VALUE_TYPE_LABEL）。相当于@<value>
+// 只要lbl_value相等，在后面的标签替换阶段就会被替换为标签所在的iaddr
+make_label(am_value_t lbl_value);

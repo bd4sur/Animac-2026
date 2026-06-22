@@ -20,7 +20,7 @@
 
 
 // 链接器上下文
-typedef struct am_linker_ctx_t {
+struct am_linker_ctx_t {
     am_allocator_t *alloc;           // AST 使用的分配器
     am_ast_t *main_ast;              // 引用根模块，由调用者管理生命周期
     am_vocab_t *all_module_path;     // mod_index -> module_path
@@ -31,7 +31,7 @@ typedef struct am_linker_ctx_t {
     size_t edge_num;                 // 当前边数
     size_t module_counter;           // 当前模块数
     wchar_t *base_dir;               // 基准工作目录
-} am_linker_ctx_t;
+};
 
 
 // 宽字符串复制（使用系统 malloc）
@@ -396,6 +396,169 @@ size_t *am_topo_sort(size_t DAG[][2], size_t edge_num) {
     }
 
     return result;
+}
+
+
+// ===============================================================================
+// 外部引用解析
+// ===============================================================================
+
+typedef struct {
+    am_ast_t *ast;
+    int32_t   error;
+} import_ref_resolution_ctx_t;
+
+
+static void import_ref_resolution_iter_cb(am_handle_t handle, am_value_t value, void *user_data) {
+    (void)handle;
+
+    import_ref_resolution_ctx_t *ctx = (import_ref_resolution_ctx_t *)user_data;
+    am_ast_t *ast = ctx->ast;
+
+    if (!am_value_is_ptr(value)) return;
+
+    am_object_t *obj = am_value_to_ptr(value);
+    if (obj->type != AM_OBJECT_TYPE_LIST) return;
+
+    am_list_t *lst = (am_list_t *)obj;
+
+    for (size_t i = 0; i < lst->length; i++) {
+        am_value_t child = am_list_get(ast->alloc, lst, i);
+        if (!am_value_is_varid(child)) continue;
+
+        am_varid_t varid = am_value_to_varid(child);
+        if ((size_t)varid >= ast->var_type->length) {
+            ctx->error = -1;
+            return;
+        }
+
+        am_value_t type_val = am_list_get(ast->alloc, ast->var_type, (size_t)varid);
+        if (!am_value_is_uint(type_val)) continue;
+        if (am_value_to_uint(type_val) != AM_VAR_TYPE_IMPORT_REF) continue;
+
+        // 从最后一个点号分割 prefix 与 suffix
+        wchar_t *var_str = am_vocab_get(ast->alloc, ast->var_vocab, &varid);
+        if (!var_str) {
+            ctx->error = -1;
+            return;
+        }
+
+        wchar_t *last_dot = wcsrchr(var_str, L'.');
+        if (!last_dot || last_dot == var_str) {
+            ctx->error = -1;
+            return;
+        }
+
+        size_t prefix_len = (size_t)(last_dot - var_str);
+        wchar_t *prefix = (wchar_t *)malloc((prefix_len + 1) * sizeof(wchar_t));
+        if (!prefix) {
+            ctx->error = -1;
+            return;
+        }
+        wcsncpy(prefix, var_str, prefix_len);
+        prefix[prefix_len] = L'\0';
+
+        const wchar_t *suffix = last_dot + 1;
+
+        // 查询 dependencies，找到 alias 对应的 importee 路径
+        size_t alias_varid = am_vocab_find(ast->alloc, ast->var_vocab, prefix);
+        free(prefix);
+        if (alias_varid == SIZE_MAX) {
+            ctx->error = -1;
+            return;
+        }
+
+        am_value_t path_h_val = am_map_get(ast->alloc, ast->dependencies,
+                                           am_make_value_of_varid((am_varid_t)alias_varid));
+        if (!am_value_is_handle(path_h_val)) {
+            ctx->error = -1;
+            return;
+        }
+
+        am_value_t path_node_val = am_ast_get_node(ast, am_value_to_handle(path_h_val));
+        if (!am_value_is_ptr(path_node_val)) {
+            ctx->error = -1;
+            return;
+        }
+
+        am_object_t *path_obj = am_value_to_ptr(path_node_val);
+        if (path_obj->type != AM_OBJECT_TYPE_WSTRING) {
+            ctx->error = -1;
+            return;
+        }
+
+        wchar_t *importee_path = linker_extract_path_from_wstring((am_wstring_t *)path_obj);
+        if (!importee_path) {
+            ctx->error = -1;
+            return;
+        }
+
+        wchar_t *importee_id = am_absolute_path_to_module_id(ast->alloc, importee_path);
+        free(importee_path);
+        if (!importee_id) {
+            ctx->error = -1;
+            return;
+        }
+
+        size_t id_len = wcslen(importee_id);
+        size_t suffix_len = wcslen(suffix);
+        am_varid_t resolved_varid = SIZE_MAX;
+        size_t match_count = 0;
+
+        // 在 var_top 中匹配 importee_id.<lambda_handle>.suffix
+        for (size_t k = 0; k < ast->var_top->length; k++) {
+            am_value_t top_val = am_list_get(ast->alloc, ast->var_top, k);
+            if (!am_value_is_varid(top_val)) continue;
+
+            am_varid_t top_varid = am_value_to_varid(top_val);
+            wchar_t *top_name = am_vocab_get(ast->alloc, ast->var_vocab, &top_varid);
+            if (!top_name) continue;
+
+            size_t top_len = wcslen(top_name);
+            if (top_len > id_len + 1 + suffix_len + 1 &&
+                wcsncmp(top_name, importee_id, id_len) == 0 &&
+                top_name[id_len] == L'.' &&
+                wcscmp(top_name + top_len - suffix_len, suffix) == 0 &&
+                top_name[top_len - suffix_len - 1] == L'.' &&
+                (top_len - suffix_len - 1) > id_len) {
+                resolved_varid = top_varid;
+                match_count++;
+            }
+        }
+
+        am_free(ast->alloc, importee_id);
+
+        if (match_count != 1) {
+            ctx->error = -1;
+            return;
+        }
+
+        if (am_list_set(ast->alloc, lst, i,
+                        am_make_value_of_varid(resolved_varid)) != 0) {
+            ctx->error = -1;
+            return;
+        }
+    }
+}
+
+
+// 对合并后的AST执行外部引用解析，也就是将AST中所有的 var_type=AM_VAR_TYPE_IMPORT_REF 类型的变量，
+// 替换为 dependencies 对应模块中的变量全限定名。
+// 成功返回 0，失败返回 -1。
+int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx, am_ast_t *merged_ast) {
+    (void)ctx;
+
+    if (!merged_ast || !merged_ast->alloc || !merged_ast->nodes ||
+        !merged_ast->var_vocab || !merged_ast->var_type || !merged_ast->var_top ||
+        !merged_ast->dependencies) {
+        return -1;
+    }
+
+    import_ref_resolution_ctx_t iter_ctx = { merged_ast, 0 };
+    am_heap_iter(merged_ast->alloc, merged_ast->nodes,
+                 import_ref_resolution_iter_cb, &iter_ctx);
+
+    return iter_ctx.error;
 }
 
 

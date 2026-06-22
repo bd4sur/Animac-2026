@@ -233,6 +233,11 @@ am_handle_t am_ast_get_scope(am_ast_t *ast, am_handle_t lambda_handle);
 
 
 
+// 功能描述：将模块绝对路径转换为模块ID。
+// 实现说明：规则见 AGENTS.md。返回使用 ast 分配器分配的 wchar_t*，失败返回 NULL。
+wchar_t *am_absolute_path_to_module_id(am_allocator_t *alloc, const wchar_t *absolute_path);
+
+
 #ifdef __cplusplus
 }
 #endif

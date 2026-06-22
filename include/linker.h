@@ -25,6 +25,18 @@ size_t *am_topo_sort(size_t DAG[][2], size_t edge_num);
 am_ast_t *am_link(am_ast_t *main_ast, wchar_t *base_dir);
 
 
+// 前向声明：链接器上下文（opaque pointer）
+struct am_linker_ctx_t;
+typedef struct am_linker_ctx_t am_linker_ctx_t;
+
+
+// 功能描述：对合并后的 AST 执行外部引用解析。
+// 参数说明：ctx 为链接器上下文（当前实现不使用，可传 NULL）；
+//          merged_ast 为已完成模块合并的 AST。
+// 返回值：  成功返回 0；失败返回 -1。
+int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx, am_ast_t *merged_ast);
+
+
 #ifdef __cplusplus
 }
 #endif

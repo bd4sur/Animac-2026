@@ -677,7 +677,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
 
 开始编码前，请先阅读 @doc/AGENTS.md 。
 
-为实现Scheme解释器的AST模块链接器，请你在 @src/linker.c 中，根据下文描述的算法，实现AST的外部引用解析算法，即 am_linker_import_ref_resolution 函数。
+为实现Scheme解释器的AST模块链接器，请你在 @src/linker.c 中，根据下文描述的算法，实现AST的“外部引用解析”算法，即 am_linker_import_ref_resolution 函数。
 
 ## 术语约定
 
@@ -755,8 +755,9 @@ int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx, am_ast_t *merged_a
 (define home.bd4sur.animac.x.0.x (+ home.bd4sur.animac.x.y.x home.bd4sur.animac.x.z.x))
 (define home.bd4sur.animac.x.0.y (+ home.bd4sur.animac.x.y.y home.bd4sur.animac.x.z.y))
 (define home.bd4sur.animac.x.0.z (+ home.bd4sur.animac.x.y.z home.bd4sur.animac.x.z.z))
+```
 
-完成外部引用解析后的AST为（以代码形式给出，供参考）：
+完成外部引用解析后的AST为（以代码形式给出，供参考），注意 home.bd4sur.animac.y.z.x、home.bd4sur.animac.y.z.y、home.bd4sur.animac.y.z.z、home.bd4sur.animac.x.y.x、home.bd4sur.animac.x.z.x、home.bd4sur.animac.x.y.y、home.bd4sur.animac.x.z.y、home.bd4sur.animac.x.y.z、home.bd4sur.animac.x.z.z 的替换规则：
 
 ```
 (define home.bd4sur.animac.z.0.f (lambda (home.bd4sur.animac.z.1.x home.bd4sur.animac.z.1.y home.bd4sur.animac.z.1.z) 666))
