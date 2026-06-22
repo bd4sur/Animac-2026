@@ -13,6 +13,7 @@
 #include "vocab.h"
 #include "wstring.h"
 #include "map.h"
+#include "heap.h"
 #include "debug.h"
 
 
@@ -336,6 +337,37 @@ static void test_linker_recursive(void) {
     // 可视化输出链接后的 AST
     printf("=== linked AST ===\n");
     am_debug_ast_print_to_stdout(linked);
+
+    // 将 ast->nodes 深度转储后再加载，验证 dump/load 正确性
+    printf("=== dump/load nodes ===\n");
+    am_heap_t *nodes_copy = am_heap_copy(&test_allocator, linked->nodes);
+    assert(nodes_copy != NULL);
+
+    size_t dump_size = am_heap_deep_dump(&test_allocator, nodes_copy, NULL, 0);
+    assert(dump_size != SIZE_MAX);
+    printf("deep dump size: %zu\n", dump_size);
+
+    uint8_t *dump_buffer = (uint8_t *)malloc(dump_size);
+    assert(dump_buffer != NULL);
+    memset(dump_buffer, 0, dump_size);
+
+    size_t written = am_heap_deep_dump(&test_allocator, nodes_copy, dump_buffer, 0);
+    assert(written == dump_size);
+
+    am_heap_t *loaded_nodes = am_heap_deep_load(&test_allocator, dump_buffer, 0);
+    assert(loaded_nodes != NULL);
+
+    // 用原 AST 的元数据构造一个临时 AST，仅替换 nodes 为加载后的 heap，
+    // 然后通过 AST 打印函数输出，以验证 dump/load 后节点内容一致。
+    am_ast_t loaded_ast = *linked;
+    loaded_ast.nodes = loaded_nodes;
+
+    printf("=== loaded AST (from dumped nodes) ===\n");
+    am_debug_ast_print_to_stdout(&loaded_ast);
+
+    free(dump_buffer);
+    // nodes_copy 在深dump后 table value 已变为偏移量，不再有效，故不销毁
+    // loaded_nodes 可由测试分配器统一回收
 
     am_ast_destroy(linked);
     printf("OK\n");

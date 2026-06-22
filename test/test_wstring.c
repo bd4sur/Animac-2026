@@ -192,7 +192,7 @@ static void test_dump_size_only(void) {
 
     size_t size = am_wstring_dump(&test_allocator, ws, NULL, 0);
     assert(size != SIZE_MAX);
-    assert(size == sizeof(size_t) + 9 * sizeof(am_value_t));
+    assert(size == sizeof(am_object_t) + sizeof(size_t) + 9 * sizeof(am_value_t));
 
     size_t size2 = am_wstring_dump(&test_allocator, ws, NULL, SIZE_MAX);
     assert(size2 == size);

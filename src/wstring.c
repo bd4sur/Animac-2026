@@ -54,9 +54,9 @@ am_wstring_t *am_wstring_copy(am_allocator_t *alloc, am_wstring_t *obj) {
 
 
 // 转储格式：
+//   [sizeof(am_object_t) bytes] 对象基类头（含type=AM_OBJECT_TYPE_WSTRING）
 //   [sizeof(size_t) bytes] 字符串长度（字符个数）
 //   [length * sizeof(am_value_t) bytes] 字符内容（每个字符为一个am_value_t）
-// 注：不额外写入对象类型标记，因为am_wstring_t.base.type已经标识了对象类型。
 
 // 功能说明：将字符串对象序列化成二进制序列，并转储到buffer[offset]
 // 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
@@ -66,12 +66,15 @@ size_t am_wstring_dump(am_allocator_t *alloc, am_wstring_t *obj, uint8_t *buffer
     if (!obj) return SIZE_MAX;
 
     size_t content_size = obj->length * sizeof(am_value_t);
-    size_t total_size = sizeof(size_t) + content_size;
+    size_t total_size = sizeof(am_object_t) + sizeof(size_t) + content_size;
 
     if (buffer != NULL && offset != SIZE_MAX) {
-        memcpy(&buffer[offset], &obj->length, sizeof(size_t));
+        // 写入对象基类头
+        am_wstring_t *dump = (am_wstring_t *)&buffer[offset];
+        dump->base = obj->base;
+        dump->length = obj->length;
         if (content_size > 0) {
-            memcpy(&buffer[offset + sizeof(size_t)], obj->content, content_size);
+            memcpy(dump->content, obj->content, content_size);
         }
     }
 
@@ -84,19 +87,17 @@ size_t am_wstring_dump(am_allocator_t *alloc, am_wstring_t *obj, uint8_t *buffer
 am_wstring_t *am_wstring_load(am_allocator_t *alloc, uint8_t *buffer, size_t offset) {
     if (!alloc || !buffer) return NULL;
 
-    size_t length;
-    memcpy(&length, &buffer[offset], sizeof(size_t));
+    am_wstring_t *dump = (am_wstring_t *)&buffer[offset];
+    if (dump->base.type != AM_OBJECT_TYPE_WSTRING) return NULL;
 
+    size_t length = dump->length;
     am_wstring_t *ws = (am_wstring_t *)am_malloc(alloc, sizeof(am_wstring_t) + length * sizeof(am_value_t));
     if (!ws) return NULL;
 
-    ws->base.header = 0;
-    ws->base.hash = 0;
-    ws->base.gcmark = 0;
-    ws->base.type = AM_OBJECT_TYPE_WSTRING;
+    ws->base = dump->base;
     ws->length = length;
     if (length > 0) {
-        memcpy(ws->content, &buffer[offset + sizeof(size_t)], length * sizeof(am_value_t));
+        memcpy(ws->content, dump->content, length * sizeof(am_value_t));
     }
     return ws;
 }

@@ -675,26 +675,109 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
 
 ### 链接过程3：对所有模块做外部引用解析
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+为实现Scheme解释器的AST模块链接器，请你在 @src/linker.c 中，根据下文描述的算法，实现AST的外部引用解析算法，即 am_linker_import_ref_resolution 函数。
+
+## 术语约定
+
+- 模块：一个完整的Scheme源码文件，及其解析得到的AST。模块之间可互相引用。
+- 外部引用：指的是通过import和点号分隔标识符，引用外部模块变量。(import Alias "/path/to/module.scm")表达式，声明对外部模块的导入，并赋予其“别名”Alias，别名属于特殊变量，其类型为AM_VAR_TYPE_IMPORT_ALIAS。代码中通过“别名.标识符”的格式，引用外部模块的变量。“别名.标识符”整体也是一个变量，在parse阶段，其类型为AM_VAR_TYPE_IMPORT_REF。
+- 模块ID：或者叫模块的“全限定名”，是模块源码文件的绝对路径转换得到的、在整个宿主环境中具有唯一性的字符串。模块ID实质上就是模块文件的绝对路径，只是被转换成了点号分隔的标识符格式。模块ID在模块parse和链接阶段，模块ID和模块绝对路径用于唯一确定一个模块，使得参与链接的所有变量都具有全局唯一的字符串形式和varid。
+- importer（主引模块）：代码中通过(import ...)引用其他模块的模块。
+- importee（被引模块）：被其他importer引用的模块。主引被引是相对的。在引用关系有向无环图（DAG）构建过程中，规定importer指向importee。
+- 引用根：链接任务的唯一输入模块，是引用关系图的唯一起点。一般是项目的主模块（main.scm之类的）。
+
+## 函数原型和算法描述
+
 ```
-// 对所有模块做外部引用解析
-am_linker_import_ref_resolution(ctx);
-// 功能说明：对AST中的import_ref类型的变量进行解析，替换为所在模块中的变量全限定名
-// 实现说明：
-int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx) {
-    for (size_t i = 0; i < ctx->module_counter; i++) {
-        
-    }
-}
+// 对合并后的AST执行外部引用解析，也就是将AST中所有的var_type=AM_VAR_TYPE_IMPORT_REF类型的变量，替换为dependencies对应模块中的变量全限定名
+// 成功返回0，失败返回-1。
+int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx, am_ast_t *merged_ast);
 ```
 
-am_linker_import_ref_resolution(ctx, importer_index)解引用算法：
-- 首先要知道，外部引用解析发生在AST大一统之后，所有的名字都是全局唯一无歧义的。
+外部引用解析算法：
+
+- 首先要知道，外部引用解析发生在AST完全融合之后，所有的名字都是全局唯一无歧义的。
 - 全量遍历整个合并后的AST，在children中寻找IMPORT_REF类型的变量。
 - 从最后一个点将IMPORT_REF分割为 prefix=importer_id.alias 和 suffix。
 - 在全局dependencies中，查询 prefix=importer_id.alias 对应的 importee_path ，转为模块ID：importee_id。
 - 在var_top中查找IMPORT_REF在importee中的变量名：匹配以下模式的变量：importee_id.[top_lambda_node_of_importee].suffix。说明：尽管中间的[top_lambda_node_of_importee]不知道，但是，通过importee_id+顶级变量+suffix三个信息，已经能够在var_top中唯一定位出一个变量。如有任何异常（找不到等）则报错。
 - 用新找到的top_var变量，替换掉旧的IMPORT_REF类型的child。
 - 对所有IMPORT_REF变量的child重复以上过程，直至全部遍历完毕。
+
+## 测试与测试用例
+
+在 @test/test_linker.c 中，对 test_linker_recursive 函数合并完成的AST执行 am_linker_import_ref_resolution ，并输出处理后的AST。
+
+测试用的文件及其引用关系如下：
+
+```
+;; /home/bd4sur/animac/x.scm
+(import z "/home/bd4sur/animac/y.scm") ;; 注意：故意不对应
+(import y "/home/bd4sur/animac/z.scm")
+(define f (lambda (x y z) 888))
+(define x (+ y.x z.x))
+(define y (+ y.y z.y))
+(define z (+ y.z z.z))
+
+;; /home/bd4sur/animac/y.scm
+(import z "/home/bd4sur/animac/z.scm")
+(define f (lambda (x y z) 888))
+(define x z.x)
+(define y z.y)
+(define z z.z)
+
+;; /home/bd4sur/animac/z.scm
+(define f (lambda (x y z) 666))
+(define x 100)
+(define y 200)
+(define z 300)
+```
+
+引用关系为（从importer指向importee）：x->y,x->z,y->z。拓扑排序后：[x, y, z]
+
+链接后的AST为（以代码形式给出，供参考）：
+
+```
+(define home.bd4sur.animac.z.0.f (lambda (home.bd4sur.animac.z.1.x home.bd4sur.animac.z.1.y home.bd4sur.animac.z.1.z) 666))
+(define home.bd4sur.animac.z.0.x 100)
+(define home.bd4sur.animac.z.0.y 200)
+(define home.bd4sur.animac.z.0.z 300)
+(import home.bd4sur.animac.y.z "/home/bd4sur/animac/z.scm")
+(define home.bd4sur.animac.y.0.f (lambda (home.bd4sur.animac.y.1.x home.bd4sur.animac.y.1.y home.bd4sur.animac.y.1.z) 888))
+(define home.bd4sur.animac.y.0.x home.bd4sur.animac.y.z.x)
+(define home.bd4sur.animac.y.0.y home.bd4sur.animac.y.z.y)
+(define home.bd4sur.animac.y.0.z home.bd4sur.animac.y.z.z)
+(import home.bd4sur.animac.x.z "/home/bd4sur/animac/y.scm")
+(import home.bd4sur.animac.x.y "/home/bd4sur/animac/z.scm")
+(define home.bd4sur.animac.x.0.f (lambda (home.bd4sur.animac.x.1.x home.bd4sur.animac.x.1.y home.bd4sur.animac.x.1.z) 888))
+(define home.bd4sur.animac.x.0.x (+ home.bd4sur.animac.x.y.x home.bd4sur.animac.x.z.x))
+(define home.bd4sur.animac.x.0.y (+ home.bd4sur.animac.x.y.y home.bd4sur.animac.x.z.y))
+(define home.bd4sur.animac.x.0.z (+ home.bd4sur.animac.x.y.z home.bd4sur.animac.x.z.z))
+
+完成外部引用解析后的AST为（以代码形式给出，供参考）：
+
+```
+(define home.bd4sur.animac.z.0.f (lambda (home.bd4sur.animac.z.1.x home.bd4sur.animac.z.1.y home.bd4sur.animac.z.1.z) 666))
+(define home.bd4sur.animac.z.0.x 100)
+(define home.bd4sur.animac.z.0.y 200)
+(define home.bd4sur.animac.z.0.z 300)
+(import home.bd4sur.animac.y.z "/home/bd4sur/animac/z.scm")
+(define home.bd4sur.animac.y.0.f (lambda (home.bd4sur.animac.y.1.x home.bd4sur.animac.y.1.y home.bd4sur.animac.y.1.z) 888))
+(define home.bd4sur.animac.y.0.x home.bd4sur.animac.z.0.x)
+(define home.bd4sur.animac.y.0.y home.bd4sur.animac.z.0.y)
+(define home.bd4sur.animac.y.0.z home.bd4sur.animac.z.0.z)
+(import home.bd4sur.animac.x.z "/home/bd4sur/animac/y.scm")
+(import home.bd4sur.animac.x.y "/home/bd4sur/animac/z.scm")
+(define home.bd4sur.animac.x.0.f (lambda (home.bd4sur.animac.x.1.x home.bd4sur.animac.x.1.y home.bd4sur.animac.x.1.z) 888))
+;; NOTE home.bd4sur.animac.x.y -> "/home/bd4sur/animac/z.scm" -> home.bd4sur.animac.z -> [in var_top] -> home.bd4sur.animac.z.0.x
+(define home.bd4sur.animac.x.0.x (+ home.bd4sur.animac.z.0.x home.bd4sur.animac.y.0.x))
+(define home.bd4sur.animac.x.0.y (+ home.bd4sur.animac.z.0.y home.bd4sur.animac.y.0.y))
+(define home.bd4sur.animac.x.0.z (+ home.bd4sur.animac.z.0.z home.bd4sur.animac.y.0.z))
+```
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。测试输入文件 /home/bd4sur/animac/x.scm 位于WSL的文件系统内，你可以在WSL内直接读取。
 
 
 ---------------------
@@ -816,6 +899,66 @@ am_wstring_t *am_wstring_load(am_allocator_t *alloc, uint8_t *buffer, size_t off
 
 
 ---------------------
+
+堆转储算法
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+请你在 @src/heap.c 中，补全实现am_heap_dump和am_heap_deep_dump函数，该函数的功能是将heap及其指向对象全部转储成一个二进制序列，以便传输和后面解析。
+
+需求背景：为了将从Scheme代码解析出的AST转储（序列化）为二进制序列，与编译得到的中间代码等信息一同构成可执行文件，需要将 am_heap_t 整个结构体及其value（解包为am_object_t*）指向的am_object_t对象，序列化为一个紧凑的二进制字节流，同时更新heap中对象指针的值为相对于二进制流起始位置的偏移量。这样，在解析运行之前，就可以通过解析这个二进制字节流，将AST整体加载到内存中。
+
+关于heap的设计思路：heap的实质是一个map，是从am_handle_t到am_value_t（对am_object_t*的TPV包装）的映射。am_heap_t对象本身维护了从逻辑地址（handle）到物理地址（pointer）的映射表，而其value指向的am_object_t对象，则存储在allocator管理的内存中。因此，为了转储整个heap，既需要转储am_heap_t对象，也需要转储am_heap_t的value所指向的对象，并将它们按规则组装成连续、可解析的二进制字节序列。
+
+序列化的整体格式如下：
+
+```
+uint64_t buffer_size; // heap序列化的总字节数（含头部的两个长度字段）N=8+8+n+n0+n1+...
+uint64_t heap_size; // am_heap_t对象的二进制dump序列的字节数n
+uint8_t[n] heap; // am_heap_t对象的二进制dump序列（am_heap_t对象相当于整个序列的header，其value保存了指向各个对象在序列中的offset）
+uint8_t[n0] obj[0]; // 对象0的二进制dump序列
+uint8_t[n1] obj[1]; // 对象1的二进制dump序列
+……
+```
+
+接口定义和算法说明如下：
+
+```
+// 该函数用于转储am_heap_t对象本身
+// 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
+// 注意1：需要压缩，将capacity压缩到跟length一致，删除多余分配的空闲部分
+// 注意2：若buffer设为NULL，或者offset设为SIZE_MAX，则仅计算转储后的二进制序列的字节数，不实际写入buffer。
+size_t am_heap_dump(am_allocator_t *alloc, am_heap_t *heap, uint8_t *buffer, size_t offset);
+
+
+// 该函数用于深度转储整个heap及其指向的对象
+// 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
+size_t am_heap_deep_dump(am_allocator_t *alloc, am_heap_t *heap, uint8_t *buffer, size_t offset) {
+    // 初始化buffer偏移量计数器：size_t buffer_offset = offset + 16;（留出两个uint64_t类型的长度字段）
+    // 首先通过am_heap_dump获得heap的字节长度size_t heap_map_size，但暂不写入buffer（因为后面还要修改其内容）。
+    // 按key升序遍历heap中的每个entry(key,value)，按顺序dump到buffer[offset+heap_map_size]之后的区域。
+    //   - 检查value是否是ptr（am_object_t*），如果不是，报错退出；如果是，则取出相应的am_object_t对象obj。
+    //   - 从base.type获取obj的类型（仅处理AM_OBJECT_TYPE_LIST、AM_OBJECT_TYPE_WSTRING）
+    //     - 根据obj类型分别调用相应类型的dump函数，获取其字节数size_t obj_size，将其dump到buffer[buffer_offset+heap_map_size]
+    //     - 修改heap中当前key对应的value为obj的dump在buffer中的偏移量，即am_make_value_of_ptr(*(buffer+buffer_offset+heap_map_size))
+    //     - 更新buffer偏移量计数器：buffer_offset += obj_size
+    // 通过am_heap_dump将修改后的heap对象dump到buffer[offset+16]
+    // 将heap_map_size转为uint64_t，写入buffer[offset+8]
+    // 将总字节长度即(buffer_offset-offset)转为uint64_t，写入buffer[offset]
+    // 返回buffer和buffer的总字节长度；失败返回SIZE_MAX
+}
+```
+
+举例：
+
+```
+Heap: {H1: 114515, H2: 114514, H3: 114516} (假设序列化后字节数为650)
+Arena: {114514: [100Bytes], 114515: [200Bytes], 114516: [300Bytes]}
+dump之后的buffer: [(uint64_t)1266, (uint64_t)650, (heap){H1: 766, H2: 666, H3: 966} , (am_object_t:H2)[100Bytes], (am_object_t:H1)[200Bytes], (am_object_t:H3)[300Bytes] ]
+  总长度：1266Bytes
+```
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。
 
 
 ---------------------
