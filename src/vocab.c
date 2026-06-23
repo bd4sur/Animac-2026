@@ -188,21 +188,27 @@ size_t am_vocab_find(am_allocator_t *alloc, am_vocab_t *vocab, wchar_t *word) {
 }
 
 
-size_t am_vocab_insert(am_allocator_t *alloc, am_vocab_t *vocab, wchar_t *word) {
-    if (!vocab || !word) return SIZE_MAX;
+am_vocab_t *am_vocab_insert(am_allocator_t *alloc, am_vocab_t *vocab, wchar_t *word, size_t *out_index) {
+    if (!vocab || !word) return NULL;
+    if (out_index) *out_index = SIZE_MAX;
 
     size_t existing = am_vocab_find(alloc, vocab, word);
-    if (existing != SIZE_MAX) return existing;
+    if (existing != SIZE_MAX) {
+        if (out_index) *out_index = existing;
+        return vocab;
+    }
 
     vocab = am_vocab_grow_if_needed(alloc, vocab);
-    if (!vocab) return SIZE_MAX;
+    if (!vocab) return NULL;
 
     size_t len = wcslen(word);
     vocab->words[vocab->length] = (wchar_t *)am_malloc(alloc, (len + 1) * sizeof(wchar_t));
-    if (!vocab->words[vocab->length]) return SIZE_MAX;
+    if (!vocab->words[vocab->length]) return NULL;
 
     wcscpy(vocab->words[vocab->length], word);
-    return vocab->length++;
+    if (out_index) *out_index = vocab->length;
+    vocab->length++;
+    return vocab;
 }
 
 

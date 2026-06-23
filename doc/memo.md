@@ -1,3 +1,5 @@
+TODO linker相对路径到绝对路径
+
 TODO capturecc指令的参数改成iaddr，其返回的把柄直接入栈
 
 TODO TS：tailcall实现，复用CallAsync函数

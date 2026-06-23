@@ -125,7 +125,9 @@ static void test_dump_load_with_words(void) {
 
     wchar_t *words[] = { L"lambda", L"define", L"set!", L"import" };
     for (size_t i = 0; i < 4; i++) {
-        size_t idx = am_vocab_insert(&test_allocator, vocab, words[i]);
+        size_t idx;
+        vocab = am_vocab_insert(&test_allocator, vocab, words[i], &idx);
+        assert(vocab != NULL);
         assert(idx != SIZE_MAX);
     }
 
@@ -157,8 +159,11 @@ static void test_dump_load_with_offset(void) {
 
     am_vocab_t *vocab = am_vocab_create(&test_allocator, 4);
     assert(vocab != NULL);
-    am_vocab_insert(&test_allocator, vocab, L"hello");
-    am_vocab_insert(&test_allocator, vocab, L"world");
+    size_t tmp_idx;
+    vocab = am_vocab_insert(&test_allocator, vocab, L"hello", &tmp_idx);
+    assert(vocab != NULL);
+    vocab = am_vocab_insert(&test_allocator, vocab, L"world", &tmp_idx);
+    assert(vocab != NULL);
 
     size_t size = am_vocab_dump(&test_allocator, vocab, NULL, 0);
     assert(size != SIZE_MAX);

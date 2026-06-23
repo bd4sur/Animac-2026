@@ -1045,6 +1045,112 @@ static void test_ast_print(wchar_t *path) {
 
 
 // ===============================================================================
+// 大量变量 ARN 回归测试
+// ===============================================================================
+
+static void test_parse_many_variables_arn(void) {
+    printf("test_parse_many_variables_arn ... ");
+    test_allocator_reset();
+
+    // 构造 33 个顶层 define（超过 var_vocab 初始容量 64 的一半，
+    // ARN 后会产生 66 个变量，触发 vocab 扩容）。
+    const wchar_t *prefix = L"((lambda () ";
+    const wchar_t *suffix = L"))";
+    size_t prefix_len = wcslen(prefix);
+    size_t suffix_len = wcslen(suffix);
+
+    // 先计算所有 define 体的总长度
+    size_t bodies_len = 0;
+    for (int i = 1; i <= 33; i++) {
+        wchar_t tmp[64];
+        int n = swprintf(tmp, 64, L"(define v%d 0)", i);
+        assert(n > 0 && n < 64);
+        bodies_len += (size_t)n;
+    }
+
+    size_t code_len = prefix_len + bodies_len + suffix_len;
+    wchar_t *code = (wchar_t *)malloc((code_len + 1) * sizeof(wchar_t));
+    assert(code != NULL);
+
+    size_t pos = 0;
+    wcscpy(code + pos, prefix);
+    pos += prefix_len;
+    for (int i = 1; i <= 33; i++) {
+        int n = swprintf(code + pos, code_len + 1 - pos, L"(define v%d 0)", i);
+        assert(n > 0);
+        pos += (size_t)n;
+    }
+    wcscpy(code + pos, suffix);
+    pos += suffix_len;
+    code[pos] = L'\0';
+
+    am_ast_t *ast = am_parser(&test_allocator, code, L"/many_vars.scm");
+    assert(ast != NULL);
+
+    // 33 个原始变量和 33 个 ARN 后的变量都应存在于词汇表中
+    for (int i = 1; i <= 33; i++) {
+        wchar_t old_name[32];
+        int n = swprintf(old_name, 32, L"v%d", i);
+        assert(n > 0 && n < 32);
+        assert(am_vocab_find(ast->alloc, ast->var_vocab, old_name) != SIZE_MAX);
+    }
+
+    am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
+    assert(top_lambda != AM_HANDLE_NULL);
+
+    // 收集所有 define 节点中的目标 varid，确保互不相同
+    am_varid_t seen[33];
+    am_list_t *lambda = handle_to_list(ast, top_lambda);
+    size_t n_body = am_list_lambda_get_body_number(ast->alloc, lambda);
+    assert(n_body == 33);
+
+    for (size_t i = 0; i < n_body; i++) {
+        am_value_t body = am_list_get(ast->alloc, lambda, 2 + i);
+        assert(am_value_is_handle(body));
+
+        am_list_t *def = handle_to_list(ast, am_value_to_handle(body));
+        assert(def->type == AM_LIST_TYPE_APPLICATION);
+        assert(def->length == 3);
+
+        am_value_t sym = am_list_get(ast->alloc, def, 0);
+        assert(am_value_is_symbol(sym));
+        assert(am_value_to_symbol(sym) == symbol_of(ast, L"define"));
+
+        am_value_t target = am_list_get(ast->alloc, def, 1);
+        assert(am_value_is_varid(target));
+        am_varid_t varid = am_value_to_varid(target);
+
+        // 检查 varid 唯一性
+        for (size_t j = 0; j < i; j++) {
+            assert(seen[j] != varid);
+        }
+        seen[i] = varid;
+
+        // 检查该 varid 对应的名字是 ARN 后的唯一名字
+        wchar_t *name = am_vocab_get(ast->alloc, ast->var_vocab, &varid);
+        assert(name != NULL);
+        assert(wcsstr(name, L"many_vars.") != NULL);
+    }
+
+    // var_top 中也应该有 33 个互不相同的 varid
+    assert(ast->var_top != NULL);
+    assert(ast->var_top->length == 33);
+    for (size_t i = 0; i < ast->var_top->length; i++) {
+        am_value_t v = am_list_get(ast->alloc, ast->var_top, i);
+        assert(am_value_is_varid(v));
+        for (size_t j = 0; j < i; j++) {
+            am_value_t u = am_list_get(ast->alloc, ast->var_top, j);
+            assert(am_value_to_varid(u) != am_value_to_varid(v));
+        }
+    }
+
+    free(code);
+    am_ast_destroy(ast);
+    printf("OK\n");
+}
+
+
+// ===============================================================================
 // AST merge 测试辅助函数
 // ===============================================================================
 
@@ -1266,6 +1372,7 @@ int main(void) {
     test_parse_import_alias_rename();
     test_parse_top_lambda_and_var_top();
     test_parse_tail_call_analysis();
+    test_parse_many_variables_arn();
     test_print_tokens();
     test_ast_print(L"/home/bd4sur/animac/test.scm");
     test_ast_merge(L"/home/bd4sur/animac/x.scm", L"/home/bd4sur/animac/y.scm");

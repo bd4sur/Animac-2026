@@ -14,7 +14,7 @@
 // 基础设施：基于内存池的简单测试分配器（bump allocator）
 // ===============================================================================
 
-#define TEST_POOL_SIZE (8 * 1024 * 1024)
+#define TEST_POOL_SIZE (128 * 1024 * 1024)
 
 typedef struct test_allocator_state_t {
     uint8_t *base;
@@ -151,7 +151,7 @@ static void print_operand(am_ast_t *ast, am_value_t op) {
     if (am_value_is_varid(op)) {
         am_varid_t v = am_value_to_varid(op);
         wchar_t *name = am_vocab_get(ast->alloc, ast->var_vocab, &v);
-        printf("%ls", name ? name : L"?");
+        printf("%ls(%zu)", name ? name : L"?", (size_t)v);
     }
     else if (am_value_is_handle(op)) {
         printf("handle_%zu", am_value_to_handle(op));
@@ -312,7 +312,7 @@ static void test_compiler_recursive(void) {
     printf("test_compiler_recursive ... \n");
     test_allocator_reset();
 
-    const wchar_t *path = L"/home/bd4sur/animac/x.scm";
+    const wchar_t *path = L"/home/bd4sur/animac/fft.scm";
     const wchar_t *base_dir = L"/home/bd4sur/animac";
 
     wchar_t *file_content = read_file_as_wstring(path);
@@ -373,6 +373,78 @@ static void test_compiler_recursive(void) {
     // 可视化输出解析后的 AST
     printf("=== resolved AST ===\n");
     am_debug_ast_print_to_stdout(linked);
+
+    // 将 ast->nodes 深度转储后再加载，验证 dump/load 正确性
+    printf("=== dump/load nodes ===\n");
+    am_heap_t *nodes_copy = am_heap_copy(&test_allocator, linked->nodes);
+    if (!nodes_copy) {
+        fprintf(stderr, "Failed to copy nodes\n");
+        am_ast_destroy(linked);
+        return;
+    }
+
+    size_t dump_size = am_heap_deep_dump(&test_allocator, nodes_copy, NULL, 0);
+    if (dump_size == SIZE_MAX) {
+        fprintf(stderr, "deep dump size calculation failed\n");
+        am_ast_destroy(linked);
+        return;
+    }
+    printf("deep dump size: %zu\n", dump_size);
+
+    uint8_t *dump_buffer = (uint8_t *)malloc(dump_size);
+    if (!dump_buffer) {
+        fprintf(stderr, "Failed to allocate dump buffer\n");
+        am_ast_destroy(linked);
+        return;
+    }
+    memset(dump_buffer, 0, dump_size);
+
+    size_t written = am_heap_deep_dump(&test_allocator, nodes_copy, dump_buffer, 0);
+    if (written != dump_size) {
+        fprintf(stderr, "deep dump failed\n");
+        free(dump_buffer);
+        am_ast_destroy(linked);
+        return;
+    }
+
+    am_heap_t *loaded_nodes = am_heap_deep_load(&test_allocator, dump_buffer, 0);
+    if (!loaded_nodes) {
+        fprintf(stderr, "deep load failed\n");
+        free(dump_buffer);
+        am_ast_destroy(linked);
+        return;
+    }
+
+    // 用原 AST 的元数据构造一个临时 AST，仅替换 nodes 为加载后的 heap，
+    // 然后通过 AST 打印函数输出，以验证 dump/load 后节点内容一致。
+    am_ast_t loaded_ast = *linked;
+    loaded_ast.nodes = loaded_nodes;
+
+    printf("=== loaded AST (from dumped nodes) ===\n");
+    am_debug_ast_print_to_stdout(&loaded_ast);
+
+    // 将加载后的 AST 根节点转回 Scheme 代码并打印
+    am_handle_t loaded_top = am_ast_get_top_node_handle(&loaded_ast);
+    if (loaded_top == AM_HANDLE_NULL) {
+        fprintf(stderr, "Failed to get loaded top node\n");
+        free(dump_buffer);
+        am_ast_destroy(linked);
+        return;
+    }
+    size_t root_code_len = 0;
+    wchar_t *code_str = am_ast_node_to_string(&test_allocator, &loaded_ast, loaded_top, &root_code_len);
+    if (!code_str) {
+        fprintf(stderr, "Failed to convert loaded AST to string\n");
+        free(dump_buffer);
+        am_ast_destroy(linked);
+        return;
+    }
+    printf("=== loaded AST root as Scheme code (length=%zu) ===\n", root_code_len);
+    printf("%ls\n", code_str);
+
+    free(dump_buffer);
+    // nodes_copy 在深dump后 table value 已变为偏移量，不再有效，故不销毁
+    // loaded_nodes 可由测试分配器统一回收
 
     // 编译并输出中间语言代码
     printf("\n=== IL Code (before label resolution) ===\n");

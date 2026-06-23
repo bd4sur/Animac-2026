@@ -438,8 +438,8 @@ static am_varid_t ensure_varid(parser_ctx_t *ctx, wchar_t *word) {
     size_t idx = am_vocab_find(ctx->ast->alloc, ctx->ast->var_vocab, word);
     if (idx != SIZE_MAX) return (am_varid_t)idx;
     size_t old_len = ctx->ast->var_vocab->length;
-    idx = am_vocab_insert(ctx->ast->alloc, ctx->ast->var_vocab, word);
-    if (idx == SIZE_MAX) return SIZE_MAX;
+    ctx->ast->var_vocab = am_vocab_insert(ctx->ast->alloc, ctx->ast->var_vocab, word, &idx);
+    if (!ctx->ast->var_vocab || idx == SIZE_MAX) return SIZE_MAX;
     // 新变量加入时，同步在 var_type 中追加默认类型
     if (idx == old_len) {
         am_list_t *vt = am_list_push(ctx->ast->alloc, ctx->ast->var_type,
@@ -455,8 +455,9 @@ static am_symbol_t ensure_symbol(parser_ctx_t *ctx, wchar_t *word) {
     if (!ctx || !ctx->ast || !ctx->ast->symbol_vocab) return SIZE_MAX;
     size_t idx = am_vocab_find(ctx->ast->alloc, ctx->ast->symbol_vocab, word);
     if (idx != SIZE_MAX) return (am_symbol_t)idx;
-    idx = am_vocab_insert(ctx->ast->alloc, ctx->ast->symbol_vocab, word);
-    return (idx != SIZE_MAX) ? (am_symbol_t)idx : SIZE_MAX;
+    ctx->ast->symbol_vocab = am_vocab_insert(ctx->ast->alloc, ctx->ast->symbol_vocab, word, &idx);
+    if (!ctx->ast->symbol_vocab || idx == SIZE_MAX) return SIZE_MAX;
+    return (am_symbol_t)idx;
 }
 
 

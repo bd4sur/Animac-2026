@@ -331,8 +331,9 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     for (size_t i = 0; i < symbol_count; i++) {
         wchar_t *word = am_vocab_get(importee->alloc, importee->symbol_vocab, &i);
         if (!word) return -1;
-        size_t new_idx = am_vocab_insert(importer->alloc, importer->symbol_vocab, word);
-        if (new_idx == SIZE_MAX) return -1;
+        size_t new_idx;
+        importer->symbol_vocab = am_vocab_insert(importer->alloc, importer->symbol_vocab, word, &new_idx);
+        if (!importer->symbol_vocab || new_idx == SIZE_MAX) return -1;
 
         am_map_t *m = am_map_set(importer->alloc, symbol_merge_mapping,
                                   am_make_value_of_symbol((am_symbol_t)i),
@@ -350,8 +351,9 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     for (size_t i = 0; i < var_count; i++) {
         wchar_t *word = am_vocab_get(importee->alloc, importee->var_vocab, &i);
         if (!word) return -1;
-        size_t new_varid = am_vocab_insert(importer->alloc, importer->var_vocab, word);
-        if (new_varid == SIZE_MAX) return -1;
+        size_t new_varid;
+        importer->var_vocab = am_vocab_insert(importer->alloc, importer->var_vocab, word, &new_varid);
+        if (!importer->var_vocab || new_varid == SIZE_MAX) return -1;
 
         am_map_t *m = am_map_set(importer->alloc, varid_merge_mapping,
                                   am_make_value_of_varid((am_varid_t)i),
@@ -739,8 +741,9 @@ size_t am_build_symbol_vocabulary(am_ast_t *ast) {
 
     // 预置24个关键字到symbol_vocab的前24个条目
     for (size_t i = 0; i < AM_KEYWORDS_NUM && AM_KEYWORDS[i]; i++) {
-        size_t idx = am_vocab_insert(ast->alloc, ast->symbol_vocab, (wchar_t *)AM_KEYWORDS[i]);
-        if (idx == SIZE_MAX) return 0;
+        size_t idx;
+        ast->symbol_vocab = am_vocab_insert(ast->alloc, ast->symbol_vocab, (wchar_t *)AM_KEYWORDS[i], &idx);
+        if (!ast->symbol_vocab || idx == SIZE_MAX) return 0;
     }
 
     for (size_t i = 0; i < ast->token_count; i++) {
@@ -759,9 +762,10 @@ size_t am_build_symbol_vocabulary(am_ast_t *ast) {
         else if (t->type == AM_TOKEN_TYPE_SYMBOL) {
             wchar_t *text = am_token_text_dup(t, ast->code);
             if (!text) return 0;
-            size_t idx = am_vocab_insert(ast->alloc, ast->symbol_vocab, text);
+            size_t idx;
+            ast->symbol_vocab = am_vocab_insert(ast->alloc, ast->symbol_vocab, text, &idx);
             free(text);
-            if (idx == SIZE_MAX) return 0;
+            if (!ast->symbol_vocab || idx == SIZE_MAX) return 0;
             t->id = idx;
         }
     }
@@ -782,9 +786,10 @@ size_t am_build_variable_vocabulary(am_ast_t *ast) {
             wchar_t *text = am_token_text_dup(t, ast->code);
             if (!text) return 0;
             size_t old_len = ast->var_vocab->length;
-            size_t idx = am_vocab_insert(ast->alloc, ast->var_vocab, text);
+            size_t idx;
+            ast->var_vocab = am_vocab_insert(ast->alloc, ast->var_vocab, text, &idx);
             free(text);
-            if (idx == SIZE_MAX) return 0;
+            if (!ast->var_vocab || idx == SIZE_MAX) return 0;
             // 新变量加入时，同步在 var_type 中追加默认类型
             if (idx == old_len) {
                 am_list_t *vt = am_list_push(ast->alloc, ast->var_type,
@@ -1413,10 +1418,11 @@ am_varid_t am_ast_make_unique_variable(am_ast_t *ast, am_varid_t varid, am_handl
     }
 
     size_t old_len = ast->var_vocab->length;
-    size_t new_varid = am_vocab_insert(ast->alloc, ast->var_vocab, new_name);
+    size_t new_varid;
+    ast->var_vocab = am_vocab_insert(ast->alloc, ast->var_vocab, new_name, &new_varid);
     am_free(ast->alloc, new_name);
 
-    if (new_varid == SIZE_MAX) return SIZE_MAX;
+    if (!ast->var_vocab || new_varid == SIZE_MAX) return SIZE_MAX;
     // 新变量加入时，同步在 var_type 中追加默认类型
     if (new_varid == old_len) {
         am_list_t *vt = am_list_push(ast->alloc, ast->var_type,
@@ -1450,10 +1456,11 @@ am_varid_t am_ast_make_unique_module_alias(am_ast_t *ast, am_varid_t alias_varid
     }
 
     size_t old_len = ast->var_vocab->length;
-    size_t new_varid = am_vocab_insert(ast->alloc, ast->var_vocab, new_name);
+    size_t new_varid;
+    ast->var_vocab = am_vocab_insert(ast->alloc, ast->var_vocab, new_name, &new_varid);
     am_free(ast->alloc, new_name);
 
-    if (new_varid == SIZE_MAX) return SIZE_MAX;
+    if (!ast->var_vocab || new_varid == SIZE_MAX) return SIZE_MAX;
 
     // 设置 var_type 为 AM_VAR_TYPE_IMPORT_ALIAS
     if (new_varid == old_len) {
@@ -1495,10 +1502,11 @@ am_varid_t am_ast_make_unique_import_ref(am_ast_t *ast, am_varid_t import_ref_va
     }
 
     size_t old_len = ast->var_vocab->length;
-    size_t new_varid = am_vocab_insert(ast->alloc, ast->var_vocab, new_name);
+    size_t new_varid;
+    ast->var_vocab = am_vocab_insert(ast->alloc, ast->var_vocab, new_name, &new_varid);
     am_free(ast->alloc, new_name);
 
-    if (new_varid == SIZE_MAX) return SIZE_MAX;
+    if (!ast->var_vocab || new_varid == SIZE_MAX) return SIZE_MAX;
 
     // 设置 var_type 为 AM_VAR_TYPE_IMPORT_REF
     if (new_varid == old_len) {

@@ -279,8 +279,9 @@ static am_varid_t am_compiler_make_temp_varid(am_compiler_ctx_t *ctx, wchar_t *n
     }
 
     size_t old_len = ctx->ast->var_vocab->length;
-    size_t new_varid = am_vocab_insert(ctx->ast->alloc, ctx->ast->var_vocab, buf);
-    if (new_varid == SIZE_MAX) return SIZE_MAX;
+    size_t new_varid;
+    ctx->ast->var_vocab = am_vocab_insert(ctx->ast->alloc, ctx->ast->var_vocab, buf, &new_varid);
+    if (!ctx->ast->var_vocab || new_varid == SIZE_MAX) return SIZE_MAX;
 
     if (new_varid >= old_len) {
         am_list_t *vt = am_list_push(ctx->ast->alloc, ctx->ast->var_type,

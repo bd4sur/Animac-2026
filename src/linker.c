@@ -175,8 +175,9 @@ static int32_t import_analysis(am_linker_ctx_t *ctx, wchar_t *importee_path, siz
         if (ctx->module_counter >= AM_LINKER_MAX_MODULES) return -1;
         current_module_index = ctx->module_counter;
 
-        size_t inserted = am_vocab_insert(ctx->alloc, ctx->all_module_path, importee_path);
-        if (inserted == SIZE_MAX || inserted != current_module_index) return -1;
+        size_t inserted;
+        ctx->all_module_path = am_vocab_insert(ctx->alloc, ctx->all_module_path, importee_path, &inserted);
+        if (!ctx->all_module_path || inserted == SIZE_MAX || inserted != current_module_index) return -1;
 
         int is_main = (ctx->main_ast->absolute_path != NULL) &&
                       (wcscmp(importee_path, ctx->main_ast->absolute_path) == 0);
