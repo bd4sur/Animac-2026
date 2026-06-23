@@ -31,7 +31,7 @@ test_list: test/test_list.c src/list.c src/object.c
 test_vocab: test/test_vocab.c src/vocab.c src/object.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_compiler: test/test_compiler.c src/compiler.c src/parser.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
+test_compiler: test/test_compiler.c src/compiler.c src/linker.c src/parser.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 clean:

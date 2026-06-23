@@ -965,6 +965,361 @@ dump之后的buffer: [(uint64_t)1266, (uint64_t)650, (heap){H1: 766, H2: 666, H3
 ---------------------
 
 
+TODO 图标设计
+
+# Compiler
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+为实现Scheme解释器的编译器，请你阅读 @src/compiler.c ，根据下文描述，优化实现。
+
+实际上我是希望你一步一步实现，每次让你做一部分，但是你直接把整个编译器都做好了。那我就把完整的要求发给你，根据我的要求，检查并调整你在 @src/compiler.c 中已有的实现。
+实际上我是希望你一步一步实现，每次让你做一部分，但是你直接把整个编译器都做好了。那我就把完整的要求发给你，根据我的要求，检查并调整你在 @src/compiler.c 中已有的实现。
+
+## 设计思路
+
+编译，就是从链接后的AST出发，递归遍历AST的各个节点，按规则生成中间语言（Intermediate Language，IL）指令序列，最终输出可被VM解释执行的二进制模块文件。
+
+编译过程分为3步：中间语言代码生成、标签解析、代码优化。
+
+中间语言代码生成：根据解释器对Scheme程序结构的约定，所有程序的最外层都是对一个顶级thunk的调用，这意味着所有程序都存在一个顶级lambda节点（作用域），作为程序的唯一入口。而顶级lambda节点中嵌套定义的所有的lambda节点，构成了程序代码的主体框架。由于分析阶段已经消除了所有标识符的歧义，且每个lambda节点都有全局唯一的handle，因此所有的lambda都可以视为全局具名函数，因而此时的Scheme程序可以看作是像C语言程序那样，是由若干个平展的lambda（函数）+一个入口调用构成的。所以，中间语言代码生成的整体框架，就是入口点跳转+编译所有lambda节点。从编译lambda节点出发，递归展开AST，按规则生成中间语言指令序列。具体的编译规则将在后文描述。
+
+标签解析：在既有TS实现中，标签是用于标记IL代码序列位置的字符串。标签遵循字面内容相同则指代同一iddr的判等原则。标签的实质是iaddr，之所以引入标签，是因为编译过程中尚不掌握代码的整体布局，不能未卜先知某一位置的绝对iaddr，所以通过标签来前瞻性地标记代码中的某个相对位置。标签有3种使用方式：构造、定位、解析。实现细节详见各函数的注释。在既有TS实现中，标签的构造，就是在索引值（任何value或者具有唯一标记作用的字符串）前面，加上“@”。这样，索引值内容相同的“@xxx”，不论出现在何处，都是同一个标签，都指代同一个iaddr，也就是它被单独插入指令序列中的位置（实际上相当于一条nop）。实际上，指令的oprand使用的是iaddr，但是如前文所述，编译过程中，不可能对iaddr的绝对值未卜先知，因此编译时将原本应为iaddr的oprand以label暂时代替。在标签的解析过程中，通过标签-iaddr的映射表，将代码中的标签全部替换为绝对iaddr。
+
+代码优化：暂不实现。
+
+## 编译器基本数据结构和工具函数
+
+```
+// 单条IL指令
+typedef struct am_instruction_t {
+    uint32_t opcode;    // 指令代码：在 @include/opcode.h 中定义的AM_VM_OP_*
+    am_value_t oprand;  // 操作数：统一为TPV，不同的指令有不同的具体类型要求。无参数则设为AM_VALUE_UNDEFINED。
+} am_instruction_t;
+
+// 编译器工作语境
+typedef struct am_compiler_ctx_t {
+    am_ast_t *ast; // 编译输入的AST，编译过程中会被修改，作为编译结果的一部分（概念上相当于“静态数据段”）
+    am_iaddr_t icount; // 中间语言指令计数器
+    am_instruction_t *ilcode; // 编译得到的中间语言指令序列
+    size_t label_counter; // 用于生成标签枚举值的计数器
+    am_map_t *value_label_mapping; // Map<am_value_t(any), am_value_t(label)> 从任何类型的索引TPV到标签TPV的映射
+    am_map_t *label_iaddr_mapping; // Map<am_value_t(label), am_value_t(iaddr)> 从label值到iaddr值的映射
+    am_list_t *while_tag_stack; // while块的标签跟踪栈：用于处理break/continue
+    size_t unique_id_counter; // 用于生成唯一枚举值的计数器
+} am_compiler_ctx_t;
+
+// 功能说明：向am_compiler_ctx_t的ilcode中，增加一个am_instruction_t，并更新icount。
+// 实现说明：成功返回0；失败返回-1
+static int32_t add_instruction(am_compiler_ctx_t *ctx, uint32_t opcode, am_value_t oprand);
+
+// 功能说明：构造一个临时变量，加入AST，返回其varid；或者查询符合给定条件的临时变量的varid。
+// 设计说明：编译过程中，某些结构需要引入临时变量，本函数即用于这类过程。
+// 实现说明：成功返回varid，失败返回SIZE_MAX
+static am_varid_t am_compiler_make_temp_varid(am_compiler_ctx_t *ctx, wchar_t *name, am_value_t label, size_t id) {
+    // 将name、label（强转size_t后按%zx格式输出）、id（按%zx格式输出）拼接起来，中间以“_”连接，得到临时变量的字符串，例如“condbranch_1a2b3c4d_0”
+    // 首先判断临时变量字符串是否存在于ctx->ast->var_vocab，若存在，则直接返回其varid。
+    // 若不存在，则将临时变量字符串加入ctx->ast->var_vocab，获取其varid，再将这个新的varid的ctx->ast->var_type设为AM_VAR_TYPE_ILTEMP。
+    // 成功返回varid，失败返回SIZE_MAX
+}
+
+// 功能说明：标签构造——根据给定的索引TPV（index_value），构造标签（am_value_t）。
+// 实现说明：基于任意TPV（一般是handle、varid，称为“索引”TPV）构造一个新的标签TPV（AM_VALUE_TYPE_LABEL）。如果相同索引TPV的标签已存在，则获取已构造的标签TPV，以便后面加入指令的oprand。由于编译过程中存在先使用后出现的情况，因此对于同一索引的标签，第一次调用本函数，是从无到有地创建标签，后续调用则是返回已创建的同一标签。只要用于构造标签的索引TPV相等，则构造出来的标签就是同一个标签，这种判定原则与symbol类似。既有TS实现是给索引value前面加@前缀，而当前C语言实现的TPV长度固定，不可能在不损失索引TPV信息的前提下直接将其转换成新的标签TPV，因此，在am_compiler_ctx_t中，通过label_counter计数器，为每个新构造的标签TPV赋予一个唯一枚举值，同时通过value_label_mapping，登记从任何类型的索引TPV到标签TPV的映射，这样后面就可以通过索引TPV唯一确定构造时生成的那个标签TPV。成功返回标签TPV，失败返回AM_VALUE_NULL。
+static am_value_t am_compiler_make_label(am_compiler_ctx_t *ctx, am_value_t index_value);
+
+// 功能说明：标签定位——为标签指定iaddr。
+// 实现说明：标签的功能是指代指令序列中的位置。定位指的是将某个标签TPV与已知的iaddr（过去和当前的iaddr，不可能预知未来的iaddr）进行绑定，将标签->iaddr的映射关系，登记到label_iaddr_mapping中。类似于既有TS实现中的AddInstruction(label)。编译过程中，标签的构造和定位，未必是同时发生的，但必须遵守先构造后定位的原则。成功返回0，失败返回-1。
+static int32_t am_compiler_locate_label(am_compiler_ctx_t *ctx, am_value_t index_value, am_iaddr_t iaddr);
+
+// 功能说明：标签解析——通过标签TPV，获取对应的iaddr。
+// 实现说明：在AST全部编译完成后，编译器收集到全部的label及其与iaddr的映射关系，此时即可通过label_iaddr_mapping，将所有的label解析并成绝对的iaddr。成功返回iaddr，失败返回SIZE_MAX。
+static am_iaddr_t am_compiler_parse_label_to_iaddr(am_compiler_ctx_t *ctx, am_value_t label);
+
+
+// 功能描述：编译后处理——全局标签解析，该函数在am_compile_all结束后调用，用于将所有的label替换为绝对iaddr。
+// 实现描述：遍历所有ilcode，检查am_instruction.oprand的am_value_t的TPV类型是否是AM_VALUE_TYPE_LABEL。如果是，则调用am_compiler_parse_label_to_iaddr将其转换为iaddr，并替换掉原来的label。成功返回0，失败返回-1。
+int32_t am_compiler_label_resolution(am_compiler_ctx_t *ctx);
+```
+
+## 具体编译规则的实现
+
+实现提示：
+
+- 以下用伪代码描述对于AST几类典型节点的编译规则。虽然是伪代码，但也尽量接近现有实现风格。你可以参照我的伪代码，实现所有其他类型AST节点的编译规则。
+- 以下伪代码完全没有考虑类型检查、错误处理、内存分配和释放等工程细节，你需要补全这些必要细节。
+- 你需要特别注意 am_value_t 和 am_handle_t/am_varid_t/am_symbol_t 等类型的区别。am_value_t是解释器的tagged pointer value，是包装了的值，而后面那些是裸值。具体可参考 @include/object.h 。
+- 你需要注意 am_object_t 和 am_list_t 、am_wstring_t 等类型的继承关系。它们通过base头实现继承，具体可参考 @include/object.h 。你在进行对象访问时，要注意按需进行指针类型的转换。
+- 你可以参考（但是不完全遵从） @typescript/src/Compiler.ts 中的既有TS实现，补全下列函数实现。在既有TS实现中，所有的value、label、handle、甚至一条IL指令，基本上都是字符串。你需要特别注意指令的oprand前面带“@”符号的情况，这意味着它用“@”后面的value作为索引，构造了一个标签。你还需要注意AddInstruction处只添加了一个标签的情况，当时的实现是将标签也当作一条指令加入ilcode的，只不过不会执行，相当于nop；而如今你要做的C语言实现，不要把标签也当作指令加入ilcode，而应该调用am_compiler_locate_label来实现这一点。
+- 对于“具名标签”，也就是参考TS代码中诸如`@COND_BRANCH_${uqStr}_${i}`这样的标签，你需要调用am_compiler_make_temp_varid先申请一个varid类型的TPV，然后用这个TPV作为标签的索引来构造一个新标签。当然，你需要记住，内容相同的variable对应同一个varid，同一个varid对应同一个label。在am_compiler_ctx_t中涉及label的映射就是为了保证这一点。具体的你可以参考我下面提供的伪代码。
+- 注意下面伪代码中对native_ref、variable、立即数等归类的条件与参考TS代码有所不同，以下面伪代码的分类方式为准。
+- 参考TS代码中，指令前面有分号的是注释，直接忽略。例如AddInstruction(`;; ✅ SET! “${nodeHandle}” BEGIN`);
+
+```
+// 编译入口：开始编译整个AST。成功返回0，失败返回-1。
+int32_t am_compile_all(am_compiler_ctx_t *ctx) {
+    // 入口点
+    am_value_t top_lambda_label = am_compiler_make_label(ctx, ctx->ast->top_lambda_handle);
+    add_instruction(ctx, AM_VM_OP_call, top_lambda_label);
+    add_instruction(ctx, AM_VM_OP_halt, AM_VALUE_UNDEFINED);
+    // 从所有的Lambda节点开始顺序编译。这类似于C语言，所有的函数都是顶级的。
+    for (hd of ctx->ast->lambda_handles) {
+        am_compile_lambda(ctx, hd);
+    }
+}
+
+// 编译Lambda节点。成功返回0，失败返回-1。
+int32_t am_compile_lambda(am_compiler_ctx_t *ctx, am_handle_t hd) {
+    // 构造并定位标签：本函数在IL代码中的入口点（等效于TS的AddInstruction(`@${nodeHandle}`);）
+    am_value_t lambda_label = am_compiler_make_label(ctx, hd);
+    am_compiler_locate_label(ctx, hd, ctx->icount);
+    // 获取lambda节点对象
+    am_list_t *lambda_obj = get_obj_from_nodes_by_handle(ctx->ast, hd); // 伪代码
+    // 按参数列表逆序，插入store指令
+    am_value_t *parameters = get_parameters_of_lambda(lambda_obj);
+    for (size_t i = length_of_parameters - 1; i >= 0; i--) {
+        add_instruction(ctx, AM_VM_OP_store, parameters[i]);
+    }
+    // 逐个编译函数体，等价于begin块
+    am_value_t bodies = get_bodies_of_lambda(lambda_obj);
+    for(size_t i = 0; i < length_of_bodies; i++) {
+        am_value_t body = bodies[i];
+        int32_t body_type = am_value_type(body);
+        if (body_type == AM_VALUE_TYPE_HANDLE) {
+            am_object_t *body_obj = get_obj_from_nodes_by_handle(ctx->ast, body); // 伪代码
+            int32_t body_obj_type = body_obj->base.type;
+            if (body_obj_type == AM_OBJECT_TYPE_LIST) {
+                int32_t list_type = body_obj->type;
+                if (list_type == AM_LIST_TYPE_LAMBDA) {
+                    // 对应既有TS实现中的AddInstruction(`loadclosure @${body}`);
+                    am_value_t body_lambda_label = am_compiler_make_label(ctx, body);
+                    add_instruction(ctx, AM_VM_OP_loadclosure, body_lambda_label);
+                }
+                else if (list_type == AM_LIST_TYPE_QUOTE) {
+                    add_instruction(ctx, AM_VM_OP_push, body);
+                }
+                else if (list_type == AM_LIST_TYPE_QUASIQUOTE) {
+                    am_compile_quasiquote(ctx, body);
+                }
+                else if (list_type == AM_LIST_TYPE_APPLICATION || list_type == AM_LIST_TYPE_UNQUOTE) {
+                    am_compile_application(ctx, body);
+                }
+                else {
+                    error("意外的函数体（列表）节点类型。");
+                }
+            }
+            else if (body_obj_type == AM_OBJECT_TYPE_WSTRING) {
+                add_instruction(ctx, AM_VM_OP_push, body);
+            }
+            else {
+                error("意外的函数体节点类型。");
+            }
+        }
+        else if (body_type == AM_VALUE_TYPE_VARID) {
+            // 本地宿主函数调用，视同符号，原样入栈
+            if (am_ast_check_native_ref(ctx->ast, body) == 0) {
+                add_instruction(ctx, AM_VM_OP_push, body);
+            }
+            // 普通变量
+            else {
+                add_instruction(ctx, AM_VM_OP_load, body);
+            }
+        }
+        else if (body_type == AM_VALUE_TYPE_BOOLEAN || NULL || UNDEFINED || SYMBOL || WCHAR || UINT || INT || FLOAT) {
+            if (body == AM_VALUE_KW_break || body == AM_VALUE_KW_continue) {
+                error("lambda块内不允许出现break和continue。");
+            }
+            else {
+                add_instruction(ctx, AM_VM_OP_push, body);
+            }
+        }
+        else {
+            error("意外的函数体类型。");
+        }
+    }
+    // 返回指令
+    add_instruction(ctx, AM_VM_OP_return, AM_VALUE_UNDEFINED);
+    // lambda节点编译完成
+}
+
+// 编译cond节点。成功返回0，失败返回-1。
+int32_t am_compile_cond(am_compiler_ctx_t *ctx, am_handle_t hd) {
+    // 获取cond节点对象
+    am_list_t *cond_obj = get_obj_from_nodes_by_handle(ctx->ast, hd); // 伪代码
+    // 遍历每个分支
+    am_value_t clauses = get_children_of_list(cond_obj);
+    for(size_t i = 1; i < length_of_clauses; i++) {
+        am_value_t clause = clauses[i];
+        int32_t clause_type = am_value_type(clause);
+        if (clause_type == AM_VALUE_TYPE_HANDLE) {
+            am_object_t *clause_obj = get_obj_from_nodes_by_handle(ctx->ast, clause); // 伪代码
+            int32_t clause_obj_type = clause_obj->base.type;
+            if (clause_obj_type == AM_OBJECT_TYPE_LIST) {
+
+                // 插入分支开始标签（实际上第一个分支不需要）（等效于TS的AddInstruction(`@COND_BRANCH_${nodeHandle}_${i}`);）
+                am_varid_t branch_lbl_varid = am_compiler_make_temp_varid(ctx, L"COND_BRANCH", hd, i);
+                am_value_t branch_lbl = am_compiler_make_label(ctx, branch_lbl_varid);
+                am_compiler_locate_label(ctx, branch_lbl, ctx->icount);
+
+                // 处理分支条件（除了else分支）
+                am_value_t predicate = am_list_get(ctx->ast->alloc, clause_obj, 0);
+                if (predicate != AM_VALUE_KW_else) {
+                    int32_t predicate_type = am_value_type(predicate);
+                    if (predicate_type == AM_VALUE_TYPE_HANDLE) {
+                        am_object_t *predicate_obj = get_obj_from_nodes_by_handle(ctx->ast, predicate); // 伪代码
+                        int32_t predicate_obj_type = predicate_obj->base.type;
+                        if (predicate_obj_type == AM_OBJECT_TYPE_LIST) {
+                            int32_t list_type = predicate_obj->type;
+                            if (list_type == AM_LIST_TYPE_APPLICATION) {
+                                am_compile_application(ctx, predicate);
+                            }
+                            // 其余情况，统统作push处理
+                            else {
+                                add_instruction(ctx, AM_VM_OP_push, predicate);
+                            }
+                        }
+                        else {
+                            add_instruction(ctx, AM_VM_OP_push, predicate);
+                        }
+                    }
+                    else if (predicate_type == AM_VALUE_TYPE_VARID) {
+                        // 本地宿主函数调用，视同符号，原样入栈
+                        if (am_ast_check_native_ref(ctx->ast, predicate) == 0) {
+                            add_instruction(ctx, AM_VM_OP_push, predicate);
+                        }
+                        // 普通变量
+                        else {
+                            add_instruction(ctx, AM_VM_OP_load, predicate);
+                        }
+                    }
+                    else if (predicate_type == AM_VALUE_TYPE_BOOLEAN || NULL || UNDEFINED || SYMBOL || WCHAR || UINT || INT || FLOAT) {
+                        if (predicate == AM_VALUE_KW_break || predicate == AM_VALUE_KW_continue) {
+                            error("cond条件不允许出现break和continue。");
+                        }
+                        else {
+                            add_instruction(ctx, AM_VM_OP_push, predicate);
+                        }
+                    }
+                    else {
+                        error("意外的cond分支条件。");
+                    }
+
+                    // 如果不是最后一个分支，则跳转到下一条件；如果是最后一个分支，则跳转到结束标签
+                    if(i == length_of_clauses - 1) {
+                        // 以下相当于TS的AddInstruction(`iffalse @COND_END_${nodeHandle}`);
+                        am_varid_t br_end_lbl_varid = am_compiler_make_temp_varid(ctx, L"COND_END", hd, 0);
+                        am_value_t br_end_lbl = am_compiler_make_label(ctx, br_end_lbl_varid);
+                        add_instruction(ctx, AM_VM_OP_iffalse, br_end_lbl);
+                    }
+                    else {
+                        // 以下相当于TS的AddInstruction(`iffalse @COND_BRANCH_${uqStr}_${(i+1)}`);
+                        am_varid_t br_lbl_varid = am_compiler_make_temp_varid(ctx, L"COND_BRANCH", hd, i+1);
+                        am_value_t br_lbl = am_compiler_make_label(ctx, br_lbl_varid);
+                        add_instruction(ctx, AM_VM_OP_iffalse, br_lbl);
+                    }
+                }
+
+                // 处理分支主体
+                am_value_t branch = am_list_get(ctx->ast->alloc, clause_obj, 1);
+                int32_t branch_type = am_value_type(branch);
+                if (branch_type == AM_VALUE_TYPE_HANDLE) {
+                    am_object_t *branch_obj = get_obj_from_nodes_by_handle(ctx->ast, branch); // 伪代码
+                    int32_t branch_obj_type = branch_obj->base.type;
+                    if (branch_obj_type == AM_OBJECT_TYPE_LIST) {
+                        int32_t list_type = branch_obj->type;
+
+                        if (list_type == AM_LIST_TYPE_LAMBDA) {
+                            // 对应既有TS实现中的AddInstruction(`loadclosure @${branch}`);
+                            am_value_t branch_lambda_label = am_compiler_make_label(ctx, branch);
+                            add_instruction(ctx, AM_VM_OP_loadclosure, branch_lambda_label);
+                        }
+                        else if (list_type == AM_LIST_TYPE_QUOTE) {
+                            add_instruction(ctx, AM_VM_OP_push, branch);
+                        }
+                        else if (list_type == AM_LIST_TYPE_QUASIQUOTE) {
+                            am_compile_quasiquote(ctx, branch);
+                        }
+                        else if (list_type == AM_LIST_TYPE_APPLICATION || list_type == AM_LIST_TYPE_UNQUOTE) {
+                            am_compile_application(ctx, branch);
+                        }
+                        else {
+                            error("意外的 cond branch 类型。");
+                        }
+                    }
+                    else if (branch_obj_type == AM_OBJECT_TYPE_WSTRING) {
+                        add_instruction(ctx, AM_VM_OP_push, branch);
+                    }
+                    else {
+                        error("意外的 cond branch 类型。");
+                    }
+                }
+                else if (branch_type == AM_VALUE_TYPE_VARID) {
+                    // 本地宿主函数调用，视同符号，原样入栈
+                    if (am_ast_check_native_ref(ctx->ast, branch) == 0) {
+                        add_instruction(ctx, AM_VM_OP_push, branch);
+                    }
+                    // 普通变量
+                    else {
+                        add_instruction(ctx, AM_VM_OP_load, branch);
+                    }
+                }
+                else if (branch_type == AM_VALUE_TYPE_BOOLEAN || NULL || UNDEFINED || SYMBOL || WCHAR || UINT || INT || FLOAT) {
+                    if (branch == AM_VALUE_KW_break || branch == AM_VALUE_KW_continue) {
+                        am_value_t while_tags = get_top_of_while_tag_stack(ctx); // 伪代码，成功返回am_value_t，失败返回AM_VALUE_NULL
+                        if (while_tags != AM_VALUE_NULL) {
+                            if (branch == AM_VALUE_KW_break) {
+                                add_instruction(ctx, AM_VM_OP_goto, while_tags[1]); // endTag
+                            }
+                            else {
+                                add_instruction(ctx, AM_VM_OP_goto, while_tags[0]); // condTag
+                            }
+                        }
+                        else {
+                            error("break或continue没有对应的while表达式。");
+                        }
+                    }
+                    else {
+                        add_instruction(ctx, AM_VM_OP_push, branch);
+                    }
+                }
+                else {
+                    error("意外的cond分支。");
+                }
+
+                // 插入收尾指令（区分else分支和非else分支）
+                if(predicate == AM_VALUE_KW_else || i == length_of_clauses - 1) {
+                    // 以下相当于TS的AddInstruction(`@COND_END_${nodeHandle}`);
+                    am_varid_t br_end_lbl_varid = am_compiler_make_temp_varid(ctx, L"COND_END", hd, 0);
+                    am_compiler_locate_label(ctx, br_end_lbl_varid, ctx->icount);
+                    break; // 忽略else后面的所有分支
+                }
+                else {
+                    
+                    // 以下相当于TS的AddInstruction(`goto @COND_END_${nodeHandle}`);
+                    am_varid_t br_end_lbl_varid = am_compiler_make_temp_varid(ctx, L"COND_END", hd, 0);
+                    am_value_t br_end_lbl = am_compiler_make_label(ctx, br_end_lbl_varid);
+                    add_instruction(ctx, AM_VM_OP_goto, br_end_lbl);
+                }
+
+            }
+            else {
+                error("错误的子句类型");
+            }
+        }
+        else {
+            error("错误的子句类型");
+        }
+    } // 分支遍历结束
+}
+
+```
+
+## 测试要求
+
+请你参照 @test/test_linker.c 中test_linker_recursive的完整实现，将其从分析到链接到AST打印的全部流程移植到 @test/test_compiler.c 中，再执行编译并输出编译后的中间语言代码。在你的中间语言代码可视化中，若指令没有oprand，则不要显示，不要显示undefined。保留既有的测试内容。
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。
+
+
 ---------------------
 
 

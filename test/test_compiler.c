@@ -5,6 +5,7 @@
 #include <locale.h>
 
 #include "parser.h"
+#include "linker.h"
 #include "compiler.h"
 #include "debug.h"
 
@@ -70,6 +71,10 @@ static void test_allocator_init(void) {
     test_allocator_state.base = (uint8_t *)malloc(TEST_POOL_SIZE);
     test_allocator_state.offset = 0;
     test_allocator_state.capacity = TEST_POOL_SIZE;
+}
+
+static void test_allocator_reset(void) {
+    test_allocator_state.offset = 0;
 }
 
 static const am_allocator_vtable_t test_allocator_vtable = {
@@ -188,10 +193,218 @@ static void print_operand(am_ast_t *ast, am_value_t op) {
 
 static void print_ilcode(am_ast_t *ast, am_instruction_t *ilcode, am_iaddr_t icount) {
     for (am_iaddr_t i = 0; i < icount; i++) {
-        printf("[%4zu] %-12s ", (size_t)i, opcode_name(ilcode[i].opcode));
-        print_operand(ast, ilcode[i].oprand);
+        printf("[%4zu] %-12s", (size_t)i, opcode_name(ilcode[i].opcode));
+        if (!am_value_is_undefined(ilcode[i].oprand)) {
+            printf(" ");
+            print_operand(ast, ilcode[i].oprand);
+        }
         printf("\n");
     }
+}
+
+
+// ===============================================================================
+// 文件读取辅助函数
+// ===============================================================================
+
+static wchar_t *read_file_as_wstring(const wchar_t *path) {
+    size_t path_len = wcstombs(NULL, path, 0);
+    if (path_len == (size_t)-1) return NULL;
+
+    char *mb_path = (char *)malloc(path_len + 1);
+    if (!mb_path) return NULL;
+    wcstombs(mb_path, path, path_len + 1);
+
+    FILE *f = fopen(mb_path, "rb");
+    free(mb_path);
+    if (!f) return NULL;
+
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long size = ftell(f);
+    if (size < 0) { fclose(f); return NULL; }
+    fseek(f, 0, SEEK_SET);
+
+    char *buf = (char *)malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return NULL; }
+
+    size_t n = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    size_t wlen = mbstowcs(NULL, buf, 0);
+    if (wlen == (size_t)-1) { free(buf); return NULL; }
+
+    wchar_t *wbuf = (wchar_t *)malloc(((size_t)wlen + 1) * sizeof(wchar_t));
+    if (!wbuf) { free(buf); return NULL; }
+    mbstowcs(wbuf, buf, wlen + 1);
+    free(buf);
+    return wbuf;
+}
+
+
+// ===============================================================================
+// 编译器测试
+// ===============================================================================
+
+static void test_compiler_basic(void) {
+    printf("test_compiler_basic ... \n");
+    test_allocator_reset();
+
+    const wchar_t *code = L"((lambda ()\n"
+                          L"(define A\n"
+                          L"  (lambda (k x1 x2 x3 x4 x5)\n"
+                          L"      (define B\n"
+                          L"        (lambda ()\n"
+                          L"            (set! k (- k 1))\n"
+                          L"            (A k B x1 x2 x3 x4)))\n"
+                          L"      (if (<= k 0)\n"
+                          L"          (+ (x4) (x5))\n"
+                          L"          (B))))\n"
+                          L"(define thunk_1  (lambda () 1))\n"
+                          L"(define thunk_m1 (lambda () -1))\n"
+                          L"(define thunk_0  (lambda () 0))\n"
+                          L"(display (A 10 thunk_1 thunk_m1 thunk_m1 thunk_1 thunk_0))\n"
+                          L"))\n";
+
+    am_ast_t *ast = am_parser(&test_allocator, (wchar_t *)code, L"/tmp/test.scm");
+    if (!ast) {
+        fprintf(stderr, "Parser failed\n");
+        return;
+    }
+
+    printf("=== AST ===\n");
+    am_debug_ast_print_to_stdout(ast);
+    printf("\n=== IL Code (before label resolution) ===\n");
+
+    am_compiler_ctx_t *ctx = am_compiler_ctx_create(ast);
+    if (!ctx) {
+        fprintf(stderr, "Failed to create compiler context\n");
+        am_ast_destroy(ast);
+        return;
+    }
+
+    if (am_compile_all(ctx) != 0) {
+        fprintf(stderr, "Compile failed\n");
+        am_compiler_ctx_destroy(ctx);
+        am_ast_destroy(ast);
+        return;
+    }
+
+    print_ilcode(ast, ctx->ilcode, ctx->icount);
+
+    printf("\n=== IL Code (after label resolution) ===\n");
+    if (am_compiler_label_resolution(ctx) != 0) {
+        fprintf(stderr, "Label resolution failed\n");
+        am_compiler_ctx_destroy(ctx);
+        am_ast_destroy(ast);
+        return;
+    }
+
+    print_ilcode(ast, ctx->ilcode, ctx->icount);
+
+    am_compiler_ctx_destroy(ctx);
+    am_ast_destroy(ast);
+    printf("OK\n");
+}
+
+
+static void test_compiler_recursive(void) {
+    printf("test_compiler_recursive ... \n");
+    test_allocator_reset();
+
+    const wchar_t *path = L"/home/bd4sur/animac/x.scm";
+    const wchar_t *base_dir = L"/home/bd4sur/animac";
+
+    wchar_t *file_content = read_file_as_wstring(path);
+    if (file_content == NULL) {
+        fprintf(stderr, "Failed to read %ls\n", path);
+        return;
+    }
+
+    const wchar_t *prefix = L"((lambda () ";
+    const wchar_t *suffix = L" ))";
+    size_t prefix_len = wcslen(prefix);
+    size_t suffix_len = wcslen(suffix);
+    size_t content_len = wcslen(file_content);
+    size_t code_len = prefix_len + content_len + suffix_len;
+
+    wchar_t *code = (wchar_t *)am_malloc(&test_allocator, (code_len + 1) * sizeof(wchar_t));
+    if (code == NULL) {
+        fprintf(stderr, "Failed to allocate code buffer\n");
+        free(file_content);
+        return;
+    }
+    size_t pos = 0;
+    for (size_t i = 0; i < prefix_len; i++) code[pos++] = prefix[i];
+    for (size_t i = 0; i < content_len; i++) code[pos++] = file_content[i];
+    for (size_t i = 0; i < suffix_len; i++) code[pos++] = suffix[i];
+    code[pos] = L'\0';
+    free(file_content);
+
+    am_ast_t *ast = am_parser(&test_allocator, code, (wchar_t *)path);
+    if (!ast) {
+        fprintf(stderr, "Parser failed\n");
+        return;
+    }
+
+    am_handle_t importer_top_lambda = ast->top_lambda_handle;
+    if (importer_top_lambda == AM_HANDLE_NULL) {
+        fprintf(stderr, "No top lambda\n");
+        am_ast_destroy(ast);
+        return;
+    }
+
+    // 执行链接
+    am_ast_t *linked = am_link(ast, (wchar_t *)base_dir);
+    if (linked == NULL) {
+        fprintf(stderr, "Link failed\n");
+        am_ast_destroy(ast);
+        return;
+    }
+
+    // 执行外部引用解析
+    int32_t resolution_result = am_linker_import_ref_resolution(NULL, linked);
+    if (resolution_result != 0) {
+        fprintf(stderr, "Import ref resolution failed\n");
+        am_ast_destroy(linked);
+        return;
+    }
+
+    // 可视化输出解析后的 AST
+    printf("=== resolved AST ===\n");
+    am_debug_ast_print_to_stdout(linked);
+
+    // 编译并输出中间语言代码
+    printf("\n=== IL Code (before label resolution) ===\n");
+    am_compiler_ctx_t *ctx = am_compiler_ctx_create(linked);
+    if (!ctx) {
+        fprintf(stderr, "Failed to create compiler context\n");
+        am_ast_destroy(linked);
+        return;
+    }
+
+    if (am_compile_all(ctx) != 0) {
+        fprintf(stderr, "Compile failed\n");
+        am_compiler_ctx_destroy(ctx);
+        am_ast_destroy(linked);
+        return;
+    }
+
+    print_ilcode(linked, ctx->ilcode, ctx->icount);
+
+    printf("\n=== IL Code (after label resolution) ===\n");
+    if (am_compiler_label_resolution(ctx) != 0) {
+        fprintf(stderr, "Label resolution failed\n");
+        am_compiler_ctx_destroy(ctx);
+        am_ast_destroy(linked);
+        return;
+    }
+
+    print_ilcode(linked, ctx->ilcode, ctx->icount);
+
+    am_compiler_ctx_destroy(ctx);
+    am_ast_destroy(linked);
+    printf("OK\n");
 }
 
 
@@ -207,63 +420,11 @@ int main(void) {
 
     test_allocator_init();
 
-    const wchar_t *code = L"((lambda ()\n"
-                          L"  (define sum 0)\n"
-                          L"  (define i 1)\n"
-                          L"  (while (<= i 10)\n"
-                          L"    (set! sum (+ sum i))\n"
-                          L"    (set! i (+ i 1)))\n"
-                          L"  (define fact (lambda (n) (if (<= n 1) 1 (* n (fact (- n 1))))))\n"
-                          L"  (display sum)\n"
-                          L"  (display (fact 5))\n"
-                          L"  (display (and #t #f #t))\n"
-                          L"  (display (or #f #t #f))\n"
-                          L"  (display (cond ((> 3 2) 7) (else 8)))\n"
-                          L"  (display 'symbol)\n"
-                          L"  (display `(1 ,(+ 1 1) 3))))";
+    test_compiler_basic();
+    test_compiler_recursive();
 
-    am_ast_t *ast = am_parser(&test_allocator, (wchar_t *)code, L"/tmp/test.scm");
-    if (!ast) {
-        fprintf(stderr, "Parser failed\n");
-        return 1;
-    }
+    test_destroy(&test_allocator_state);
 
-    printf("=== AST ===\n");
-    am_debug_ast_print_to_stdout(ast);
-    printf("\n=== IL Code (before label resolution) ===\n");
-
-    am_compiler_ctx_t *ctx = am_compiler_ctx_create(ast);
-    if (!ctx) {
-        fprintf(stderr, "Failed to create compiler context\n");
-        am_ast_destroy(ast);
-        return 1;
-    }
-
-    if (am_compile_all(ctx) != 0) {
-        fprintf(stderr, "Compile failed\n");
-        am_compiler_ctx_destroy(ctx);
-        am_ast_destroy(ast);
-        return 1;
-    }
-
-    print_ilcode(ast, ctx->ilcode, ctx->icount);
-
-    printf("\n=== IL Code (after label resolution) ===\n");
-    if (am_compiler_label_resolution(ctx) != 0) {
-        fprintf(stderr, "Label resolution failed\n");
-        am_compiler_ctx_destroy(ctx);
-        am_ast_destroy(ast);
-        return 1;
-    }
-
-    print_ilcode(ast, ctx->ilcode, ctx->icount);
-
-    am_compiler_ctx_destroy(ctx);
-    am_ast_destroy(ast);
-
-    // 释放测试分配器底层内存
-    free(test_allocator_state.base);
-    test_allocator_state.base = NULL;
-
+    printf("\nAll compiler tests passed.\n");
     return 0;
 }

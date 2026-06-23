@@ -34,7 +34,8 @@
 #define AM_COMPILER_VALUE_TYPE_BOOLEAN  (4)
 #define AM_COMPILER_VALUE_TYPE_NULL     (5)
 #define AM_COMPILER_VALUE_TYPE_UNDEFINED (6)
-#define AM_COMPILER_VALUE_TYPE_OTHER    (7)
+#define AM_COMPILER_VALUE_TYPE_WCHAR    (8)
+#define AM_COMPILER_VALUE_TYPE_OTHER    (9)
 
 
 static int32_t compiler_value_type(am_value_t v) {
@@ -45,6 +46,7 @@ static int32_t compiler_value_type(am_value_t v) {
     if (am_value_is_boolean(v))   return AM_COMPILER_VALUE_TYPE_BOOLEAN;
     if (am_value_is_null(v))      return AM_COMPILER_VALUE_TYPE_NULL;
     if (am_value_is_undefined(v)) return AM_COMPILER_VALUE_TYPE_UNDEFINED;
+    if (am_value_is_wchar(v))     return AM_COMPILER_VALUE_TYPE_WCHAR;
     return AM_COMPILER_VALUE_TYPE_OTHER;
 }
 
@@ -304,6 +306,7 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_lambda(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_callcc(am_compiler_ctx_t *ctx, am_handle_t handle);
+static int32_t compile_begin(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_define(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_set(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_cond(am_compiler_ctx_t *ctx, am_handle_t handle);
@@ -347,7 +350,8 @@ static int32_t compile_predicate(am_compiler_ctx_t *ctx, am_value_t v) {
     if (vt == AM_COMPILER_VALUE_TYPE_NUMBER ||
         vt == AM_COMPILER_VALUE_TYPE_BOOLEAN ||
         vt == AM_COMPILER_VALUE_TYPE_NULL ||
-        vt == AM_COMPILER_VALUE_TYPE_UNDEFINED) {
+        vt == AM_COMPILER_VALUE_TYPE_UNDEFINED ||
+        vt == AM_COMPILER_VALUE_TYPE_WCHAR) {
         return add_instruction(ctx, AM_VM_OP_push, v);
     }
 
@@ -404,7 +408,8 @@ static int32_t compile_value(am_compiler_ctx_t *ctx, am_value_t v) {
     if (vt == AM_COMPILER_VALUE_TYPE_NUMBER ||
         vt == AM_COMPILER_VALUE_TYPE_BOOLEAN ||
         vt == AM_COMPILER_VALUE_TYPE_NULL ||
-        vt == AM_COMPILER_VALUE_TYPE_UNDEFINED) {
+        vt == AM_COMPILER_VALUE_TYPE_UNDEFINED ||
+        vt == AM_COMPILER_VALUE_TYPE_WCHAR) {
         return add_instruction(ctx, AM_VM_OP_push, v);
     }
 
@@ -424,11 +429,10 @@ static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t h
 
     size_t n = node->length;
     size_t uid = ctx->unique_id_counter;
-    ctx->unique_id_counter += 3;
+    ctx->unique_id_counter += 2;
 
     am_value_t apply_begin_idx  = am_make_value_of_uint(uid);
     am_value_t temp_lambda_idx  = am_make_value_of_uint(uid + 1);
-    am_value_t return_label_idx = am_make_value_of_uint(uid + 2);
 
     am_value_t apply_begin_label  = am_compiler_make_label(ctx, apply_begin_idx);
     am_value_t temp_lambda_label  = am_compiler_make_label(ctx, temp_lambda_idx);
@@ -470,10 +474,7 @@ static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t h
     }
 
     // 调用临时lambda
-    if (add_instruction(ctx, AM_VM_OP_call, temp_lambda_label) != 0) return -1;
-
-    // 返回点标签
-    return am_compiler_locate_label(ctx, return_label_idx, ctx->icount);
+    return add_instruction(ctx, AM_VM_OP_call, temp_lambda_label);
 }
 
 
@@ -490,7 +491,7 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
         am_symbol_t sym = am_value_to_symbol(first);
         if (sym == am_value_to_symbol(AM_VALUE_KW_import))  return 0;
         if (sym == am_value_to_symbol(AM_VALUE_KW_native))  return 0;
-        if (sym == am_value_to_symbol(AM_VALUE_KW_begin))   return 0; // begin不产生指令
+        if (sym == am_value_to_symbol(AM_VALUE_KW_begin))   return compile_begin(ctx, handle);
         if (sym == am_value_to_symbol(AM_VALUE_KW_define))  return compile_define(ctx, handle);
         if (sym == am_value_to_symbol(AM_VALUE_KW_set))     return compile_set(ctx, handle);
         if (sym == am_value_to_symbol(AM_VALUE_KW_cond))    return compile_cond(ctx, handle);
@@ -682,6 +683,23 @@ static int32_t compile_set(am_compiler_ctx_t *ctx, am_handle_t handle) {
 }
 
 
+// 编译begin节点：依次求值并保留最后一个表达式的结果
+static int32_t compile_begin(am_compiler_ctx_t *ctx, am_handle_t handle) {
+    am_value_t node_val = am_ast_get_node(ctx->ast, handle);
+    if (!am_value_is_ptr(node_val)) return -1;
+    am_list_t *node = (am_list_t *)am_value_to_ptr(node_val);
+    if (node->length <= 1) return 0;
+
+    for (size_t i = 1; i < node->length; i++) {
+        if (compile_value(ctx, am_list_get(ctx->ast->alloc, node, i)) != 0) return -1;
+        if (i < node->length - 1) {
+            if (add_instruction(ctx, AM_VM_OP_pop, AM_VALUE_UNDEFINED) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+
 static int32_t compile_cond(am_compiler_ctx_t *ctx, am_handle_t handle) {
     am_value_t node_val = am_ast_get_node(ctx->ast, handle);
     if (!am_value_is_ptr(node_val)) return -1;
@@ -689,18 +707,22 @@ static int32_t compile_cond(am_compiler_ctx_t *ctx, am_handle_t handle) {
     size_t n = node->length;
     if (n < 2) return -1;
 
-    am_value_t end_label_idx = am_make_value_of_uint(ctx->unique_id_counter++);
-    am_value_t end_label = am_compiler_make_label(ctx, end_label_idx);
-
-    am_value_t next_branch_idx = am_make_value_of_uint(ctx->unique_id_counter++);
-    am_value_t next_branch_label = am_compiler_make_label(ctx, next_branch_idx);
-
-    // 定位第一个分支标签
-    if (am_compiler_locate_label(ctx, next_branch_idx, ctx->icount) != 0) return -1;
+    // COND_END 标签：使用临时变量作为索引，确保同一 cond 的结束标签唯一
+    am_varid_t end_lbl_varid = am_compiler_make_temp_varid(
+        ctx, L"COND_END", am_make_value_of_handle(handle), 0);
+    if (end_lbl_varid == SIZE_MAX) return -1;
+    am_value_t end_lbl_idx = am_make_value_of_varid(end_lbl_varid);
+    am_value_t end_lbl = am_compiler_make_label(ctx, end_lbl_idx);
 
     for (size_t i = 1; i < n; i++) {
-        am_value_t current_branch_label = next_branch_label;
-        (void)current_branch_label;
+        // 插入分支开始标签（第一个分支的标签实际上不会被引用，但为统一逻辑仍定位）
+        am_varid_t branch_lbl_varid = am_compiler_make_temp_varid(
+            ctx, L"COND_BRANCH", am_make_value_of_handle(handle), i);
+        if (branch_lbl_varid == SIZE_MAX) return -1;
+        am_value_t branch_lbl_idx = am_make_value_of_varid(branch_lbl_varid);
+        am_value_t branch_lbl = am_compiler_make_label(ctx, branch_lbl_idx);
+        (void)branch_lbl;
+        if (am_compiler_locate_label(ctx, branch_lbl_idx, ctx->icount) != 0) return -1;
 
         am_value_t clause_handle = am_list_get(ctx->ast->alloc, node, i);
         if (!am_value_is_handle(clause_handle)) return -1;
@@ -718,26 +740,25 @@ static int32_t compile_cond(am_compiler_ctx_t *ctx, am_handle_t handle) {
         if (!is_else) {
             if (compile_predicate(ctx, predicate) != 0) return -1;
             if (i == n - 1) {
-                if (add_instruction(ctx, AM_VM_OP_iffalse, end_label) != 0) return -1;
+                if (add_instruction(ctx, AM_VM_OP_iffalse, end_lbl) != 0) return -1;
             }
             else {
-                am_value_t next_idx = am_make_value_of_uint(ctx->unique_id_counter++);
-                next_branch_label = am_compiler_make_label(ctx, next_idx);
-                if (add_instruction(ctx, AM_VM_OP_iffalse, next_branch_label) != 0) return -1;
+                am_varid_t next_branch_lbl_varid = am_compiler_make_temp_varid(
+                    ctx, L"COND_BRANCH", am_make_value_of_handle(handle), i + 1);
+                if (next_branch_lbl_varid == SIZE_MAX) return -1;
+                am_value_t next_branch_lbl_idx = am_make_value_of_varid(next_branch_lbl_varid);
+                am_value_t next_branch_lbl = am_compiler_make_label(ctx, next_branch_lbl_idx);
+                if (add_instruction(ctx, AM_VM_OP_iffalse, next_branch_lbl) != 0) return -1;
             }
         }
 
         if (compile_value(ctx, branch) != 0) return -1;
 
         if (is_else || i == n - 1) {
-            return am_compiler_locate_label(ctx, end_label_idx, ctx->icount);
+            return am_compiler_locate_label(ctx, end_lbl_idx, ctx->icount);
         }
         else {
-            if (add_instruction(ctx, AM_VM_OP_goto, end_label) != 0) return -1;
-            // 定位下一个分支标签
-            if (am_compiler_locate_label(ctx,
-                                         am_make_value_of_uint(ctx->unique_id_counter - 1),
-                                         ctx->icount) != 0) return -1;
+            if (add_instruction(ctx, AM_VM_OP_goto, end_lbl) != 0) return -1;
         }
     }
 
@@ -798,7 +819,9 @@ static int32_t compile_while(am_compiler_ctx_t *ctx, am_handle_t handle) {
     if (am_compiler_locate_label(ctx, cond_label_idx, ctx->icount) != 0) return -1;
     if (compile_predicate(ctx, am_list_get(ctx->ast->alloc, node, 1)) != 0) return -1;
     if (add_instruction(ctx, AM_VM_OP_iffalse, end_label) != 0) return -1;
-    if (compile_value(ctx, am_list_get(ctx->ast->alloc, node, 2)) != 0) return -1;
+    for (size_t i = 2; i < node->length; i++) {
+        if (compile_value(ctx, am_list_get(ctx->ast->alloc, node, i)) != 0) return -1;
+    }
     if (add_instruction(ctx, AM_VM_OP_goto, cond_label) != 0) return -1;
     if (am_compiler_locate_label(ctx, end_label_idx, ctx->icount) != 0) return -1;
 
@@ -896,7 +919,8 @@ static int32_t compile_quasiquote(am_compiler_ctx_t *ctx, am_handle_t handle) {
         else if (vt == AM_COMPILER_VALUE_TYPE_NUMBER ||
                  vt == AM_COMPILER_VALUE_TYPE_BOOLEAN ||
                  vt == AM_COMPILER_VALUE_TYPE_NULL ||
-                 vt == AM_COMPILER_VALUE_TYPE_UNDEFINED) {
+                 vt == AM_COMPILER_VALUE_TYPE_UNDEFINED ||
+                 vt == AM_COMPILER_VALUE_TYPE_WCHAR) {
             if (add_instruction(ctx, AM_VM_OP_push, child) != 0) return -1;
         }
         else {
