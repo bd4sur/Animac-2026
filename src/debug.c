@@ -33,11 +33,25 @@ static int debug_ast_is_handle_visited(am_handle_t *visited, size_t count, am_ha
 
 
 static void debug_ast_print_value(am_ast_t *ast, am_value_t value, FILE *out,
-                                  am_handle_t *visited, size_t *visited_count, int depth);
+                                  am_handle_t **visited, size_t *visited_count, size_t *visited_capacity, int depth);
+
+
+static void debug_ast_print_ensure_visited_capacity(am_handle_t **visited, size_t *visited_capacity, size_t visited_count) {
+    if (visited_count < *visited_capacity) return;
+    size_t new_capacity = *visited_capacity ? *visited_capacity * 2 : 256;
+    if (new_capacity < visited_count + 1) new_capacity = visited_count + 1;
+    am_handle_t *new_visited = (am_handle_t *)realloc(*visited, new_capacity * sizeof(am_handle_t));
+    if (!new_visited) {
+        fprintf(stderr, "debug_ast_print: failed to allocate visited buffer\n");
+        return;
+    }
+    *visited = new_visited;
+    *visited_capacity = new_capacity;
+}
 
 
 static void debug_ast_print_node(am_ast_t *ast, am_handle_t handle, FILE *out,
-                                 am_handle_t *visited, size_t *visited_count, int depth) {
+                                 am_handle_t **visited, size_t *visited_count, size_t *visited_capacity, int depth) {
     am_value_t node_val = am_ast_get_node(ast, handle);
     if (!am_value_is_ptr(node_val)) {
         fwprintf(out, L"<H:%zu> (invalid)", (size_t)handle);
@@ -65,11 +79,12 @@ static void debug_ast_print_node(am_ast_t *ast, am_handle_t handle, FILE *out,
 
     am_list_t *lst = (am_list_t *)obj;
 
-    if (debug_ast_is_handle_visited(visited, *visited_count, handle)) {
+    if (debug_ast_is_handle_visited(*visited, *visited_count, handle)) {
         fwprintf(out, L"<H:%zu>", (size_t)handle);
         return;
     }
-    visited[(*visited_count)++] = handle;
+    debug_ast_print_ensure_visited_capacity(visited, visited_capacity, *visited_count);
+    (*visited)[(*visited_count)++] = handle;
 
     fwprintf(out, L"<H:%zu> {\n", (size_t)handle);
     debug_ast_print_indent(out, depth + 1);
@@ -103,7 +118,7 @@ static void debug_ast_print_node(am_ast_t *ast, am_handle_t handle, FILE *out,
         for (am_uint_t i = 0; i < n_param; i++) {
             debug_ast_print_indent(out, depth + 2);
             am_value_t param = am_list_get(ast->alloc, lst, 2 + i);
-            debug_ast_print_value(ast, param, out, visited, visited_count, depth + 2);
+            debug_ast_print_value(ast, param, out, visited, visited_count, visited_capacity, depth + 2);
             if (i + 1 < n_param) fputwc(L',', out);
             fputwc(L'\n', out);
         }
@@ -116,7 +131,7 @@ static void debug_ast_print_node(am_ast_t *ast, am_handle_t handle, FILE *out,
         for (size_t i = body_start; i < lst->length; i++) {
             debug_ast_print_indent(out, depth + 2);
             am_value_t body = am_list_get(ast->alloc, lst, i);
-            debug_ast_print_value(ast, body, out, visited, visited_count, depth + 2);
+            debug_ast_print_value(ast, body, out, visited, visited_count, visited_capacity, depth + 2);
             if (i + 1 < lst->length) fputwc(L',', out);
             fputwc(L'\n', out);
         }
@@ -129,7 +144,7 @@ static void debug_ast_print_node(am_ast_t *ast, am_handle_t handle, FILE *out,
         for (size_t i = 0; i < lst->length; i++) {
             debug_ast_print_indent(out, depth + 2);
             am_value_t child = am_list_get(ast->alloc, lst, i);
-            debug_ast_print_value(ast, child, out, visited, visited_count, depth + 2);
+            debug_ast_print_value(ast, child, out, visited, visited_count, visited_capacity, depth + 2);
             if (i + 1 < lst->length) fputwc(L',', out);
             fputwc(L'\n', out);
         }
@@ -143,10 +158,10 @@ static void debug_ast_print_node(am_ast_t *ast, am_handle_t handle, FILE *out,
 
 
 static void debug_ast_print_value(am_ast_t *ast, am_value_t value, FILE *out,
-                                  am_handle_t *visited, size_t *visited_count, int depth) {
+                                  am_handle_t **visited, size_t *visited_count, size_t *visited_capacity, int depth) {
     if (am_value_is_handle(value)) {
         am_handle_t h = am_value_to_handle(value);
-        debug_ast_print_node(ast, h, out, visited, visited_count, depth);
+        debug_ast_print_node(ast, h, out, visited, visited_count, visited_capacity, depth);
     }
     else if (am_value_is_varid(value)) {
         am_varid_t varid = am_value_to_varid(value);
@@ -490,7 +505,12 @@ void am_debug_ast_print(FILE *out, am_ast_t *ast) {
         return;
     }
 
-    am_handle_t visited[256];
+    size_t visited_capacity = 256;
+    am_handle_t *visited = (am_handle_t *)malloc(visited_capacity * sizeof(am_handle_t));
+    if (!visited) {
+        fwprintf(out, L"(failed to allocate visited buffer)\n");
+        return;
+    }
     size_t visited_count = 0;
 
     fwprintf(out, L"AST {\n");
@@ -549,10 +569,11 @@ void am_debug_ast_print(FILE *out, am_ast_t *ast) {
     }
     else {
         fputwc(L'\n', out);
-        debug_ast_print_node(ast, top, out, visited, &visited_count, 2);
+        debug_ast_print_node(ast, top, out, &visited, &visited_count, &visited_capacity, 2);
         fputwc(L'\n', out);
     }
 
+    free(visited);
     fwprintf(out, L"}\n");
 }
 

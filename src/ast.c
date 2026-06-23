@@ -1310,7 +1310,7 @@ static int32_t am_ast_append_value_to_strbuf(am_ast_strbuf_t *sb, am_ast_t *ast,
         wchar_t *text = am_vocab_get(ast->alloc, ast->symbol_vocab, &sym);
         if (!text) return am_ast_strbuf_append_string(sb, L"#<sym>");
         // symbol 在词汇表中可能以单引号开头（如被 quote 的标识符），输出时去掉前导单引号
-        while (*text == L'\'') text++;
+        // while (*text == L'\'') text++;
         return am_ast_strbuf_append_string(sb, text);
     }
     else if (am_value_is_uint(value)) {

@@ -14,7 +14,7 @@
 // 基础设施：基于内存池的简单测试分配器（bump allocator）
 // ===============================================================================
 
-#define TEST_POOL_SIZE (128 * 1024 * 1024)
+#define TEST_POOL_SIZE (8 * 1024 * 1024)
 
 typedef struct test_allocator_state_t {
     uint8_t *base;
