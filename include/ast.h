@@ -31,7 +31,7 @@ extern "C" {
 #define AM_VAR_TYPE_EXT_REF     (34) // 点号分割形式：实际上就是 AM_VAR_TYPE_IMPORT_REF 或者 AM_VAR_TYPE_NATIVE_REF，用于暂时无法确定是哪种的情况
 #define AM_VAR_TYPE_IMPORT_ALIAS (5) // 导入模块的别名（不ARN）：也就是(import Mod "mod.scm")中的Mod
 #define AM_VAR_TYPE_NATIVE_ID    (6) // 本地模块名（不ARN）：也就是(native Math)中的Math
-
+#define AM_VAR_TYPE_ILTEMP       (7) // 编译过程引入的临时中间变量，AST中不存在
 
 
 // AST数据结构

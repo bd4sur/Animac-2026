@@ -1130,7 +1130,13 @@ static void preprocess_iter_cb(am_handle_t handle, am_value_t value, void *user_
             parser_set_error(ctx, L"invalid native syntax");
             return;
         }
-        if (am_ast_set_native(ast, am_value_to_varid(name_val), AM_HANDLE_NULL) < 0) {
+        am_varid_t native_varid = am_value_to_varid(name_val);
+        if (am_list_set(ast->alloc, ast->var_type, (size_t)native_varid,
+                        am_make_value_of_uint(AM_VAR_TYPE_NATIVE_ID)) != 0) {
+            parser_set_error(ctx, L"failed to set native var type");
+            return;
+        }
+        if (am_ast_set_native(ast, native_varid, AM_HANDLE_NULL) < 0) {
             parser_set_error(ctx, L"failed to set native");
             return;
         }
@@ -1229,7 +1235,7 @@ static void alias_rename_iter_cb(am_handle_t handle, am_value_t value, void *use
         }
     }
 
-    // 其他节点：遍历 children，处理 AM_VAR_TYPE_EXT_REF 且为 IMPORT_REF 的 varid
+    // 其他节点：遍历 children，处理 AM_VAR_TYPE_EXT_REF 的 varid（IMPORT_REF 更名，NATIVE_REF 设置类型）
     for (size_t i = 0; i < lst->length; i++) {
         am_value_t child = am_list_get(ast->alloc, lst, i);
         if (!am_value_is_varid(child)) continue;
@@ -1239,6 +1245,15 @@ static void alias_rename_iter_cb(am_handle_t handle, am_value_t value, void *use
         if (!am_value_is_uint(type_val)) continue;
 
         if (am_value_to_uint(type_val) != AM_VAR_TYPE_EXT_REF) continue;
+
+        if (am_ast_check_native_ref(ast, varid) == 0) {
+            if (am_list_set(ast->alloc, ast->var_type, (size_t)varid,
+                            am_make_value_of_uint(AM_VAR_TYPE_NATIVE_REF)) != 0) {
+                parser_set_error(ctx, L"failed to set native ref var type");
+                return;
+            }
+            continue;
+        }
 
         if (am_ast_check_import_ref(ast, varid) != 0) continue;
 

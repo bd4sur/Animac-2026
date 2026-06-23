@@ -46,6 +46,7 @@ typedef struct am_heap_t am_heap_t;
     typedef size_t   am_iaddr_t;
     typedef size_t   am_handle_t;
     typedef size_t   am_varid_t;
+    typedef size_t   am_label_t;
 #elif UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
     // 64 位系统
     typedef int64_t  am_int_t;
@@ -56,6 +57,7 @@ typedef struct am_heap_t am_heap_t;
     typedef size_t   am_iaddr_t;
     typedef size_t   am_handle_t;
     typedef size_t   am_varid_t;
+    typedef size_t   am_label_t;
 #else
     #error "Only 32-bit and 64-bit architectures are supported."
 #endif
@@ -79,28 +81,30 @@ typedef uintptr_t am_value_t;
 #define AM_VALUE_TYPE_HANDLE    (0x01) // uint_like
 #define AM_VALUE_TYPE_IADDR     (0x02) // uint_like
 #define AM_VALUE_TYPE_VARID     (0x03) // uint_like
-#define AM_VALUE_TYPE_BOOLEAN   (0x04) // uint_like
-#define AM_VALUE_TYPE_NULL      (0x05) // uint_like, 单例
-#define AM_VALUE_TYPE_UNDEFINED (0x06) // uint_like, 单例
-#define AM_VALUE_TYPE_SYMBOL    (0x07) // uint_like, keyword也是一种特殊的symbol，在编译时就应该放进symbol映射表中
-#define AM_VALUE_TYPE_WCHAR     (0x08) // wchar_t, 仅用于组成字符串
-#define AM_VALUE_TYPE_UINT      (0x09) // number
-#define AM_VALUE_TYPE_INT       (0x0A) // number
-#define AM_VALUE_TYPE_FLOAT     (0x0B) // number
+#define AM_VALUE_TYPE_LABEL     (0x04) // uint_like
+#define AM_VALUE_TYPE_BOOLEAN   (0x05) // uint_like
+#define AM_VALUE_TYPE_NULL      (0x06) // uint_like, 单例
+#define AM_VALUE_TYPE_UNDEFINED (0x07) // uint_like, 单例
+#define AM_VALUE_TYPE_SYMBOL    (0x08) // uint_like, keyword也是一种特殊的symbol，在编译时就应该放进symbol映射表中
+#define AM_VALUE_TYPE_WCHAR     (0x09) // wchar_t, 仅用于组成字符串
+#define AM_VALUE_TYPE_UINT      (0x0A) // number
+#define AM_VALUE_TYPE_INT       (0x0B) // number
+#define AM_VALUE_TYPE_FLOAT     (0x0C) // number
 
 // TPV的类型标记，占用TPV低5位：最低位为0则为PTR；最低位为1则为立即数，其余4位对应AM_VALUE_TYPE_*
 #define AM_VALUE_TAG_PTR       ((am_value_t)0x00ULL) // 指向堆上对象的指针
 #define AM_VALUE_TAG_HANDLE    ((am_value_t)0x03ULL)
 #define AM_VALUE_TAG_IADDR     ((am_value_t)0x05ULL)
 #define AM_VALUE_TAG_VARID     ((am_value_t)0x07ULL)
-#define AM_VALUE_TAG_BOOLEAN   ((am_value_t)0x09ULL)
-#define AM_VALUE_TAG_NULL      ((am_value_t)0x0BULL)
-#define AM_VALUE_TAG_UNDEFINED ((am_value_t)0x0DULL)
-#define AM_VALUE_TAG_SYMBOL    ((am_value_t)0x0FULL)
-#define AM_VALUE_TAG_WCHAR     ((am_value_t)0x11ULL)  // 最少27bits，能装得下unicode全部码点
-#define AM_VALUE_TAG_UINT      ((am_value_t)0x13ULL)
-#define AM_VALUE_TAG_INT       ((am_value_t)0x15ULL)
-#define AM_VALUE_TAG_FLOAT     ((am_value_t)0x17ULL)
+#define AM_VALUE_TAG_LABEL     ((am_value_t)0x09ULL)
+#define AM_VALUE_TAG_BOOLEAN   ((am_value_t)0x0BULL)
+#define AM_VALUE_TAG_NULL      ((am_value_t)0x0DULL)
+#define AM_VALUE_TAG_UNDEFINED ((am_value_t)0x0FULL)
+#define AM_VALUE_TAG_SYMBOL    ((am_value_t)0x11ULL)
+#define AM_VALUE_TAG_WCHAR     ((am_value_t)0x13ULL)  // 最少27bits，能装得下unicode全部码点
+#define AM_VALUE_TAG_UINT      ((am_value_t)0x15ULL)
+#define AM_VALUE_TAG_INT       ((am_value_t)0x17ULL)
+#define AM_VALUE_TAG_FLOAT     ((am_value_t)0x19ULL)
 
 #define AM_VALUE_TAG_MASK      ((am_value_t)0x1FULL)
 #define AM_VALUE_TAG_LSB_MASK  ((am_value_t)0x1ULL)
@@ -177,6 +181,7 @@ static inline bool am_value_is_imme(am_value_t v)      { return (v & AM_VALUE_TA
 static inline bool am_value_is_handle(am_value_t v)    { return (v & AM_VALUE_TAG_MASK) == AM_VALUE_TAG_HANDLE; }
 static inline bool am_value_is_iaddr(am_value_t v)     { return (v & AM_VALUE_TAG_MASK) == AM_VALUE_TAG_IADDR; }
 static inline bool am_value_is_varid(am_value_t v)     { return (v & AM_VALUE_TAG_MASK) == AM_VALUE_TAG_VARID; }
+static inline bool am_value_is_label(am_value_t v)     { return (v & AM_VALUE_TAG_MASK) == AM_VALUE_TAG_LABEL; }
 static inline bool am_value_is_boolean(am_value_t v)   { return (v & AM_VALUE_TAG_MASK) == AM_VALUE_TAG_BOOLEAN; }
 static inline bool am_value_is_null(am_value_t v)      { return (v & AM_VALUE_TAG_MASK) == AM_VALUE_TAG_NULL; }
 static inline bool am_value_is_undefined(am_value_t v) { return (v & AM_VALUE_TAG_MASK) == AM_VALUE_TAG_UNDEFINED; }
@@ -194,6 +199,7 @@ static inline am_object_t*   am_value_to_ptr(am_value_t v)       { return (am_ob
 static inline am_handle_t    am_value_to_handle(am_value_t v)    { return (am_handle_t)(v >> 5); }
 static inline am_iaddr_t     am_value_to_iaddr(am_value_t v)     { return (am_iaddr_t)(v >> 5); }
 static inline am_varid_t     am_value_to_varid(am_value_t v)     { return (am_varid_t)(v >> 5); }
+static inline am_label_t     am_value_to_label(am_value_t v)     { return (am_label_t)(v >> 5); }
 static inline am_boolean_t   am_value_to_boolean(am_value_t v)   { return (am_boolean_t)(v >> 5); } // 整数部分非0即为#t，除此之外全部为#f
 static inline am_null_t      am_value_to_null(am_value_t v)      { (void)v; return (am_null_t)(1); } // 单例：常函数，且具体值不重要
 static inline am_undefined_t am_value_to_undefined(am_value_t v) { (void)v; return (am_undefined_t)(1); } // 单例：常函数，具体值不重要
@@ -218,6 +224,7 @@ static inline am_value_t am_make_value_of_ptr(am_object_t* obj_p) { return (am_v
 static inline am_value_t am_make_value_of_handle(am_handle_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_HANDLE); }
 static inline am_value_t am_make_value_of_iaddr(am_iaddr_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_IADDR); }
 static inline am_value_t am_make_value_of_varid(am_varid_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_VARID); }
+static inline am_value_t am_make_value_of_label(am_label_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_LABEL); }
 static inline am_value_t am_make_value_of_boolean(am_boolean_t x) { return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_BOOLEAN); }
 static inline am_value_t am_make_value_of_null(am_null_t x) { (void)x; return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_NULL); } // 单例：常函数，输入不重要
 static inline am_value_t am_make_value_of_undefined(am_undefined_t x) { (void)x; return AM_MAKE_VALUE_OF_UINT_LIKE(x, AM_VALUE_TAG_UNDEFINED); } // 单例：常函数，输入不重要
