@@ -101,6 +101,7 @@ static am_map_t *am_map_resize(am_allocator_t *alloc, am_map_t *map, size_t new_
         return NULL;
     }
 
+    new_m->base = m->base;
     new_m->capacity = cap;
     new_m->mask = cap - 1;
     new_m->length = 0;

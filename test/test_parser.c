@@ -318,7 +318,7 @@ static void test_parse_application(void) {
     printf("test_parse_application ... ");
     test_allocator_reset();
 
-    wchar_t *code = L"((lambda () (display x)))";
+    wchar_t *code = L"((lambda (x) (display x)))";
     am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
@@ -326,7 +326,7 @@ static void test_parse_application(void) {
     am_list_t *lambda = handle_to_list(ast, top_lambda);
     assert(am_list_lambda_get_body_number(ast->alloc, lambda) == 1);
 
-    am_value_t body = am_list_get(ast->alloc, lambda, 2);
+    am_value_t body = am_list_get(ast->alloc, lambda, 3);
     assert(am_value_is_handle(body));
 
     am_list_t *app = handle_to_list(ast, am_value_to_handle(body));
@@ -495,7 +495,7 @@ static void test_parse_unquote_in_quasiquote(void) {
     printf("test_parse_unquote_in_quasiquote ... ");
     test_allocator_reset();
 
-    wchar_t *code = L"((lambda () `(,x)))";
+    wchar_t *code = L"((lambda (x) `(,x)))";
     am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
@@ -503,7 +503,7 @@ static void test_parse_unquote_in_quasiquote(void) {
     am_list_t *lambda = handle_to_list(ast, top_lambda);
     assert(am_list_lambda_get_body_number(ast->alloc, lambda) == 1);
 
-    am_value_t body = am_list_get(ast->alloc, lambda, 2);
+    am_value_t body = am_list_get(ast->alloc, lambda, 3);
     assert(am_value_is_handle(body));
 
     am_list_t *qq = handle_to_list(ast, am_value_to_handle(body));
@@ -511,9 +511,10 @@ static void test_parse_unquote_in_quasiquote(void) {
     assert(qq->length == 1);
 
     // 在 quasiquote 列表中的 ,x 直接解析为变量 x（不创建 UNQUOTE 列表）
+    // 该变量应被 ARN 为顶层 lambda 作用域内的 x
     am_value_t child = am_list_get(ast->alloc, qq, 0);
     assert(am_value_is_varid(child));
-    assert(am_value_to_varid(child) == varid_of(ast, L"x"));
+    assert(am_value_to_varid(child) == arnid_of(ast, top_lambda, L"x"));
 
     am_ast_destroy(ast);
     printf("OK\n");
@@ -532,11 +533,11 @@ static void test_parse_import_native(void) {
     am_varid_t m_varid = varid_of(ast, L"m");
     am_varid_t n_varid = varid_of(ast, L"N");
 
-    // 验证 var_type 为 AM_VAR_TYPE_OLD
+    // 验证 var_type：旧 import 别名保持 OLD，native 模块名为 NATIVE_ID
     am_value_t m_type = am_list_get(ast->alloc, ast->var_type, (size_t)m_varid);
     am_value_t n_type = am_list_get(ast->alloc, ast->var_type, (size_t)n_varid);
     assert(am_value_is_uint(m_type) && am_value_to_uint(m_type) == AM_VAR_TYPE_OLD);
-    assert(am_value_is_uint(n_type) && am_value_to_uint(n_type) == AM_VAR_TYPE_OLD);
+    assert(am_value_is_uint(n_type) && am_value_to_uint(n_type) == AM_VAR_TYPE_NATIVE_ID);
 
     // 旧 alias 的依赖映射已被删除
     am_value_t old_dep = am_map_get(ast->alloc, ast->dependencies, am_make_value_of_varid(m_varid));
@@ -564,7 +565,7 @@ static void test_parse_alpha_renaming(void) {
     printf("test_parse_alpha_renaming ... ");
     test_allocator_reset();
 
-    wchar_t *code = L"((lambda () (display x)))";
+    wchar_t *code = L"((lambda (x) (display x)))";
     am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
@@ -578,7 +579,7 @@ static void test_parse_alpha_renaming(void) {
     am_list_t *lambda = handle_to_list(ast, top_lambda);
     assert(am_list_lambda_get_body_number(ast->alloc, lambda) == 1);
 
-    am_value_t body = am_list_get(ast->alloc, lambda, 2);
+    am_value_t body = am_list_get(ast->alloc, lambda, 3);
     assert(am_value_is_handle(body));
 
     am_list_t *app = handle_to_list(ast, am_value_to_handle(body));
@@ -608,7 +609,7 @@ static void test_parse_alpha_renaming_nested(void) {
 
     // 外层 lambda 中有同名变量 x 的引用；内层 lambda 将 x 作为参数并在体中引用。
     // 二者应被换名为不同的 varid。
-    wchar_t *code = L"((lambda () (lambda (x) x) (f x)))";
+    wchar_t *code = L"((lambda (x f) (lambda (x) x) (f x)))";
     am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
@@ -617,7 +618,7 @@ static void test_parse_alpha_renaming_nested(void) {
     assert(am_list_lambda_get_body_number(ast->alloc, top) == 2);
 
     // 第一个 body 是内层 lambda
-    am_value_t inner_lambda_val = am_list_get(ast->alloc, top, 2);
+    am_value_t inner_lambda_val = am_list_get(ast->alloc, top, 4);
     assert(am_value_is_handle(inner_lambda_val));
     am_handle_t inner_lambda = am_value_to_handle(inner_lambda_val);
     am_list_t *inner = handle_to_list(ast, inner_lambda);
@@ -636,7 +637,7 @@ static void test_parse_alpha_renaming_nested(void) {
     assert(am_value_to_varid(inner_param) == arnid_of(ast, inner_lambda, L"x"));
 
     // 第二个 body 是外层应用 (f x)
-    am_value_t outer_app_val = am_list_get(ast->alloc, top, 3);
+    am_value_t outer_app_val = am_list_get(ast->alloc, top, 5);
     assert(am_value_is_handle(outer_app_val));
     am_list_t *outer_app = handle_to_list(ast, am_value_to_handle(outer_app_val));
     assert(outer_app->type == AM_LIST_TYPE_APPLICATION);
@@ -649,8 +650,130 @@ static void test_parse_alpha_renaming_nested(void) {
     assert(am_value_to_varid(outer_f) == arnid_of(ast, top_lambda, L"f"));
     assert(am_value_to_varid(outer_x) == arnid_of(ast, top_lambda, L"x"));
 
+    // 外层 lambda 的形参 x 与内层 lambda 的形参 x 应被换为不同 varid
+    am_value_t top_param_x = am_list_get(ast->alloc, top, 2);
+    assert(am_value_is_varid(top_param_x));
+    assert(am_value_to_varid(top_param_x) == arnid_of(ast, top_lambda, L"x"));
+    assert(am_value_to_varid(top_param_x) != am_value_to_varid(inner_param));
+
     // 外层 x 与内层 x 的 ARN 不同
     assert(am_value_to_varid(outer_x) != am_value_to_varid(inner_param));
+
+    am_ast_destroy(ast);
+    printf("OK\n");
+}
+
+
+static void test_man_or_boy(void) {
+    printf("test_man_or_boy ... \n");
+    test_allocator_reset();
+
+    wchar_t *code = L"((lambda () "
+        L"(define A "
+        L"  (lambda (k x1 x2 x3 x4 x5) "
+        L"      (define B "
+        L"        (lambda () "
+        L"            (set! k (- k 1)) "
+        L"            (A k B x1 x2 x3 x4))) "
+        L"      (if (<= k 0) "
+        L"          (+ (x4) (x5)) "
+        L"          (B)))) "
+        L"(define thunk_1  (lambda () 1)) "
+        L"(define thunk_m1 (lambda () -1)) "
+        L"(define thunk_0  (lambda () 0)) "
+        L"(display (A 10 thunk_1 thunk_m1 thunk_m1 thunk_1 thunk_0)) "
+        L"))";
+
+    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    assert(ast != NULL);
+
+    am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
+    assert(top_lambda != AM_HANDLE_NULL);
+    am_list_t *top = handle_to_list(ast, top_lambda);
+    size_t n_body = am_list_lambda_get_body_number(ast->alloc, top);
+    assert(n_body == 5); // define A, thunk_1, thunk_m1, thunk_0, display
+
+    // 验证 A 被定义在顶层 lambda 作用域
+    am_value_t a_def_val = am_list_get(ast->alloc, top, 2);
+    assert(am_value_is_handle(a_def_val));
+    am_list_t *a_def = handle_to_list(ast, am_value_to_handle(a_def_val));
+    assert(a_def->type == AM_LIST_TYPE_APPLICATION);
+    assert(a_def->length == 3);
+    am_value_t a_def_sym = am_list_get(ast->alloc, a_def, 0);
+    assert(am_value_is_symbol(a_def_sym) && am_value_to_symbol(a_def_sym) == symbol_of(ast, L"define"));
+    am_value_t a_var = am_list_get(ast->alloc, a_def, 1);
+    assert(am_value_is_varid(a_var));
+    assert(am_value_to_varid(a_var) == arnid_of(ast, top_lambda, L"A"));
+
+    // 验证 A 的 lambda 参数 k..x5
+    am_value_t a_lambda_val = am_list_get(ast->alloc, a_def, 2);
+    assert(am_value_is_handle(a_lambda_val));
+    am_handle_t a_lambda = am_value_to_handle(a_lambda_val);
+    am_list_t *a_lambda_lst = handle_to_list(ast, a_lambda);
+    assert(a_lambda_lst->type == AM_LIST_TYPE_LAMBDA);
+    size_t a_n_param = 0;
+    if (a_lambda_lst->length >= 2) {
+        am_value_t n_param_val = am_list_get(ast->alloc, a_lambda_lst, 1);
+        if (am_value_is_uint(n_param_val)) a_n_param = am_value_to_uint(n_param_val);
+    }
+    assert(a_n_param == 6);
+    assert(am_value_to_varid(am_list_get(ast->alloc, a_lambda_lst, 2)) == arnid_of(ast, a_lambda, L"k"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, a_lambda_lst, 3)) == arnid_of(ast, a_lambda, L"x1"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, a_lambda_lst, 4)) == arnid_of(ast, a_lambda, L"x2"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, a_lambda_lst, 5)) == arnid_of(ast, a_lambda, L"x3"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, a_lambda_lst, 6)) == arnid_of(ast, a_lambda, L"x4"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, a_lambda_lst, 7)) == arnid_of(ast, a_lambda, L"x5"));
+
+    // 验证 B 定义在 A lambda 的 body 中
+    size_t a_n_body = am_list_lambda_get_body_number(ast->alloc, a_lambda_lst);
+    assert(a_n_body == 2); // define B 和 if
+    am_value_t b_def_val = am_list_get(ast->alloc, a_lambda_lst, 2 + a_n_param);
+    assert(am_value_is_handle(b_def_val));
+    am_list_t *b_def = handle_to_list(ast, am_value_to_handle(b_def_val));
+    assert(b_def->type == AM_LIST_TYPE_APPLICATION);
+    assert(b_def->length == 3);
+    am_value_t b_var = am_list_get(ast->alloc, b_def, 1);
+    assert(am_value_is_varid(b_var));
+    assert(am_value_to_varid(b_var) == arnid_of(ast, a_lambda, L"B"));
+
+    // 验证 B 的 lambda 没有参数
+    am_value_t b_lambda_val = am_list_get(ast->alloc, b_def, 2);
+    assert(am_value_is_handle(b_lambda_val));
+    am_handle_t b_lambda = am_value_to_handle(b_lambda_val);
+    am_list_t *b_lambda_lst = handle_to_list(ast, b_lambda);
+    assert(b_lambda_lst->type == AM_LIST_TYPE_LAMBDA);
+    size_t b_n_param = 0;
+    if (b_lambda_lst->length >= 2) {
+        am_value_t n_param_val = am_list_get(ast->alloc, b_lambda_lst, 1);
+        if (am_value_is_uint(n_param_val)) b_n_param = am_value_to_uint(n_param_val);
+    }
+    assert(b_n_param == 0);
+
+    // 验证 B 的 body 中 (set! k (- k 1)) 的 k 是 A lambda 的参数
+    size_t b_n_body = am_list_lambda_get_body_number(ast->alloc, b_lambda_lst);
+    assert(b_n_body == 2);
+    am_value_t set_val = am_list_get(ast->alloc, b_lambda_lst, 2);
+    assert(am_value_is_handle(set_val));
+    am_list_t *set_app = handle_to_list(ast, am_value_to_handle(set_val));
+    assert(set_app->type == AM_LIST_TYPE_APPLICATION);
+    assert(set_app->length == 3);
+    am_value_t set_k = am_list_get(ast->alloc, set_app, 1);
+    assert(am_value_is_varid(set_k));
+    assert(am_value_to_varid(set_k) == arnid_of(ast, a_lambda, L"k"));
+
+    // 验证 (A k B x1 x2 x3 x4) 中的变量引用都指向 A lambda 作用域
+    am_value_t call_val = am_list_get(ast->alloc, b_lambda_lst, 3);
+    assert(am_value_is_handle(call_val));
+    am_list_t *call_app = handle_to_list(ast, am_value_to_handle(call_val));
+    assert(call_app->type == AM_LIST_TYPE_APPLICATION);
+    assert(call_app->length == 7);
+    assert(am_value_to_varid(am_list_get(ast->alloc, call_app, 0)) == arnid_of(ast, top_lambda, L"A"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, call_app, 1)) == arnid_of(ast, a_lambda, L"k"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, call_app, 2)) == arnid_of(ast, a_lambda, L"B"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, call_app, 3)) == arnid_of(ast, a_lambda, L"x1"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, call_app, 4)) == arnid_of(ast, a_lambda, L"x2"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, call_app, 5)) == arnid_of(ast, a_lambda, L"x3"));
+    assert(am_value_to_varid(am_list_get(ast->alloc, call_app, 6)) == arnid_of(ast, a_lambda, L"x4"));
 
     am_ast_destroy(ast);
     printf("OK\n");
@@ -1043,11 +1166,11 @@ static void test_ast_merge(const wchar_t *importer_path, const wchar_t *importee
     assert(wcscmp(x_y_str, L"\"/home/bd4sur/animac/z.scm\"") == 0);
     free(y_z_str); free(x_z_str); free(x_y_str);
 
-    // 验证顶层 lambda 的函数体数量：importee 5 个 + importer 6 个 = 11
+    // 验证顶层 lambda 的函数体数量：importee 5 个 + importer 7 个 = 12
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(importer);
     am_list_t *lambda = handle_to_list(importer, top_lambda);
     size_t n_body = am_list_lambda_get_body_number(importer->alloc, lambda);
-    assert(n_body == 11);
+    assert(n_body == 12);
 
     // 验证顺序：order=0 时 importee 的顶级节点在前
     // importee 第一个节点是 (import home.bd4sur.animac.y.z "...")
@@ -1139,6 +1262,7 @@ int main(void) {
     test_parse_import_native();
     test_parse_alpha_renaming();
     test_parse_alpha_renaming_nested();
+    test_man_or_boy();
     test_parse_import_alias_rename();
     test_parse_top_lambda_and_var_top();
     test_parse_tail_call_analysis();

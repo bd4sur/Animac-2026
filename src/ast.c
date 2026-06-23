@@ -265,6 +265,13 @@ typedef struct {
 
 static void merge_collect_node_cb(am_handle_t handle, am_value_t value, void *user_data) {
     merge_node_collect_ctx_t *ctx = (merge_node_collect_ctx_t *)user_data;
+
+    // 词法作用域对象仅在编译期使用，不参与模块合并
+    if (am_value_is_ptr(value)) {
+        am_object_t *obj = am_value_to_ptr(value);
+        if (obj->type == AM_OBJECT_TYPE_SCOPE) return;
+    }
+
     if (ctx->length >= ctx->capacity) {
         size_t new_cap = ctx->capacity ? ctx->capacity * 2 : 16;
         merge_node_entry_t *new_entries = (merge_node_entry_t *)realloc(ctx->entries,
@@ -571,6 +578,9 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
                 return -1;
             }
             new_val = am_make_value_of_ptr((am_object_t *)new_ws);
+        } else if (obj->type == AM_OBJECT_TYPE_SCOPE) {
+            // scope 对象是编译期词法作用域，不参与模块合并
+            continue;
         } else {
             free(node_ctx.entries);
             return -1;

@@ -219,49 +219,69 @@ am_heap_t *am_heap_load(am_allocator_t *alloc, uint8_t *buffer, size_t offset) {
 // 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
 // 注意：若buffer设为NULL，或者offset设为SIZE_MAX，则仅计算转储后的二进制序列的字节数，不实际写入buffer。
 //       仅处理value为ptr且指向AM_OBJECT_TYPE_LIST或AM_OBJECT_TYPE_WSTRING类型对象的情况。
+//       词法作用域对象（AM_OBJECT_TYPE_SCOPE）仅用于编译期，不参与持久化转储。
 size_t am_heap_deep_dump(am_allocator_t *alloc, am_heap_t *heap, uint8_t *buffer, size_t offset) {
     if (!alloc || !heap || !heap->table) return SIZE_MAX;
 
-    // 先计算heap对象本身的dump大小（不实际写入，因为后续还要修改table中的value）
-    size_t heap_map_size = am_heap_dump(alloc, heap, NULL, 0);
-    if (heap_map_size == SIZE_MAX) return SIZE_MAX;
+    // 收集需要转储的有效条目，跳过编译期作用域对象
+    size_t capacity = heap->table->capacity;
+    size_t count = 0;
+    am_heap_entry_t *entries = NULL;
+    for (size_t i = 0; i < capacity; i++) {
+        am_value_t k = heap->table->slots[i].key;
+        if (k == AM_MAP_KEY_EMPTY || k == AM_MAP_KEY_TOMBSTONE) continue;
+
+        am_value_t v = heap->table->slots[i].value;
+        if (!am_value_is_ptr(v)) continue;
+
+        am_object_t *obj = am_value_to_ptr(v);
+        if (obj->type == AM_OBJECT_TYPE_SCOPE) continue;
+
+        entries = (am_heap_entry_t *)realloc(entries, (count + 1) * sizeof(am_heap_entry_t));
+        if (!entries) return SIZE_MAX;
+
+        entries[count].key = k;
+        entries[count].value = v;
+        entries[count].slot = &heap->table->slots[i];
+        count++;
+    }
+
+    qsort(entries, count, sizeof(am_heap_entry_t), am_heap_entry_compare);
+
+    // 构造临时heap，仅包含需要转储的条目，避免修改原始heap
+    am_heap_t temp_heap;
+    temp_heap.capacity = heap->capacity;
+    temp_heap.handle_counter = heap->handle_counter;
+    temp_heap.table = am_map_create(alloc, count > 0 ? count : 1);
+    if (!temp_heap.table) {
+        free(entries);
+        return SIZE_MAX;
+    }
+    temp_heap.metadata = NULL;
+
+    for (size_t i = 0; i < count; i++) {
+        am_map_t *m = am_map_set(alloc, temp_heap.table, entries[i].key, entries[i].value);
+        if (!m) {
+            am_map_destroy(alloc, temp_heap.table);
+            free(entries);
+            return SIZE_MAX;
+        }
+        temp_heap.table = m;
+    }
+
+    // 计算heap对象本身的dump大小
+    size_t heap_map_size = am_heap_dump(alloc, &temp_heap, NULL, 0);
+    if (heap_map_size == SIZE_MAX) {
+        am_map_destroy(alloc, temp_heap.table);
+        free(entries);
+        return SIZE_MAX;
+    }
 
     size_t buffer_offset = offset + 16; // 留出两个uint64_t长度字段
     size_t obj_offset = buffer_offset + heap_map_size;
 
-    size_t count = am_map_length(alloc, heap->table);
-    am_heap_entry_t *entries = NULL;
-    if (count > 0) {
-        entries = (am_heap_entry_t *)malloc(count * sizeof(am_heap_entry_t));
-        if (!entries) return SIZE_MAX;
-
-        size_t idx = 0;
-        for (size_t i = 0; i < heap->table->capacity; i++) {
-            am_value_t k = heap->table->slots[i].key;
-            if (k != AM_MAP_KEY_EMPTY && k != AM_MAP_KEY_TOMBSTONE) {
-                entries[idx].key = k;
-                entries[idx].value = heap->table->slots[i].value;
-                entries[idx].slot = &heap->table->slots[i];
-                idx++;
-            }
-        }
-
-        if (idx != count) {
-            free(entries);
-            return SIZE_MAX;
-        }
-
-        qsort(entries, count, sizeof(am_heap_entry_t), am_heap_entry_compare);
-    }
-
     for (size_t i = 0; i < count; i++) {
         am_value_t value = entries[i].value;
-
-        if (!am_value_is_ptr(value)) {
-            free(entries);
-            return SIZE_MAX;
-        }
-
         am_object_t *obj = am_value_to_ptr(value);
         size_t obj_size = SIZE_MAX;
 
@@ -273,11 +293,12 @@ size_t am_heap_deep_dump(am_allocator_t *alloc, am_heap_t *heap, uint8_t *buffer
                 obj_size = am_wstring_dump(alloc, (am_wstring_t *)obj, buffer, obj_offset);
                 break;
             default:
-                free(entries);
-                return SIZE_MAX;
+                obj_size = SIZE_MAX;
+                break;
         }
 
         if (obj_size == SIZE_MAX) {
+            am_map_destroy(alloc, temp_heap.table);
             free(entries);
             return SIZE_MAX;
         }
@@ -285,17 +306,22 @@ size_t am_heap_deep_dump(am_allocator_t *alloc, am_heap_t *heap, uint8_t *buffer
         if (buffer != NULL && offset != SIZE_MAX) {
             // 对象偏移量以deep_dump区域起点为基准，便于整体自描述与重定位
             am_value_t offset_value = am_make_value_of_ptr((am_object_t *)(uintptr_t)(obj_offset - offset));
-            entries[i].slot->value = offset_value;
+            am_map_set(alloc, temp_heap.table, entries[i].key, offset_value);
         }
 
         obj_offset += obj_size;
     }
 
-    if (entries) free(entries);
+    // 将临时heap对象dump到buffer[offset+16]
+    size_t written = am_heap_dump(alloc, &temp_heap, buffer, buffer_offset);
+    if (written != heap_map_size) {
+        am_map_destroy(alloc, temp_heap.table);
+        free(entries);
+        return SIZE_MAX;
+    }
 
-    // 将修改后的heap对象dump到buffer[offset+16]
-    size_t written = am_heap_dump(alloc, heap, buffer, buffer_offset);
-    if (written != heap_map_size) return SIZE_MAX;
+    am_map_destroy(alloc, temp_heap.table);
+    free(entries);
 
     // 写入总字节长度和heap dump长度
     if (buffer != NULL && offset != SIZE_MAX) {

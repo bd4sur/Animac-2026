@@ -13,6 +13,7 @@
 #include "vocab.h"
 #include "heap.h"
 #include "ast.h"
+#include "scope.h"
 #include "parser.h"
 
 
@@ -162,12 +163,6 @@ static void special_app_stack_push(parser_ctx_t *ctx, int state) {
 static void special_app_stack_pop(parser_ctx_t *ctx) {
     if (!ctx || ctx->special_app_stack_length == 0) return;
     ctx->special_app_stack_length--;
-}
-
-
-static am_handle_t lambda_stack_top(parser_ctx_t *ctx) {
-    if (!ctx || ctx->lambda_stack_length == 0) return AM_HANDLE_NULL;
-    return ctx->lambda_stack[ctx->lambda_stack_length - 1];
 }
 
 
@@ -1020,19 +1015,10 @@ static size_t parse_identifier(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Id
                         free(var_text);
                     }
                     else {
+                        // 普通变量：解析阶段保持原 varid，var_type 保持 OLD，
+                        // Alpha-renaming 在后续独立的 ARN 阶段完成
+                        value = am_make_value_of_varid((am_varid_t)tok->id);
                         free(var_text);
-                        // 对普通变量进行 Alpha-renaming：根据当前 lambda 作用域生成唯一变量名
-                        am_handle_t lambda_handle = lambda_stack_top(ctx);
-                        if (lambda_handle == AM_HANDLE_NULL) {
-                            parser_set_error(ctx, L"identifier outside lambda scope");
-                            return index;
-                        }
-                        am_varid_t new_varid = am_ast_make_unique_variable(ctx->ast, (am_varid_t)tok->id, lambda_handle);
-                        if (new_varid == SIZE_MAX) {
-                            parser_set_error(ctx, L"failed to create unique variable");
-                            return index;
-                        }
-                        value = am_make_value_of_varid(new_varid);
                     }
                 }
             }
@@ -1148,6 +1134,437 @@ static void preprocess_analysis(parser_ctx_t *ctx) {
     if (!ctx || !ctx->ast) return;
     preprocess_iter_data_t data = { ctx };
     am_heap_iter(ctx->ast->alloc, ctx->ast->nodes, preprocess_iter_cb, &data);
+}
+
+
+// ===============================================================================
+// Alpha-renaming（变量换名）
+// ===============================================================================
+
+// 第一阶段：递归下降解析完成后，所有变量保持原名（OLD）。
+// 第二阶段 ARN 再分两趟扫描：
+//   Pass 1: 扫描整棵 AST，构建词法作用域 scope 的树状嵌套关系，并在 scope 上挂载 old 变量；
+//   Pass 2: 根据 scope 嵌套关系，执行 ARN，并在 ast->var_arn_mapping 中登记新旧 varid 映射。
+
+
+typedef struct {
+    parser_ctx_t *ctx;
+    am_handle_t *handles;
+    size_t count;
+    size_t capacity;
+} arn_lambda_collect_t;
+
+
+typedef struct {
+    am_varid_t varid;
+    am_handle_t lambda_handle;
+} arn_define_entry_t;
+
+
+typedef struct {
+    parser_ctx_t *ctx;
+    arn_define_entry_t *entries;
+    size_t count;
+    size_t capacity;
+} arn_define_collect_t;
+
+
+typedef struct {
+    parser_ctx_t *ctx;
+} arn_rename_iter_t;
+
+
+static void arn_free_lambda_collect(arn_lambda_collect_t *data) {
+    if (!data) return;
+    if (data->handles) {
+        free(data->handles);
+        data->handles = NULL;
+    }
+    data->count = 0;
+    data->capacity = 0;
+}
+
+
+static void arn_free_define_collect(arn_define_collect_t *data) {
+    if (!data) return;
+    if (data->entries) {
+        free(data->entries);
+        data->entries = NULL;
+    }
+    data->count = 0;
+    data->capacity = 0;
+}
+
+
+// Pass 1-1: 收集所有 lambda 节点把柄
+static void arn_collect_lambda_cb(am_handle_t handle, am_value_t value, void *user_data) {
+    arn_lambda_collect_t *data = (arn_lambda_collect_t *)user_data;
+    parser_ctx_t *ctx = data->ctx;
+
+    if (ctx->error) return;
+    if (!am_value_is_ptr(value)) return;
+
+    am_object_t *obj = am_value_to_ptr(value);
+    if (obj->type != AM_OBJECT_TYPE_LIST) return;
+
+    am_list_t *lst = (am_list_t *)obj;
+    if (lst->type != AM_LIST_TYPE_LAMBDA) return;
+
+    if (data->count >= data->capacity) {
+        size_t new_cap = data->capacity ? data->capacity * 2 : 16;
+        am_handle_t *new_arr = (am_handle_t *)realloc(data->handles, new_cap * sizeof(am_handle_t));
+        if (!new_arr) {
+            parser_set_error(ctx, L"out of memory collecting lambda handles");
+            return;
+        }
+        data->handles = new_arr;
+        data->capacity = new_cap;
+    }
+    data->handles[data->count++] = handle;
+}
+
+
+// Pass 1-2: 为每个 lambda 节点创建对应的 scope
+static int32_t arn_create_scopes(parser_ctx_t *ctx, arn_lambda_collect_t *lambdas) {
+    am_ast_t *ast = ctx->ast;
+
+    for (size_t i = 0; i < lambdas->count; i++) {
+        am_handle_t lambda_handle = lambdas->handles[i];
+        am_value_t node_val = am_ast_get_node(ast, lambda_handle);
+        if (!am_value_is_ptr(node_val)) return -1;
+
+        am_list_t *lst = (am_list_t *)am_value_to_ptr(node_val);
+        if (lst->type != AM_LIST_TYPE_LAMBDA) return -1;
+
+        am_handle_t parent_lambda = AM_HANDLE_NULL;
+        am_handle_t parent_scope = AM_HANDLE_NULL;
+        if (lst->parent != AM_TOP_NODE_HANDLE) {
+            parent_lambda = am_ast_find_nearest_lambda_handle(ast, lst->parent);
+            if (parent_lambda != AM_HANDLE_NULL) {
+                parent_scope = am_ast_get_scope(ast, parent_lambda);
+            }
+        }
+
+        am_scope_t *scope = am_scope_create(ast->alloc, parent_scope, parent_lambda, lambda_handle, 16);
+        if (!scope) return -1;
+
+        am_handle_t scope_handle = am_heap_alloc_handle(ast->alloc, ast->nodes);
+        if (scope_handle == AM_HANDLE_NULL) {
+            am_scope_destroy(ast->alloc, scope);
+            return -1;
+        }
+
+        if (am_heap_set(ast->alloc, ast->nodes, scope_handle,
+                        am_make_value_of_ptr((am_object_t *)scope)) != 0) {
+            am_scope_destroy(ast->alloc, scope);
+            return -1;
+        }
+
+        if (am_ast_set_scope(ast, lambda_handle, scope_handle) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+
+// Pass 1-3: 将 lambda 的 parameters 注册到对应 scope
+static int32_t arn_add_lambda_params_to_scope(parser_ctx_t *ctx, am_handle_t lambda_handle) {
+    am_ast_t *ast = ctx->ast;
+    am_value_t node_val = am_ast_get_node(ast, lambda_handle);
+    if (!am_value_is_ptr(node_val)) return -1;
+
+    am_list_t *lst = (am_list_t *)am_value_to_ptr(node_val);
+    if (lst->type != AM_LIST_TYPE_LAMBDA) return -1;
+
+    am_handle_t scope_handle = am_ast_get_scope(ast, lambda_handle);
+    if (scope_handle == AM_HANDLE_NULL) return -1;
+
+    am_value_t scope_val = am_ast_get_node(ast, scope_handle);
+    if (!am_value_is_ptr(scope_val)) return -1;
+
+    am_scope_t *scope = (am_scope_t *)am_value_to_ptr(scope_val);
+
+    size_t n_param = 0;
+    if (lst->length >= 2) {
+        am_value_t n_param_val = am_list_get(ast->alloc, lst, 1);
+        if (am_value_is_uint(n_param_val)) n_param = (size_t)am_value_to_uint(n_param_val);
+    }
+
+    for (size_t i = 0; i < n_param; i++) {
+        am_value_t param = am_list_get(ast->alloc, lst, 2 + i);
+        if (!am_value_is_varid(param)) continue;
+
+        am_scope_t *new_scope = am_scope_add_var(ast->alloc, scope, am_value_to_varid(param), AM_VALUE_NULL);
+        if (!new_scope) return -1;
+
+        if (new_scope != scope) {
+            if (am_heap_set(ast->alloc, ast->nodes, scope_handle,
+                            am_make_value_of_ptr((am_object_t *)new_scope)) != 0) {
+                return -1;
+            }
+            scope = new_scope;
+        }
+    }
+
+    return 0;
+}
+
+
+// Pass 1-4: 收集所有 (define var ...) 定义的变量
+static void arn_collect_defines_cb(am_handle_t handle, am_value_t value, void *user_data) {
+    (void)handle;
+    arn_define_collect_t *data = (arn_define_collect_t *)user_data;
+    parser_ctx_t *ctx = data->ctx;
+    am_ast_t *ast = ctx->ast;
+
+    if (ctx->error) return;
+    if (!am_value_is_ptr(value)) return;
+
+    am_object_t *obj = am_value_to_ptr(value);
+    if (obj->type != AM_OBJECT_TYPE_LIST) return;
+
+    am_list_t *lst = (am_list_t *)obj;
+    if (lst->type != AM_LIST_TYPE_APPLICATION || lst->length < 2) return;
+
+    am_value_t first = am_list_get(ast->alloc, lst, 0);
+    if (!am_value_is_symbol(first)) return;
+    if (am_value_to_symbol(first) != am_value_to_symbol(AM_VALUE_KW_define)) return;
+
+    am_value_t second = am_list_get(ast->alloc, lst, 1);
+    if (!am_value_is_varid(second)) return;
+
+    am_handle_t parent_handle = (lst->parent != AM_TOP_NODE_HANDLE) ? lst->parent : AM_HANDLE_NULL;
+    am_handle_t lambda_handle = AM_HANDLE_NULL;
+    if (parent_handle != AM_HANDLE_NULL) {
+        lambda_handle = am_ast_find_nearest_lambda_handle(ast, parent_handle);
+    }
+    if (lambda_handle == AM_HANDLE_NULL) {
+        parser_set_error(ctx, L"define outside lambda scope");
+        return;
+    }
+
+    if (data->count >= data->capacity) {
+        size_t new_cap = data->capacity ? data->capacity * 2 : 16;
+        arn_define_entry_t *new_arr = (arn_define_entry_t *)realloc(data->entries,
+                                                                     new_cap * sizeof(arn_define_entry_t));
+        if (!new_arr) {
+            parser_set_error(ctx, L"out of memory collecting defines");
+            return;
+        }
+        data->entries = new_arr;
+        data->capacity = new_cap;
+    }
+    data->entries[data->count].varid = am_value_to_varid(second);
+    data->entries[data->count].lambda_handle = lambda_handle;
+    data->count++;
+}
+
+
+// Pass 1-5: 将 define 的变量注册到所在 lambda 的 scope
+static int32_t arn_add_defines_to_scope(parser_ctx_t *ctx, arn_define_collect_t *defines) {
+    am_ast_t *ast = ctx->ast;
+
+    for (size_t i = 0; i < defines->count; i++) {
+        am_handle_t scope_handle = am_ast_get_scope(ast, defines->entries[i].lambda_handle);
+        if (scope_handle == AM_HANDLE_NULL) return -1;
+
+        am_value_t scope_val = am_ast_get_node(ast, scope_handle);
+        if (!am_value_is_ptr(scope_val)) return -1;
+
+        am_scope_t *scope = (am_scope_t *)am_value_to_ptr(scope_val);
+
+        am_scope_t *new_scope = am_scope_add_var(ast->alloc, scope,
+                                                  defines->entries[i].varid, AM_VALUE_NULL);
+        if (!new_scope) return -1;
+
+        if (new_scope != scope) {
+            if (am_heap_set(ast->alloc, ast->nodes, scope_handle,
+                            am_make_value_of_ptr((am_object_t *)new_scope)) != 0) {
+                return -1;
+            }
+            scope = new_scope;
+        }
+    }
+
+    return 0;
+}
+
+
+// Pass 2: 判断某个 varid 是否属于不参与 ARN 的特殊类型
+static int arn_should_skip_var_type(am_ast_t *ast, am_varid_t varid) {
+    am_value_t type_val = am_list_get(ast->alloc, ast->var_type, (size_t)varid);
+    if (!am_value_is_uint(type_val)) return 1;
+
+    am_uint_t t = am_value_to_uint(type_val);
+    return (t == AM_VAR_TYPE_IMPORT_ALIAS ||
+            t == AM_VAR_TYPE_NATIVE_ID ||
+            t == AM_VAR_TYPE_IMPORT_REF ||
+            t == AM_VAR_TYPE_NATIVE_REF ||
+            t == AM_VAR_TYPE_EXT_REF);
+}
+
+
+// Pass 2: 将 list 中指定位置的变量替换为 ARN 后的新 varid
+static void arn_rename_varid(parser_ctx_t *ctx, am_handle_t node_handle, am_list_t *lst,
+                              size_t index, int is_parameter) {
+    am_ast_t *ast = ctx->ast;
+    am_value_t child = am_list_get(ast->alloc, lst, index);
+    if (!am_value_is_varid(child)) return;
+
+    am_varid_t old_varid = am_value_to_varid(child);
+
+    if (arn_should_skip_var_type(ast, old_varid)) return;
+
+    am_handle_t lambda_handle = AM_HANDLE_NULL;
+    if (is_parameter) {
+        lambda_handle = node_handle;
+    } else {
+        lambda_handle = am_ast_find_var_lambda_handle(ast, old_varid, node_handle);
+    }
+
+    if (lambda_handle == AM_HANDLE_NULL) {
+        // 未定义变量：全局内置变量保持原 varid；其余保持原 varid（宽松语义，兼容自由变量）
+        wchar_t *var_str = am_vocab_get(ast->alloc, ast->var_vocab, &old_varid);
+        if (var_str && is_global_builtin_variable(var_str)) {
+            return;
+        }
+        return;
+    }
+
+    am_varid_t new_varid = am_ast_make_unique_variable(ast, old_varid, lambda_handle);
+    if (new_varid == SIZE_MAX) {
+        parser_set_error(ctx, L"failed to create unique variable");
+        return;
+    }
+
+    if (am_list_set(ast->alloc, lst, index, am_make_value_of_varid(new_varid)) != 0) {
+        parser_set_error(ctx, L"failed to set renamed varid");
+        return;
+    }
+
+    am_map_t *map = am_map_set(ast->alloc, ast->var_arn_mapping,
+                                am_make_value_of_varid(new_varid),
+                                am_make_value_of_varid(old_varid));
+    if (!map) {
+        parser_set_error(ctx, L"failed to set var_arn_mapping");
+        return;
+    }
+    ast->var_arn_mapping = map;
+}
+
+
+// Pass 2: 处理 lambda 节点（parameters 与 body 中出现的变量）
+static void arn_rename_lambda(parser_ctx_t *ctx, am_handle_t handle, am_list_t *lst) {
+    size_t n_param = 0;
+    if (lst->length >= 2) {
+        am_value_t n_param_val = am_list_get(ctx->ast->alloc, lst, 1);
+        if (am_value_is_uint(n_param_val)) n_param = (size_t)am_value_to_uint(n_param_val);
+    }
+
+    for (size_t i = 0; i < n_param; i++) {
+        arn_rename_varid(ctx, handle, lst, 2 + i, 1);
+        if (ctx->error) return;
+    }
+
+    for (size_t i = 2 + n_param; i < lst->length; i++) {
+        am_value_t child = am_list_get(ctx->ast->alloc, lst, i);
+        if (am_value_is_varid(child)) {
+            arn_rename_varid(ctx, handle, lst, i, 0);
+            if (ctx->error) return;
+        }
+    }
+}
+
+
+// Pass 2: 处理 application / unquote / quasiquote 节点
+static void arn_rename_application(parser_ctx_t *ctx, am_handle_t handle, am_list_t *lst) {
+    am_ast_t *ast = ctx->ast;
+    if (lst->length == 0) return;
+
+    am_value_t first = am_list_get(ast->alloc, lst, 0);
+    if (am_value_is_symbol(first) &&
+        (am_value_to_symbol(first) == am_value_to_symbol(AM_VALUE_KW_import) ||
+         am_value_to_symbol(first) == am_value_to_symbol(AM_VALUE_KW_native))) {
+        return;
+    }
+
+    for (size_t i = 0; i < lst->length; i++) {
+        am_value_t child = am_list_get(ast->alloc, lst, i);
+        if (am_value_is_varid(child)) {
+            arn_rename_varid(ctx, handle, lst, i, 0);
+            if (ctx->error) return;
+        }
+    }
+}
+
+
+// Pass 2: 节点遍历回调
+static void arn_rename_iter_cb(am_handle_t handle, am_value_t value, void *user_data) {
+    arn_rename_iter_t *data = (arn_rename_iter_t *)user_data;
+    parser_ctx_t *ctx = data->ctx;
+
+    if (ctx->error) return;
+    if (!am_value_is_ptr(value)) return;
+
+    am_object_t *obj = am_value_to_ptr(value);
+    if (obj->type != AM_OBJECT_TYPE_LIST) return;
+
+    am_list_t *lst = (am_list_t *)obj;
+    if (lst->type == AM_LIST_TYPE_LAMBDA) {
+        arn_rename_lambda(ctx, handle, lst);
+    }
+    else if (lst->type == AM_LIST_TYPE_APPLICATION ||
+             lst->type == AM_LIST_TYPE_QUASIQUOTE ||
+             lst->type == AM_LIST_TYPE_UNQUOTE) {
+        arn_rename_application(ctx, handle, lst);
+    }
+}
+
+
+static void alpha_rename_analysis(parser_ctx_t *ctx) {
+    if (!ctx || !ctx->ast) return;
+    am_ast_t *ast = ctx->ast;
+
+    arn_lambda_collect_t lambdas = { ctx, NULL, 0, 0 };
+    arn_define_collect_t defines = { ctx, NULL, 0, 0 };
+
+    // Pass 1-1: 收集所有 lambda handle
+    am_heap_iter(ast->alloc, ast->nodes, arn_collect_lambda_cb, &lambdas);
+    if (ctx->error) goto arn_cleanup;
+
+    // Pass 1-2: 为每个 lambda 创建 scope
+    if (arn_create_scopes(ctx, &lambdas) != 0) {
+        if (!ctx->error) parser_set_error(ctx, L"failed to create scopes");
+        goto arn_cleanup;
+    }
+
+    // Pass 1-3: 注册 lambda parameters
+    for (size_t i = 0; i < lambdas.count; i++) {
+        if (arn_add_lambda_params_to_scope(ctx, lambdas.handles[i]) != 0) {
+            if (!ctx->error) parser_set_error(ctx, L"failed to add lambda params to scope");
+            goto arn_cleanup;
+        }
+    }
+
+    // Pass 1-4: 收集 define
+    am_heap_iter(ast->alloc, ast->nodes, arn_collect_defines_cb, &defines);
+    if (ctx->error) goto arn_cleanup;
+
+    // Pass 1-5: 注册 define 变量
+    if (arn_add_defines_to_scope(ctx, &defines) != 0) {
+        if (!ctx->error) parser_set_error(ctx, L"failed to add defines to scope");
+        goto arn_cleanup;
+    }
+
+    // Pass 2: 执行变量换名
+    arn_rename_iter_t rename_data = { ctx };
+    am_heap_iter(ast->alloc, ast->nodes, arn_rename_iter_cb, &rename_data);
+
+arn_cleanup:
+    arn_free_lambda_collect(&lambdas);
+    arn_free_define_collect(&defines);
 }
 
 
@@ -1534,6 +1951,19 @@ am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path
 
     // 引用模块别名（alias）和外部引用（ext_ref）更名
     alias_rename_analysis(&ctx);
+    if (ctx.error) {
+        fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
+        free(ctx.node_stack);
+        free(ctx.state_stack);
+        free(ctx.lambda_stack);
+        free(ctx.special_app_stack);
+        am_ast_destroy(ast);
+        am_free(alloc, tokens);
+        return NULL;
+    }
+
+    // Alpha-renaming（两阶段变量换名）
+    alpha_rename_analysis(&ctx);
     if (ctx.error) {
         fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
         free(ctx.node_stack);

@@ -1322,6 +1322,65 @@ int32_t am_compile_cond(am_compiler_ctx_t *ctx, am_handle_t hd) {
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+当前的parser实现（主要集中在 @src/parser.c ），在Alpha-renaming（以下简称ARN）上有根本错误。
+
+当前的实现中，在 @src/parser.c 的 parse_identifier 函数中，错误地利用变量所处的lambda节点的handle作为ARN的全局唯一索引（通过调用am_ast_make_unique_variable来构造），试图在递归下降解析阶段就一次性完成ARN，这是完全错误的。变量ARN的全局唯一索引，应当是其**定义**所在的lambda节点的handle，而非其“出现”所在的lambda节点。所谓的“定义所在的lambda节点”，指的是：要么是出现在parameters列表中，要么在这一级lambda的直接body中被define。
+
+正确的实现应当是两阶段的，即：第一步是递归下降解析阶段，所有变量保持原名，其var_type设置为OLD。接下来的第二步是ARN，而ARN又分成两个子pass：1是扫描整棵AST，构建词法作用域即scope的树状嵌套关系，并在scope上挂载old变量；2是根据scope嵌套关系，执行ARN，并在ast->var_arn_mapping中登记新旧varid的映射关系。
+
+请你根据上面的描述，参考 @typescript/src/Analyser.ts 中的正确实现，利用 @include/scope.h 和 @src/scope.c 中的相关定义，修正 @src/parser.c 中现有的错误实现，并更新测试用例为以下用例（Man-or-boy Test）：
+
+```
+(define A
+  (lambda (k x1 x2 x3 x4 x5)
+      (define B
+        (lambda ()
+            (set! k (- k 1))
+            (A k B x1 x2 x3 x4)))
+      (if (<= k 0)
+          (+ (x4) (x5))
+          (B))))
+
+(define thunk_1  (lambda () 1))
+(define thunk_m1 (lambda () -1))
+(define thunk_0  (lambda () 0))
+
+(display (A 10 thunk_1 thunk_m1 thunk_m1 thunk_1 thunk_0))
+```
+
+请你完成上述修正。你可以使用WSL进行编译构建和测试。
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
 
 ---------------------
 
