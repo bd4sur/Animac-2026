@@ -1354,6 +1354,13 @@ int32_t am_compile_cond(am_compiler_ctx_t *ctx, am_handle_t hd) {
 
 ---------------------
 
+请先阅读 @doc/AGENTS.md 。
+
+在 @src/compiler.c 的 compile_begin 函数中，该函数假设(begin ...)的每个子表达式都向栈内push一个值，因此结束后pop掉。而问题在于不是所有的表达式都会向栈内push一个值。你怎么看这个问题？
+
+我的疑问：是否必须假设所有的表达式都要往栈里push值，换句话说，执行表达式必有结果（哪怕是#undefined），结果必定压栈。
+
+不要修改任何代码。
 
 ---------------------
 

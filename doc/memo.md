@@ -8,6 +8,8 @@ TODO eq? eqv? equal? +typeof
 
 TODO 长远：不许使用系统malloc
 
+TODO 表达式压栈和begin的pop问题
+
 TODO parser创建wstring对象时要先去掉两端的双引号
 
 TODO 在abcdefg用例中，似乎有把关键字塞进变量表的问题。

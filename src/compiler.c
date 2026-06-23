@@ -564,6 +564,7 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
 // Lambda 编译
 // ===============================================================================
 
+// TODO 处理pop问题
 static int32_t compile_lambda(am_compiler_ctx_t *ctx, am_handle_t handle) {
     am_value_t node_val = am_ast_get_node(ctx->ast, handle);
     if (!am_value_is_ptr(node_val)) return -1;
@@ -685,6 +686,7 @@ static int32_t compile_set(am_compiler_ctx_t *ctx, am_handle_t handle) {
 
 
 // 编译begin节点：依次求值并保留最后一个表达式的结果
+// TODO 处理pop问题
 static int32_t compile_begin(am_compiler_ctx_t *ctx, am_handle_t handle) {
     am_value_t node_val = am_ast_get_node(ctx->ast, handle);
     if (!am_value_is_ptr(node_val)) return -1;
