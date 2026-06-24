@@ -1048,8 +1048,8 @@ static int32_t op_fork(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
 static int32_t op_display(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)operand;
     am_value_t content = am_process_pop_operand(proc);
-    wchar_t buf[256];
-    value_to_wchar_buf(proc, content, buf, 256);
+    wchar_t buf[1024];
+    value_to_wchar_buf(proc, content, buf, 1024);
     am_runtime_output(rt, buf);
     am_process_step(proc);
     return 0;

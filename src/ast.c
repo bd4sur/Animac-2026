@@ -976,14 +976,15 @@ am_handle_t am_ast_make_wstring_node(am_ast_t *ast, am_token_t *str_token) {
     am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->nodes);
     if (handle == AM_HANDLE_NULL) return AM_HANDLE_NULL;
 
-    // 从token指示的位置截取字符串（包含引号，与TS行为一致）
+    // 从token指示的位置截取字符串（去掉两侧引号）
     size_t len = str_token->length;
+    if (len >= 2) len -= 2;
     wchar_t *text = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
     if (!text) {
         am_heap_free_handle(ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
-    wcsncpy(text, &ast->code[str_token->index], len);
+    wcsncpy(text, &ast->code[str_token->index + 1], len);
     text[len] = L'\0';
 
     am_wstring_t *ws = am_wstring_create(ast->alloc, text, len);
