@@ -97,6 +97,13 @@ Analyser需要对AST做两趟扫描。分别是“词法作用域分析”和“
 am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path);
 
 
+// 对 AST 执行整体的尾位置分析，将处于尾位置的 application 节点把柄记录到 ast->tailcall_handles。
+// 通常在 am_link 完成所有模块合并后调用；也可在独立使用 am_parser 后手动调用。
+// 调用前会清空已有的 tailcall_handles。
+// 成功返回 0，失败返回 -1。
+int32_t am_parser_tail_call_analysis(am_ast_t *ast);
+
+
 #ifdef __cplusplus
 }
 #endif

@@ -475,7 +475,7 @@ static void test_node_to_string(void) {
     assert(wcsstr(s, L"(lambda (") != NULL);
     assert(wcsstr(s, L"(define ") != NULL);
     assert(wcsstr(s, L"(+ ") != NULL);
-    assert(wcsstr(s, L"'(a b)") != NULL);
+    assert(wcsstr(s, L"'('a 'b)") != NULL);
     assert(wcsstr(s, L"#t") != NULL);
     assert(wcsstr(s, L"\"hi\"") != NULL);
 
@@ -905,6 +905,7 @@ static void test_parse_tail_call_analysis(void) {
     wchar_t *code = L"((lambda () (begin (display 1) (display 2))))";
     am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
+    assert(am_parser_tail_call_analysis(ast) == 0);
 
     am_handle_t top_app = am_ast_get_top_node_handle(ast);
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);

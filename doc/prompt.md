@@ -1364,9 +1364,47 @@ int32_t am_compile_cond(am_compiler_ctx_t *ctx, am_handle_t hd) {
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+请你在 @src/object.c 和 @include/object.h 中，实现以下对象头元数据操作。
+
+```
+// 功能说明：获取对象“静态”属性值。是静态则返回0，不是静态则返回-1。
+// 实现说明：uint32_t obj->base.header 的最低位是static标识。1为static，0为非static。
+int32_t am_object_check_static(am_object_t *obj);
+
+// 功能说明：设置对象“静态”属性值。is_static是静态则输入0，不是静态则输入-1。成功返回0，失败返回-1。
+// 实现说明：uint32_t obj->base.header 的最低位是static标识。1为static，0为非static。
+int32_t am_object_set_static(am_object_t *obj, int32_t is_static);
+
+// 功能说明：获取对象“保持存活”属性值。是则返回0，不是则返回-1。
+// 实现说明：uint32_t obj->base.header 的从LSB倒数第二位是keepalive标识。1为keepalive，0为非keepalive。
+int32_t am_object_check_keepalive(am_object_t *obj);
+
+// 功能说明：设置对象“保持存活”属性值。is_keepalive是“保持存活”则输入0，不是“保持存活”则输入-1。成功返回0，失败返回-1。
+// 实现说明：uint32_t obj->base.header 的从LSB倒数第二位是keepalive标识。1为keepalive，0为非keepalive。
+int32_t am_object_set_keepalive(am_object_t *obj, int32_t is_keepalive);
+
+// 功能说明：获取对象“存活”状态值，用于GC。是存活则返回0，不是存活则返回-1。
+// 实现说明：uint32_t obj->base.gcmark 的最高位（MSB）是alive标识。1为alive，0为非alive。
+int32_t am_object_check_alive(am_object_t *obj);
+
+// 功能说明：设置对象“存活”状态值，用于GC。is_alive是“存活”则输入0，不是“存活”则输入-1。成功返回0，失败返回-1。
+// 实现说明：uint32_t obj->base.gcmark 的最高位（MSB）是alive标识。1为alive，0为非alive。
+int32_t am_object_set_alive(am_object_t *obj, int32_t is_alive);
+```
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+当前的parser实现中（ @src/parser.c ），am_parser 的最后一步是尾位置分析。然而，在 @src/linker.c 的am_link处理过之后，AST融合前后的尾位置分析结果可能发生变化。因此，需要对链接融合后的AST进行整体的尾位置分析。
+
+我要求你去掉 am_parser 最后一步的尾位置分析，转而将其放到am_link融合所有AST之后的位置。实现层面可能会比较不优雅，例如 @src/parser.c 的 tail_call_analysis 依赖于封装好的parser的ctx。请你仔细考虑如何做好封装，尽量优雅实现。
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

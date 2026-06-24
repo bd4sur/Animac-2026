@@ -589,6 +589,10 @@ am_ast_t *am_link(am_ast_t *main_ast, wchar_t *base_dir) {
 
     // 只有一个模块时无需拓扑排序与合并
     if (ctx->module_counter == 1) {
+        if (am_parser_tail_call_analysis(main_ast) != 0) {
+            linker_ctx_destroy(ctx);
+            return NULL;
+        }
         linker_ctx_destroy(ctx);
         return main_ast;
     }
@@ -609,6 +613,13 @@ am_ast_t *am_link(am_ast_t *main_ast, wchar_t *base_dir) {
             linker_ctx_destroy(ctx);
             return NULL;
         }
+    }
+
+    // 模块合并会改变 AST 结构，需要重新进行整体的尾位置分析
+    if (am_parser_tail_call_analysis(global_ast) != 0) {
+        free(sorted);
+        linker_ctx_destroy(ctx);
+        return NULL;
     }
 
     free(sorted);

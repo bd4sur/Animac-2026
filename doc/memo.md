@@ -8,6 +8,10 @@ TODO eq? eqv? equal? +typeof
 
 TODO 长远：不许使用系统malloc
 
+TODO 改进TPV格式：利用NaN
+
+TODO 虚拟机中央switch性能优化（计算跳转、基于profiling的优化等）
+
 TODO 表达式压栈和begin的pop问题
 
 TODO parser创建wstring对象时要先去掉两端的双引号

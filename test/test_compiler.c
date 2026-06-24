@@ -271,6 +271,7 @@ static void test_compiler_basic(void) {
         fprintf(stderr, "Parser failed\n");
         return;
     }
+    am_parser_tail_call_analysis(ast);
 
     printf("=== AST ===\n");
     am_debug_ast_print_to_stdout(ast);

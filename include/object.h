@@ -286,6 +286,28 @@ typedef struct am_object_t {
 
 
 ///////////////////////////////////////////
+// 对象头元数据操作
+///////////////////////////////////////////
+
+// 获取/设置对象“静态”属性（header最低位，1为static，0为非static）
+// 是静态则返回/输入0，不是静态则返回/输入-1。
+int32_t am_object_check_static(am_object_t *obj);
+int32_t am_object_set_static(am_object_t *obj, int32_t is_static);
+
+// 获取/设置对象“保持存活”属性（header从LSB倒数第二位，1为keepalive，0为非keepalive）
+// 是“保持存活”则返回/输入0，不是“保持存活”则返回/输入-1。
+int32_t am_object_check_keepalive(am_object_t *obj);
+int32_t am_object_set_keepalive(am_object_t *obj, int32_t is_keepalive);
+
+// 获取/设置对象“存活”状态，用于GC（gcmark最高位，1为alive，0为非alive）
+// 是“存活”则返回/输入0，不是“存活”则返回/输入-1。
+int32_t am_object_check_alive(am_object_t *obj);
+int32_t am_object_set_alive(am_object_t *obj, int32_t is_alive);
+
+
+
+
+///////////////////////////////////////////
 // WString对象
 ///////////////////////////////////////////
 
