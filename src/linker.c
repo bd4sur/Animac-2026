@@ -564,6 +564,39 @@ int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx, am_ast_t *merged_a
 
 
 // ===============================================================================
+// 静态对象标记
+// ===============================================================================
+
+typedef struct {
+    int32_t error;
+} mark_static_ctx_t;
+
+
+static void mark_node_static_cb(am_handle_t handle, am_value_t value, void *user_data) {
+    (void)handle;
+    mark_static_ctx_t *ms = (mark_static_ctx_t *)user_data;
+    if (ms->error) return;
+    if (!am_value_is_ptr(value)) return;
+
+    am_object_t *obj = am_value_to_ptr(value);
+    if (am_object_set_static(obj, 0) != 0) {
+        ms->error = -1;
+    }
+}
+
+
+// 将 AST->nodes 中的所有对象标记为 static。
+// 链接阶段的所有对象均为静态对象（永生对象）。
+// 成功返回 0，失败返回 -1。
+static int32_t linker_mark_all_nodes_static(am_ast_t *ast) {
+    if (!ast || !ast->alloc || !ast->nodes) return -1;
+    mark_static_ctx_t ms = { 0 };
+    am_heap_iter(ast->alloc, ast->nodes, mark_node_static_cb, &ms);
+    return ms.error;
+}
+
+
+// ===============================================================================
 // 链接器入口
 // ===============================================================================
 
@@ -593,6 +626,10 @@ am_ast_t *am_link(am_ast_t *main_ast, wchar_t *base_dir) {
             linker_ctx_destroy(ctx);
             return NULL;
         }
+        if (linker_mark_all_nodes_static(main_ast) != 0) {
+            linker_ctx_destroy(ctx);
+            return NULL;
+        }
         linker_ctx_destroy(ctx);
         return main_ast;
     }
@@ -617,6 +654,13 @@ am_ast_t *am_link(am_ast_t *main_ast, wchar_t *base_dir) {
 
     // 模块合并会改变 AST 结构，需要重新进行整体的尾位置分析
     if (am_parser_tail_call_analysis(global_ast) != 0) {
+        free(sorted);
+        linker_ctx_destroy(ctx);
+        return NULL;
+    }
+
+    // AST 解析得到的所有对象都是静态（永生）对象
+    if (linker_mark_all_nodes_static(global_ast) != 0) {
         free(sorted);
         linker_ctx_destroy(ctx);
         return NULL;
