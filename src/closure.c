@@ -169,6 +169,11 @@ am_obj_closure_t *am_closure_init_bound_var(am_allocator_t *alloc, am_obj_closur
     if (binding) {
         binding->value = value;
         binding->dirty_flag = 0;
+        // 同一 varid 的自由变量绑定也清除脏标记，保持该变量脏标记一致
+        am_binding_t *free_binding = am_closure_find(closure, variable, AM_BINDING_FREE);
+        if (free_binding) {
+            free_binding->dirty_flag = 0;
+        }
         return closure;
     }
 
@@ -180,6 +185,11 @@ am_obj_closure_t *am_closure_init_bound_var(am_allocator_t *alloc, am_obj_closur
     closure->bindings[closure->length].dirty_flag = 0;
     closure->bindings[closure->length].value = value;
     closure->length++;
+    // 若已存在同 varid 的自由变量绑定，也将其脏标记清除
+    am_binding_t *free_binding = am_closure_find(closure, variable, AM_BINDING_FREE);
+    if (free_binding) {
+        free_binding->dirty_flag = 0;
+    }
     return closure;
 }
 
@@ -190,17 +200,25 @@ am_obj_closure_t *am_closure_set_bound_var(am_allocator_t *alloc, am_obj_closure
     if (binding) {
         binding->value = value;
         binding->dirty_flag = 1;
-        return closure;
+    }
+    else {
+        closure = am_closure_grow_if_needed(alloc, closure);
+        if (!closure) return NULL;
+
+        closure->bindings[closure->length].varid = variable;
+        closure->bindings[closure->length].type = AM_BINDING_BOUND;
+        closure->bindings[closure->length].dirty_flag = 1;
+        closure->bindings[closure->length].value = value;
+        closure->length++;
     }
 
-    closure = am_closure_grow_if_needed(alloc, closure);
-    if (!closure) return NULL;
+    // 同一 varid 的自由变量绑定也置脏，保持变量级脏标记一致
+    am_binding_t *free_binding = am_closure_find(closure, variable, AM_BINDING_FREE);
+    if (free_binding) {
+        free_binding->dirty_flag = 1;
+        free_binding->value = value;
+    }
 
-    closure->bindings[closure->length].varid = variable;
-    closure->bindings[closure->length].type = AM_BINDING_BOUND;
-    closure->bindings[closure->length].dirty_flag = 1;
-    closure->bindings[closure->length].value = value;
-    closure->length++;
     return closure;
 }
 
@@ -221,6 +239,10 @@ am_obj_closure_t *am_closure_init_free_var(am_allocator_t *alloc, am_obj_closure
     if (binding) {
         binding->value = value;
         binding->dirty_flag = 0;
+        am_binding_t *bound_binding = am_closure_find(closure, variable, AM_BINDING_BOUND);
+        if (bound_binding) {
+            bound_binding->dirty_flag = 0;
+        }
         return closure;
     }
 
@@ -232,6 +254,10 @@ am_obj_closure_t *am_closure_init_free_var(am_allocator_t *alloc, am_obj_closure
     closure->bindings[closure->length].dirty_flag = 0;
     closure->bindings[closure->length].value = value;
     closure->length++;
+    am_binding_t *bound_binding = am_closure_find(closure, variable, AM_BINDING_BOUND);
+    if (bound_binding) {
+        bound_binding->dirty_flag = 0;
+    }
     return closure;
 }
 
@@ -241,17 +267,25 @@ am_obj_closure_t *am_closure_set_free_var(am_allocator_t *alloc, am_obj_closure_
     if (binding) {
         binding->value = value;
         binding->dirty_flag = 1;
-        return closure;
+    }
+    else {
+        closure = am_closure_grow_if_needed(alloc, closure);
+        if (!closure) return NULL;
+
+        closure->bindings[closure->length].varid = variable;
+        closure->bindings[closure->length].type = AM_BINDING_FREE;
+        closure->bindings[closure->length].dirty_flag = 1;
+        closure->bindings[closure->length].value = value;
+        closure->length++;
     }
 
-    closure = am_closure_grow_if_needed(alloc, closure);
-    if (!closure) return NULL;
+    // 同一 varid 的约束变量绑定也置脏，保持变量级脏标记一致
+    am_binding_t *bound_binding = am_closure_find(closure, variable, AM_BINDING_BOUND);
+    if (bound_binding) {
+        bound_binding->dirty_flag = 1;
+        bound_binding->value = value;
+    }
 
-    closure->bindings[closure->length].varid = variable;
-    closure->bindings[closure->length].type = AM_BINDING_FREE;
-    closure->bindings[closure->length].dirty_flag = 1;
-    closure->bindings[closure->length].value = value;
-    closure->length++;
     return closure;
 }
 

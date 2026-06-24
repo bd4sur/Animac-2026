@@ -1848,6 +1848,102 @@ am_start(rt);
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个正在开发的C语言编写的Scheme解释器。请你通读项目中的C语言实现和TypeScript参考实现，排查当前C语言实现中存在的以下若干问题。
+
+1、比较C语言实现的 @src/process.c 的 am_process_load_from_module ，与参考TS实现中的 @typescript/src/Process.ts 中的 Process.constructor ，检查两者逻辑是否一致，尤其关注为什么在TS实现中构造了顶级闭包，而C语言实现中没有。我怀疑这是个潜在的问题。需要澄清的是：C语言实现的IL代码的标签解析早在编译阶段就已完成，因此am_process_load_from_module不需处理。
+
+2、在 @test/test_runtime.c 中，test_runtime_complex_recursion 用例实际输出与期望输出不符，其他测试用例正常。中，test_runtime_complex_recursion所使用的测试代码是经典的Man-or-Boy测试，用于测试Scheme解释器对于一等函数、词法作用域、闭包、set!、尾调用优化等关键特性的处理是否正确。其Scheme代码如下：
+
+```
+;; Man-or-Boy test
+(define A
+  (lambda (k x1 x2 x3 x4 x5)
+      (define B
+        (lambda ()
+            (set! k (- k 1))
+            (A k B x1 x2 x3 x4)))
+      (if (<= k 0)
+          (+ (x4) (x5))
+          (B))))
+(define thunk_1  (lambda () 1))
+(define thunk_m1 (lambda () -1))
+(define thunk_0  (lambda () 0))
+(display (A 6 thunk_1 thunk_m1 thunk_m1 thunk_1 thunk_0)) ;; 这里的“6”就是MoB的参数
+```
+
+参数设定为6，期望结果是1，即MoB(6)=1，但当前输出结果是2。输入参数之所以选择6，是因为6是第一个非平凡的参数值，开始涉及复杂的嵌套递归调用和链式set!，恰好从6开始出错。而若参数大于等于7，则运行报错，可能与栈深度设置有关，目前暂不理会。作为参考，MoB(5)=0，MoB(4)=1，MoB(3)=0，MoB(2)=-2，MoB(1)=0，这些情况都是平凡情况，现有实现能够输出正确结果。我已经人工确认了compiler输出的中间语言代码是正确的。我要求你排查MoB(6)计算错误的原因。
+
+请你分析上述问题及其可能造成的影响。你可以使用WSL进行编译构建和测试。你可以修改代码、增加调试输出或运用gdb等工具，全面排查代码问题。
+
+回答：
+
+已完成排查和修复。以下是分析结论和改动说明。
+
+## 1. `am_process_load_from_module` 与 TS `Process.constructor` 的对比
+
+| 项目 | TS `Process.constructor` | C `am_process_load_from_module` |
+|---|---|---|
+| 标签解析 | 构造时调用 `LabelAnalysis()`，把 `@label` 解析成指令索引 | C 的编译阶段已经把标签解析成 `iaddr`，所以不需要 |
+| 顶级闭包 | 显式创建 `TOP_NODE_HANDLE` 闭包，作为变量查找链的终点 | 没有显式创建；`current_closure_handle` 初始为 `AM_HANDLE_NULL` |
+| AST/Heap | 直接把 AST nodes 放进 heap | 深拷贝 AST 到进程 heap 并标记为 static |
+
+**这个差异是不是 bug？**
+
+- 不是 MoB 测试失败的原因。
+- C 的“顶级闭包”是惰性地由第一条 `call iaddr_X` 创建的：调用时会生成顶层 lambda 的闭包，并把顶层定义（如 `A`、`thunk_1` 等）存在该闭包里。返回时 `op_return` 把 `current_closure_handle` 恢复为 `NULL`，等效于 TS 恢复为 `TOP_NODE_HANDLE`。
+- 当前实现下，这种差异没有造成功能错误；所有测试都能通过。
+- 不过这是一个架构上的不一致点：如果将来需要在进程启动前就有当前环境（例如在 `call` 之前访问变量、或 continuation 恢复时依赖一个非 `NULL` 的根闭包），可能会出问题。建议后续补上一个显式顶级闭包，但优先级不高。
+
+## 2. MoB(6) 计算错误的原因
+
+### 根因：闭包的脏标记是按 binding 条目维护的，而不是按变量维护
+
+C 实现中，`am_binding_t` 里每个 bound/free 条目都有自己的 `dirty_flag`。当同一个 `varid` 同时存在 free 和 bound 绑定时（这在通过 `loadclosure` / `tailcall label` 创建新闭包再执行 `store` 参数时非常常见），两者的脏标记会不同步。
+
+TS 的 `Closure` 虽然也有 `boundVariables` 和 `freeVariables` 两个 map，但脏标记只有一份（`dirtyFlag[varid]`）。`InitBoundVariable` / `InitFreeVariable` 会清除该变量的脏标记；`SetBoundVariable` / `SetFreeVariable` 会设置该变量的脏标记。
+
+C 的问题场景（以 MoB 为例）：
+
+1. 从 B 尾调用 A 时，`op_call_async` 会创建一个 **新的 A 闭包**，并把当前 B 闭包的所有绑定（包括 free 的 `k`，且是脏的）作为 free 变量复制进去。
+2. 随后 A 执行 `store k`，调用 `am_closure_init_bound_var` 加入 bound `k`，并把 bound 条目的 `dirty_flag` 清 0。
+3. 但 **free `k` 条目的脏标记仍然是 1**。
+4. 当 A 内部的 B 闭包去解析 `k` 时，`am_closure_is_dirty_var` 因为 free 条目脏而返回“脏”，于是总是使用 A 的 bound `k`（最新值）。
+5. 这导致某些本应该使用“创建时快照”的 B 闭包错误地使用了父 A 的最新 `k`，从而多触发了一次递归，最终 MoB(6) 得到 2 而不是 1。
+
+我先用 Python 写了一个严格按 C 语义模拟的解释器，复现了结果 2；再把脏标记改成按变量同步后，结果变为正确的 1，确认了根因。
+
+### 修复
+
+修改 `src/closure.c`，让同一个 `varid` 的所有 bound/free 条目的脏标记保持一致：
+
+- `am_closure_init_bound_var`：初始化/更新 bound 变量时，把同 `varid` 的 free 绑定脏标记也清 0。
+- `am_closure_init_free_var`：初始化/更新 free 变量时，把同 `varid` 的 bound 绑定脏标记也清 0。
+- `am_closure_set_bound_var`：设置 bound 变量时，把同 `varid` 的 free 绑定也置脏，并同步值。
+- `am_closure_set_free_var`：设置 free 变量时，把同 `varid` 的 bound 绑定也置脏，并同步值。
+
+### 测试验证
+
+- `test_runtime_complex_recursion` 现在输出 `1`。
+- 在 `test/test_runtime.c` 中给该用例加了具体值断言：输出字符串必须是 `"1"`，防止回归。
+- 全部测试通过：
+
+```bash
+make
+for t in test_closure test_map test_ast test_parser test_linker test_wstring test_list test_vocab test_compiler test_continuation test_process test_runtime; do ./$t; done
+```
+
+- 额外验证了 MoB(k) 在 k=1..9 时的输出与参考值一致：  
+  `0, -2, 0, 1, 0, 1, -1, -10, -30`。  
+  k≥10 仍会因 `fstack_capacity = 1000` 的硬限制而溢出，这是另一个独立问题，符合你“目前暂不理会”的要求。
+
+## 改动文件
+
+- `src/closure.c`：同步同一变量的脏标记。
+- `test/test_runtime.c`：引入 `wstring.h`，对 MoB(6) 输出值做断言。
+
+临时调试文件（`mob_test.c`、Python 模拟器、trace 日志等）已清理。
 
 ---------------------
 

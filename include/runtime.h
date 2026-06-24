@@ -16,6 +16,9 @@ extern "C" {
 #include "module.h"
 #include "list.h"
 
+// 前向声明：回调函数指针需要引用运行时类型
+typedef struct am_runtime_t am_runtime_t;
+
 
 ///////////////////////////////////////////
 // 虚拟机状态
