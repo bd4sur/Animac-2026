@@ -203,21 +203,21 @@ static int32_t while_tag_stack_pop(am_compiler_ctx_t *ctx) {
 
 // 功能说明：向am_compiler_ctx_t的ilcode中，增加一个am_instruction_t，并更新icount。
 // 实现说明：成功返回0；失败返回-1
-static int32_t add_instruction(am_compiler_ctx_t *ctx, uint32_t opcode, am_value_t oprand) {
+static int32_t emit_instruction(am_compiler_ctx_t *ctx, uint32_t opcode, am_value_t operand) {
     if (!ctx) return -1;
     am_instruction_t *new_ilcode = (am_instruction_t *)realloc(
         ctx->ilcode, (ctx->icount + 1) * sizeof(am_instruction_t));
     if (!new_ilcode) return -1;
     ctx->ilcode = new_ilcode;
     ctx->ilcode[ctx->icount].opcode = opcode;
-    ctx->ilcode[ctx->icount].oprand = oprand;
+    ctx->ilcode[ctx->icount].operand = operand;
     ctx->icount++;
     return 0;
 }
 
 
 // 功能说明：标签构造——根据给定的索引TPV（index_value），构造标签（am_value_t）。
-// 实现说明：基于任意TPV（一般是handle、varid，称为“索引”TPV）构造一个新的标签TPV（AM_VALUE_TYPE_LABEL）。如果相同索引TPV的标签已存在，则获取已构造的标签TPV，以便后面加入指令的oprand。由于编译过程中存在先使用后出现的情况，因此对于同一索引的标签，第一次调用本函数，是从无到有地创建标签，后续调用则是返回已创建的同一标签。只要用于构造标签的索引TPV相等，则构造出来的标签就是同一个标签，这种判定原则与symbol类似。成功返回标签TPV，失败返回AM_VALUE_NULL。
+// 实现说明：基于任意TPV（一般是handle、varid，称为“索引”TPV）构造一个新的标签TPV（AM_VALUE_TYPE_LABEL）。如果相同索引TPV的标签已存在，则获取已构造的标签TPV，以便后面加入指令的operand。由于编译过程中存在先使用后出现的情况，因此对于同一索引的标签，第一次调用本函数，是从无到有地创建标签，后续调用则是返回已创建的同一标签。只要用于构造标签的索引TPV相等，则构造出来的标签就是同一个标签，这种判定原则与symbol类似。成功返回标签TPV，失败返回AM_VALUE_NULL。
 static am_value_t am_compiler_make_label(am_compiler_ctx_t *ctx, am_value_t index_value) {
     if (!ctx || !ctx->value_label_mapping) return AM_VALUE_NULL;
 
@@ -332,20 +332,20 @@ static int32_t compile_predicate(am_compiler_ctx_t *ctx, am_value_t v) {
         if (kind == AM_COMPILER_NODE_KIND_APPLICATION) {
             return compile_application(ctx, am_value_to_handle(v));
         }
-        return add_instruction(ctx, AM_VM_OP_push, v);
+        return emit_instruction(ctx, AM_VM_OP_push, v);
     }
 
     if (vt == AM_COMPILER_VALUE_TYPE_VARID) {
         if (compiler_is_native_ref(ctx, v) == 0) {
-            return add_instruction(ctx, AM_VM_OP_push, v);
+            return emit_instruction(ctx, AM_VM_OP_push, v);
         }
-        return add_instruction(ctx, AM_VM_OP_load, v);
+        return emit_instruction(ctx, AM_VM_OP_load, v);
     }
 
     if (vt == AM_COMPILER_VALUE_TYPE_SYMBOL) {
         int is_break;
         if (compiler_is_break_continue(v, &is_break) == 0) return -1; // predicate中不允许break/continue
-        return add_instruction(ctx, AM_VM_OP_push, v);
+        return emit_instruction(ctx, AM_VM_OP_push, v);
     }
 
     if (vt == AM_COMPILER_VALUE_TYPE_NUMBER ||
@@ -353,7 +353,7 @@ static int32_t compile_predicate(am_compiler_ctx_t *ctx, am_value_t v) {
         vt == AM_COMPILER_VALUE_TYPE_NULL ||
         vt == AM_COMPILER_VALUE_TYPE_UNDEFINED ||
         vt == AM_COMPILER_VALUE_TYPE_WCHAR) {
-        return add_instruction(ctx, AM_VM_OP_push, v);
+        return emit_instruction(ctx, AM_VM_OP_push, v);
     }
 
     return -1;
@@ -370,11 +370,11 @@ static int32_t compile_value(am_compiler_ctx_t *ctx, am_value_t v) {
         int32_t kind = compiler_node_kind(ctx, h);
         switch (kind) {
             case AM_COMPILER_NODE_KIND_LAMBDA:
-                return add_instruction(ctx, AM_VM_OP_loadclosure,
+                return emit_instruction(ctx, AM_VM_OP_loadclosure,
                                        am_compiler_make_label(ctx, v));
             case AM_COMPILER_NODE_KIND_QUOTE:
             case AM_COMPILER_NODE_KIND_STRING:
-                return add_instruction(ctx, AM_VM_OP_push, v);
+                return emit_instruction(ctx, AM_VM_OP_push, v);
             case AM_COMPILER_NODE_KIND_QUASIQUOTE:
                 return compile_quasiquote(ctx, h);
             case AM_COMPILER_NODE_KIND_APPLICATION:
@@ -390,20 +390,20 @@ static int32_t compile_value(am_compiler_ctx_t *ctx, am_value_t v) {
         if (compiler_is_break_continue(v, &is_break) == 0) {
             am_value_t cond_tag, end_tag;
             if (while_tag_stack_top(ctx, &cond_tag, &end_tag) != 0) return -1;
-            return add_instruction(ctx, AM_VM_OP_goto, is_break ? end_tag : cond_tag);
+            return emit_instruction(ctx, AM_VM_OP_goto, is_break ? end_tag : cond_tag);
         }
-        return add_instruction(ctx, AM_VM_OP_push, v);
+        return emit_instruction(ctx, AM_VM_OP_push, v);
     }
 
     if (vt == AM_COMPILER_VALUE_TYPE_VARID) {
         if (compiler_is_native_ref(ctx, v) == 0) {
-            return add_instruction(ctx, AM_VM_OP_push, v);
+            return emit_instruction(ctx, AM_VM_OP_push, v);
         }
         am_varid_t varid = am_value_to_varid(v);
         if (compiler_primitive_opcode_for_varid(ctx, varid) >= 0) {
-            return add_instruction(ctx, AM_VM_OP_push, v);
+            return emit_instruction(ctx, AM_VM_OP_push, v);
         }
-        return add_instruction(ctx, AM_VM_OP_load, v);
+        return emit_instruction(ctx, AM_VM_OP_load, v);
     }
 
     if (vt == AM_COMPILER_VALUE_TYPE_NUMBER ||
@@ -411,7 +411,7 @@ static int32_t compile_value(am_compiler_ctx_t *ctx, am_value_t v) {
         vt == AM_COMPILER_VALUE_TYPE_NULL ||
         vt == AM_COMPILER_VALUE_TYPE_UNDEFINED ||
         vt == AM_COMPILER_VALUE_TYPE_WCHAR) {
-        return add_instruction(ctx, AM_VM_OP_push, v);
+        return emit_instruction(ctx, AM_VM_OP_push, v);
     }
 
     return -1;
@@ -439,7 +439,7 @@ static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t h
     am_value_t temp_lambda_label  = am_compiler_make_label(ctx, temp_lambda_idx);
 
     // goto apply_begin
-    if (add_instruction(ctx, AM_VM_OP_goto, apply_begin_label) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_goto, apply_begin_label) != 0) return -1;
 
     // 临时lambda标签
     if (am_compiler_locate_label(ctx, temp_lambda_idx, ctx->icount) != 0) return -1;
@@ -448,23 +448,23 @@ static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t h
     for (size_t i = n; i-- > 0;) {
         am_varid_t p = am_compiler_make_temp_varid(ctx, L"TEMP_LAMBDA_PARAM", temp_lambda_label, i);
         if (p == SIZE_MAX) return -1;
-        if (add_instruction(ctx, AM_VM_OP_store, am_make_value_of_varid(p)) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_store, am_make_value_of_varid(p)) != 0) return -1;
     }
 
     // 加载参数1..n-1
     for (size_t i = 1; i < n; i++) {
         am_varid_t p = am_compiler_make_temp_varid(ctx, L"TEMP_LAMBDA_PARAM", temp_lambda_label, i);
         if (p == SIZE_MAX) return -1;
-        if (add_instruction(ctx, AM_VM_OP_load, am_make_value_of_varid(p)) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_load, am_make_value_of_varid(p)) != 0) return -1;
     }
 
     // 尾调用参数0（被调用函数）
     am_varid_t p0 = am_compiler_make_temp_varid(ctx, L"TEMP_LAMBDA_PARAM", temp_lambda_label, 0);
     if (p0 == SIZE_MAX) return -1;
-    if (add_instruction(ctx, AM_VM_OP_tailcall, am_make_value_of_varid(p0)) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_tailcall, am_make_value_of_varid(p0)) != 0) return -1;
 
     // return
-    if (add_instruction(ctx, AM_VM_OP_return, AM_VALUE_UNDEFINED) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_return, AM_VALUE_UNDEFINED) != 0) return -1;
 
     // apply_begin标签
     if (am_compiler_locate_label(ctx, apply_begin_idx, ctx->icount) != 0) return -1;
@@ -475,7 +475,7 @@ static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t h
     }
 
     // 调用临时lambda
-    return add_instruction(ctx, AM_VM_OP_call, temp_lambda_label);
+    return emit_instruction(ctx, AM_VM_OP_call, temp_lambda_label);
 }
 
 
@@ -518,7 +518,7 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
             }
             if (compiler_varid_name_equals(ctx, first_varid, L"fork") == 0) {
                 if (node->length < 2) return -1;
-                return add_instruction(ctx, AM_VM_OP_fork,
+                return emit_instruction(ctx, AM_VM_OP_fork,
                                        am_list_get(ctx->ast->alloc, node, 1));
             }
         }
@@ -537,7 +537,7 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
         if (am_value_is_varid(first)) {
             int32_t opcode = compiler_primitive_opcode_for_varid(ctx, am_value_to_varid(first));
             if (opcode >= 0) {
-                return add_instruction(ctx, (uint32_t)opcode, AM_VALUE_UNDEFINED);
+                return emit_instruction(ctx, (uint32_t)opcode, AM_VALUE_UNDEFINED);
             }
         }
 
@@ -547,10 +547,10 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
 
         if (am_value_is_handle(first) &&
             compiler_node_kind(ctx, am_value_to_handle(first)) == AM_COMPILER_NODE_KIND_LAMBDA) {
-            return add_instruction(ctx, call_opcode, am_compiler_make_label(ctx, first));
+            return emit_instruction(ctx, call_opcode, am_compiler_make_label(ctx, first));
         }
         else if (am_value_is_varid(first)) {
-            return add_instruction(ctx, call_opcode, first);
+            return emit_instruction(ctx, call_opcode, first);
         }
 
         return -1;
@@ -577,7 +577,7 @@ static int32_t compile_lambda(am_compiler_ctx_t *ctx, am_handle_t handle) {
     am_uint_t n_param = compiler_lambda_param_count(node);
     for (am_int_t i = (am_int_t)n_param - 1; i >= 0; i--) {
         am_value_t param = am_list_get(ctx->ast->alloc, node, (size_t)(2 + i));
-        if (add_instruction(ctx, AM_VM_OP_store, param) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_store, param) != 0) return -1;
     }
 
     // 逐个编译函数体
@@ -592,7 +592,7 @@ static int32_t compile_lambda(am_compiler_ctx_t *ctx, am_handle_t handle) {
     }
     free(bodies);
 
-    return add_instruction(ctx, AM_VM_OP_return, AM_VALUE_UNDEFINED);
+    return emit_instruction(ctx, AM_VM_OP_return, AM_VALUE_UNDEFINED);
 }
 
 
@@ -616,17 +616,17 @@ static int32_t compile_callcc(am_compiler_ctx_t *ctx, am_handle_t handle) {
     am_value_t cont_idx = am_make_value_of_varid(cont_varid);
 
     // capturecc cont_varid
-    if (add_instruction(ctx, AM_VM_OP_capturecc, cont_idx) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_capturecc, cont_idx) != 0) return -1;
     // load cont_varid
-    if (add_instruction(ctx, AM_VM_OP_load, cont_idx) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_load, cont_idx) != 0) return -1;
 
     // 调用thunk
     if (am_value_is_handle(thunk) &&
         compiler_node_kind(ctx, am_value_to_handle(thunk)) == AM_COMPILER_NODE_KIND_LAMBDA) {
-        if (add_instruction(ctx, AM_VM_OP_call, am_compiler_make_label(ctx, thunk)) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_call, am_compiler_make_label(ctx, thunk)) != 0) return -1;
     }
     else if (am_value_is_varid(thunk)) {
-        if (add_instruction(ctx, AM_VM_OP_call, thunk) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_call, thunk) != 0) return -1;
     }
     else {
         return -1;
@@ -651,13 +651,13 @@ static int32_t compile_define(am_compiler_ctx_t *ctx, am_handle_t handle) {
     // 编译右值：lambda节点直接push其标签，其他按普通值编译
     if (am_value_is_handle(right) &&
         compiler_node_kind(ctx, am_value_to_handle(right)) == AM_COMPILER_NODE_KIND_LAMBDA) {
-        if (add_instruction(ctx, AM_VM_OP_push, am_compiler_make_label(ctx, right)) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_push, am_compiler_make_label(ctx, right)) != 0) return -1;
     }
     else {
         if (compile_value(ctx, right) != 0) return -1;
     }
 
-    return add_instruction(ctx, AM_VM_OP_store, left);
+    return emit_instruction(ctx, AM_VM_OP_store, left);
 }
 
 
@@ -675,13 +675,13 @@ static int32_t compile_set(am_compiler_ctx_t *ctx, am_handle_t handle) {
     // 编译右值：lambda节点生成闭包实例，其他按普通值编译
     if (am_value_is_handle(right) &&
         compiler_node_kind(ctx, am_value_to_handle(right)) == AM_COMPILER_NODE_KIND_LAMBDA) {
-        if (add_instruction(ctx, AM_VM_OP_loadclosure, am_compiler_make_label(ctx, right)) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_loadclosure, am_compiler_make_label(ctx, right)) != 0) return -1;
     }
     else {
         if (compile_value(ctx, right) != 0) return -1;
     }
 
-    return add_instruction(ctx, AM_VM_OP_set, left);
+    return emit_instruction(ctx, AM_VM_OP_set, left);
 }
 
 
@@ -696,7 +696,7 @@ static int32_t compile_begin(am_compiler_ctx_t *ctx, am_handle_t handle) {
     for (size_t i = 1; i < node->length; i++) {
         if (compile_value(ctx, am_list_get(ctx->ast->alloc, node, i)) != 0) return -1;
         if (i < node->length - 1) {
-            if (add_instruction(ctx, AM_VM_OP_pop, AM_VALUE_UNDEFINED) != 0) return -1;
+            if (emit_instruction(ctx, AM_VM_OP_pop, AM_VALUE_UNDEFINED) != 0) return -1;
         }
     }
     return 0;
@@ -743,7 +743,7 @@ static int32_t compile_cond(am_compiler_ctx_t *ctx, am_handle_t handle) {
         if (!is_else) {
             if (compile_predicate(ctx, predicate) != 0) return -1;
             if (i == n - 1) {
-                if (add_instruction(ctx, AM_VM_OP_iffalse, end_lbl) != 0) return -1;
+                if (emit_instruction(ctx, AM_VM_OP_iffalse, end_lbl) != 0) return -1;
             }
             else {
                 am_varid_t next_branch_lbl_varid = am_compiler_make_temp_varid(
@@ -751,7 +751,7 @@ static int32_t compile_cond(am_compiler_ctx_t *ctx, am_handle_t handle) {
                 if (next_branch_lbl_varid == SIZE_MAX) return -1;
                 am_value_t next_branch_lbl_idx = am_make_value_of_varid(next_branch_lbl_varid);
                 am_value_t next_branch_lbl = am_compiler_make_label(ctx, next_branch_lbl_idx);
-                if (add_instruction(ctx, AM_VM_OP_iffalse, next_branch_lbl) != 0) return -1;
+                if (emit_instruction(ctx, AM_VM_OP_iffalse, next_branch_lbl) != 0) return -1;
             }
         }
 
@@ -761,7 +761,7 @@ static int32_t compile_cond(am_compiler_ctx_t *ctx, am_handle_t handle) {
             return am_compiler_locate_label(ctx, end_lbl_idx, ctx->icount);
         }
         else {
-            if (add_instruction(ctx, AM_VM_OP_goto, end_lbl) != 0) return -1;
+            if (emit_instruction(ctx, AM_VM_OP_goto, end_lbl) != 0) return -1;
         }
     }
 
@@ -789,14 +789,14 @@ static int32_t compile_if(am_compiler_ctx_t *ctx, am_handle_t handle) {
 
     if (node->length > 3) {
         am_value_t false_branch = am_list_get(ctx->ast->alloc, node, 3);
-        if (add_instruction(ctx, AM_VM_OP_iftrue, true_label) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_iftrue, true_label) != 0) return -1;
         if (compile_value(ctx, false_branch) != 0) return -1;
-        if (add_instruction(ctx, AM_VM_OP_goto, end_label) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_goto, end_label) != 0) return -1;
         if (am_compiler_locate_label(ctx, true_label_idx, ctx->icount) != 0) return -1;
         if (compile_value(ctx, true_branch) != 0) return -1;
     }
     else {
-        if (add_instruction(ctx, AM_VM_OP_iffalse, end_label) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_iffalse, end_label) != 0) return -1;
         if (compile_value(ctx, true_branch) != 0) return -1;
     }
 
@@ -821,11 +821,11 @@ static int32_t compile_while(am_compiler_ctx_t *ctx, am_handle_t handle) {
 
     if (am_compiler_locate_label(ctx, cond_label_idx, ctx->icount) != 0) return -1;
     if (compile_predicate(ctx, am_list_get(ctx->ast->alloc, node, 1)) != 0) return -1;
-    if (add_instruction(ctx, AM_VM_OP_iffalse, end_label) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_iffalse, end_label) != 0) return -1;
     for (size_t i = 2; i < node->length; i++) {
         if (compile_value(ctx, am_list_get(ctx->ast->alloc, node, i)) != 0) return -1;
     }
-    if (add_instruction(ctx, AM_VM_OP_goto, cond_label) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_goto, cond_label) != 0) return -1;
     if (am_compiler_locate_label(ctx, end_label_idx, ctx->icount) != 0) return -1;
 
     return while_tag_stack_pop(ctx);
@@ -847,13 +847,13 @@ static int32_t compile_and(am_compiler_ctx_t *ctx, am_handle_t handle) {
 
     for (size_t i = 1; i < n; i++) {
         if (compile_value(ctx, am_list_get(ctx->ast->alloc, node, i)) != 0) return -1;
-        if (add_instruction(ctx, AM_VM_OP_iffalse, false_label) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_iffalse, false_label) != 0) return -1;
     }
 
-    if (add_instruction(ctx, AM_VM_OP_push, AM_VALUE_TRUE) != 0) return -1;
-    if (add_instruction(ctx, AM_VM_OP_goto, end_label) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_push, AM_VALUE_TRUE) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_goto, end_label) != 0) return -1;
     if (am_compiler_locate_label(ctx, false_label_idx, ctx->icount) != 0) return -1;
-    if (add_instruction(ctx, AM_VM_OP_push, AM_VALUE_FALSE) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_push, AM_VALUE_FALSE) != 0) return -1;
     return am_compiler_locate_label(ctx, end_label_idx, ctx->icount);
 }
 
@@ -873,13 +873,13 @@ static int32_t compile_or(am_compiler_ctx_t *ctx, am_handle_t handle) {
 
     for (size_t i = 1; i < n; i++) {
         if (compile_value(ctx, am_list_get(ctx->ast->alloc, node, i)) != 0) return -1;
-        if (add_instruction(ctx, AM_VM_OP_iftrue, true_label) != 0) return -1;
+        if (emit_instruction(ctx, AM_VM_OP_iftrue, true_label) != 0) return -1;
     }
 
-    if (add_instruction(ctx, AM_VM_OP_push, AM_VALUE_FALSE) != 0) return -1;
-    if (add_instruction(ctx, AM_VM_OP_goto, end_label) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_push, AM_VALUE_FALSE) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_goto, end_label) != 0) return -1;
     if (am_compiler_locate_label(ctx, true_label_idx, ctx->icount) != 0) return -1;
-    if (add_instruction(ctx, AM_VM_OP_push, AM_VALUE_TRUE) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_push, AM_VALUE_TRUE) != 0) return -1;
     return am_compiler_locate_label(ctx, end_label_idx, ctx->icount);
 }
 
@@ -903,20 +903,20 @@ static int32_t compile_quasiquote(am_compiler_ctx_t *ctx, am_handle_t handle) {
                 if (compile_quasiquote(ctx, am_value_to_handle(child)) != 0) return -1;
             }
             else {
-                if (add_instruction(ctx, AM_VM_OP_push, child) != 0) return -1;
+                if (emit_instruction(ctx, AM_VM_OP_push, child) != 0) return -1;
             }
         }
         else if (vt == AM_COMPILER_VALUE_TYPE_SYMBOL) {
             int is_break;
             if (compiler_is_break_continue(child, &is_break) == 0) return -1;
-            if (add_instruction(ctx, AM_VM_OP_push, child) != 0) return -1;
+            if (emit_instruction(ctx, AM_VM_OP_push, child) != 0) return -1;
         }
         else if (vt == AM_COMPILER_VALUE_TYPE_VARID) {
             if (compiler_is_native_ref(ctx, child) == 0) {
-                if (add_instruction(ctx, AM_VM_OP_push, child) != 0) return -1;
+                if (emit_instruction(ctx, AM_VM_OP_push, child) != 0) return -1;
             }
             else {
-                if (add_instruction(ctx, AM_VM_OP_load, child) != 0) return -1;
+                if (emit_instruction(ctx, AM_VM_OP_load, child) != 0) return -1;
             }
         }
         else if (vt == AM_COMPILER_VALUE_TYPE_NUMBER ||
@@ -924,15 +924,15 @@ static int32_t compile_quasiquote(am_compiler_ctx_t *ctx, am_handle_t handle) {
                  vt == AM_COMPILER_VALUE_TYPE_NULL ||
                  vt == AM_COMPILER_VALUE_TYPE_UNDEFINED ||
                  vt == AM_COMPILER_VALUE_TYPE_WCHAR) {
-            if (add_instruction(ctx, AM_VM_OP_push, child) != 0) return -1;
+            if (emit_instruction(ctx, AM_VM_OP_push, child) != 0) return -1;
         }
         else {
             return -1;
         }
     }
 
-    if (add_instruction(ctx, AM_VM_OP_push, am_make_value_of_uint((am_uint_t)node->length)) != 0) return -1;
-    return add_instruction(ctx, AM_VM_OP_concat, AM_VALUE_UNDEFINED);
+    if (emit_instruction(ctx, AM_VM_OP_push, am_make_value_of_uint((am_uint_t)node->length)) != 0) return -1;
+    return emit_instruction(ctx, AM_VM_OP_concat, AM_VALUE_UNDEFINED);
 }
 
 
@@ -950,11 +950,11 @@ int32_t am_compile_all(am_compiler_ctx_t *ctx) {
     }
     if (top_lambda == AM_HANDLE_NULL) return -1;
 
-    if (add_instruction(ctx, AM_VM_OP_call,
+    if (emit_instruction(ctx, AM_VM_OP_call,
                         am_compiler_make_label(ctx, am_make_value_of_handle(top_lambda))) != 0) {
         return -1;
     }
-    if (add_instruction(ctx, AM_VM_OP_halt, AM_VALUE_UNDEFINED) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_halt, AM_VALUE_UNDEFINED) != 0) return -1;
 
     // 顺序编译所有lambda节点
     if (!ctx->ast->lambda_handles) return -1;
@@ -972,10 +972,10 @@ int32_t am_compiler_label_resolution(am_compiler_ctx_t *ctx) {
     if (!ctx || !ctx->ilcode) return -1;
 
     for (am_iaddr_t i = 0; i < ctx->icount; i++) {
-        if (am_value_is_label(ctx->ilcode[i].oprand)) {
-            am_iaddr_t addr = am_compiler_parse_label_to_iaddr(ctx, ctx->ilcode[i].oprand);
+        if (am_value_is_label(ctx->ilcode[i].operand)) {
+            am_iaddr_t addr = am_compiler_parse_label_to_iaddr(ctx, ctx->ilcode[i].operand);
             if (addr == SIZE_MAX) return -1;
-            ctx->ilcode[i].oprand = am_make_value_of_iaddr(addr);
+            ctx->ilcode[i].operand = am_make_value_of_iaddr(addr);
         }
     }
     return 0;

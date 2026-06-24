@@ -16,7 +16,7 @@ extern "C" {
 // 单条IL指令
 typedef struct am_instruction_t {
     uint32_t opcode;    // 指令代码：在 @include/opcode.h 中定义的AM_VM_OP_*
-    am_value_t oprand;  // 操作数：统一为TPV，不同的指令有不同的具体类型要求。无参数则设为AM_VALUE_UNDEFINED。
+    am_value_t operand;  // 操作数：统一为TPV，不同的指令有不同的具体类型要求。无参数则设为AM_VALUE_UNDEFINED。
 } am_instruction_t;
 
 
@@ -50,7 +50,7 @@ int32_t am_compile_all(am_compiler_ctx_t *ctx);
 
 
 // 功能描述：编译后处理——全局标签解析，该函数在am_compile_all结束后调用，用于将所有的label替换为绝对iaddr。
-// 实现描述：遍历所有ilcode，检查am_instruction.oprand的am_value_t的TPV类型是否是AM_VALUE_TYPE_LABEL。如果是，则调用am_compiler_parse_label_to_iaddr将其转换为iaddr，并替换掉原来的label。成功返回0，失败返回-1。
+// 实现描述：遍历所有ilcode，检查am_instruction.operand的am_value_t的TPV类型是否是AM_VALUE_TYPE_LABEL。如果是，则调用am_compiler_parse_label_to_iaddr将其转换为iaddr，并替换掉原来的label。成功返回0，失败返回-1。
 int32_t am_compiler_label_resolution(am_compiler_ctx_t *ctx);
 
 

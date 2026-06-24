@@ -194,9 +194,9 @@ static void print_operand(am_ast_t *ast, am_value_t op) {
 static void print_ilcode(am_ast_t *ast, am_instruction_t *ilcode, am_iaddr_t icount) {
     for (am_iaddr_t i = 0; i < icount; i++) {
         printf("[%4zu] %-12s", (size_t)i, opcode_name(ilcode[i].opcode));
-        if (!am_value_is_undefined(ilcode[i].oprand)) {
+        if (!am_value_is_undefined(ilcode[i].operand)) {
             printf(" ");
-            print_operand(ast, ilcode[i].oprand);
+            print_operand(ast, ilcode[i].operand);
         }
         printf("\n");
     }
