@@ -353,26 +353,16 @@ typedef am_map_t am_obj_map_t;
 
 
 ///////////////////////////////////////////
-// TODO 虚拟机进程（其中包含进程内部的环境，例如堆、栈、代码、PC等等）
+// 虚拟机运行时环境
 ///////////////////////////////////////////
 
 typedef void am_runtime_t;
 
-typedef struct am_process_t {
-    // TODO
-    // ...
-    am_runtime_t *runtime; // 指向全局运行时环境
-    am_heap_t *heap;
-    // ...
-} am_process_t;
-
-
-
 ///////////////////////////////////////////
-// TODO 虚拟机运行时环境
+// 虚拟机进程（前向声明，完整定义在 process.h 中）
 ///////////////////////////////////////////
 
-typedef void am_runtime_t;
+typedef struct am_process_t am_process_t;
 
 
 

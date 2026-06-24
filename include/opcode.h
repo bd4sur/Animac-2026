@@ -5,6 +5,10 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+
+#include "ast.h"
+
 #define AM_VM_OP_nop         (0)
 #define AM_VM_OP_store       (1)
 #define AM_VM_OP_load        (2)
@@ -53,6 +57,15 @@ extern "C" {
 #define AM_VM_OP_length      (45)
 #define AM_VM_OP_concat      (46)
 #define AM_VM_OP_duplicate   (47)
+
+
+
+// 全局内置变量到 VM opcode 的映射表。
+// 下标与 AM_GLOBAL_BUILTIN_VAR 一一对应；-1 表示该 builtin 没有对应 primitive opcode。
+extern const int32_t AM_BUILTIN_OPCODE_MAP[AM_GLOBAL_BUILTIN_VAR_NUM];
+
+
+
 
 #ifdef __cplusplus
 }

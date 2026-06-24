@@ -79,7 +79,7 @@ int32_t am_scope_destroy(am_allocator_t *alloc, am_scope_t *scope) {
 // 拷贝
 // ===============================================================================
 
-am_scope_t *am_closure_copy(am_allocator_t *alloc, am_scope_t *scope) {
+am_scope_t *am_scope_copy(am_allocator_t *alloc, am_scope_t *scope) {
     if (!scope) return NULL;
 
     am_scope_t *copy = am_scope_create(alloc, scope->parent_scope_handle, scope->parent_lambda_handle, scope->current_lambda_handle, scope->capacity);

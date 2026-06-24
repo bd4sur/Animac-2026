@@ -1457,9 +1457,307 @@ am_value_t *am_continuation_get_fstack(am_allocator_t *alloc, am_continuation_t 
 
 ---------------------
 
+# Process
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+请你根据下文描述，在 @src/process.c 和 @include/process.h 中，实现Scheme解释器的进程数据结构和相关操作。
+
+## 设计思路概述
+
+进程（Process）是Scheme解释器的核心数据结构。此处所说的进程，与操作系统的进程没有关系，实现层面也不利用操作系统的原生进程或线程机制。
+
+Scheme解释器执行Scheme代码，整体过程是：将Scheme代码及其依赖代码解析并链接成一整个AST，将其编译成中间语言代码，打包成“模块”（module）。解释器读取模块，从取出静态数据对象和中间语言代码，构造“进程”，送入VM也就是运行时（Runtime），等待调度执行。
+
+进程包含以下数据：运行时堆（heap）、操作数栈（求值栈，opstack）、函数调用栈（fstack）、当前闭包把柄（handle）、程序计数器（PC）、以及进程ID、进程状态等必要的元数据。
+
+Scheme代码在虚拟机中的执行，可以视为虚拟机（Runtime）根据进程的状态修改其内部状态，也就是说，进程类似于图灵机模型中的纸带，是VM的操作对象。
+
+在Scheme解释器的整体实现中，进程数据结构、以及对于进程的相关操作的接口，例如读写进程内部状态的接口，放置于 @src/process.c 和 @include/process.h 中。除此之外，在进程模块中，还实现了基于标记-清除算法的垃圾回收（GC）接口。垃圾回收的具体原理在后文中有详细描述。
+
+## 数据结构、接口和伪代码描述
+
+以下是“进程”数据结构和相关接口的实现伪代码。请你在 @src/process.c 和 @include/process.h 中，补全实现它们。实现提示：
+
+- 注释是重要文档。不要删减我给出的注释内容，但是你可以根据实际情况做补充和修正。
+- 以下伪代码完全没有考虑类型检查、错误处理、内存分配和释放等工程细节，你需要补全这些必要细节。
+- 你需要特别注意 am_value_t 和 am_handle_t/am_varid_t/am_symbol_t 等类型的区别。am_value_t是解释器的tagged pointer value，是包装了的值，而后面那些是裸值。具体可参考 @include/object.h 。
+- 你需要注意 am_object_t 和 am_list_t 、am_wstring_t 等类型的继承关系。它们通过base头实现继承，具体可参考 @include/object.h 。你在进行对象访问时，要注意按需进行指针类型的转换。
+- 你可以参考（但是不完全遵从） @typescript/src/Process.ts 中的既有TS实现。
+
+```
+#define AM_PROCESS_STATE_READY     (1)
+#define AM_PROCESS_STATE_RUNNING   (2)
+#define AM_PROCESS_STATE_SLEEPING  (3)
+#define AM_PROCESS_STATE_SUSPENDED (4)
+#define AM_PROCESS_STATE_STOPPED   (5)
+
+typedef size_t am_pid_t;
+
+// 模块数据结构（供参考）
+typedef struct am_module_t {
+    am_object_t base; // 基类头：am_module_t也视为对象语言的数据对象
+
+    uint64_t header; // TODO 保留：元数据头
+    int32_t opstack_depth; // 编译期分析出来的opstack最大深度
+    am_ast_t *ast;
+    am_instruction_t *ilcode;
+} am_module_t;
+
+
+typedef struct am_process_t {
+    am_object_t base; // 基类头：am_process_t也视为对象语言的数据对象
+
+    am_allocator_t *vm_alloc; // VM工作内存分配器
+    am_allocator_t *heap_alloc; // 堆内存分配器
+
+    am_pid_t pid;        // 进程ID
+    am_pid_t parent_pid; // 亲进程ID
+    int32_t state;       // 进程状态
+
+    am_iaddr_t PC;     // 程序计数器：代表下一条指令的iaddr
+    am_instruction_t *ilcode; // 中间语言代码
+
+    am_heap_t *heap;   // 进程私有堆（由堆内存专用allocator管理）
+
+    am_handle_t current_closure_handle; // 指向当前闭包的把柄
+
+    // 操作数栈（其容量为opstack_depth）
+    am_value_t *opstack;
+    am_value_t *opstack_top; // opstack栈顶指针
+
+    // 函数调用栈（默认容量1000，TODO 后面改成可配置）
+    // 注意，成对入栈出栈，栈帧结构为{am_value_t(handle) closure_handle; am_value_t(iaddr) return_target_iaddr; }
+    am_value_t *fstack;
+    am_value_t *fstack_top; // fstack栈顶指针，注意每次操作加减2个元素
+} am_process_t;
+
+
+// 功能说明：从模块构造并初始化一个新的进程数据结构
+// 实现说明：成功返回新进程对象指针；失败返回NULL
+am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator_t *heap_alloc, am_module_t *mod) {
+    // 基于vm_alloc构造一个新的am_process_t对象proc，其中proc->heap由heap_alloc分配
+    // 将mod->ilcode复制到proc->ilcode
+    // 将mod->ast->nodes复制到proc->heap
+    // 基于vm_alloc构造固定长度的opstack和fstack数组。
+    // 初始化其他字段（current_closure_handle = AM_HANDLE_NULL）
+}
+
+// 功能说明：向操作数栈中压入值。成功返回0，失败返回-1
+int32_t am_process_push_operand(am_process_t *proc, am_value_t v);
+
+// 功能说明：从操作数栈中弹出一个值。成功返回弹出值，失败返回UINTPTR_MAX
+am_value_t am_process_pop_operand(am_process_t *proc);
+
+// 功能说明：根据栈顶指针计算opstack中有多少个am_value_t。成功返回长度值，失败返回SIZE_MAX
+size_t am_process_length_of_opstack(am_process_t *proc);
+
+// 功能说明：向fstack中压入栈帧（两个值）。成功返回0，失败返回-1
+int32_t am_process_push_stack_frame(am_process_t *proc, am_value_t closure_handle_value, am_value_t return_target_iaddr_value);
+
+// 功能说明：从fstack中弹出栈帧的两个值，通过两个指针传出。成功返回0，失败返回-1
+int32_t am_process_pop_stack_frame(am_process_t *proc, am_value_t *closure_handle_value, am_value_t *return_target_iaddr_value);
+
+// 功能说明：根据栈顶指针计算fstack中有多少个am_value_t（因为是成对push/pop，所以正常情况下必为偶数）。成功返回长度值，失败返回SIZE_MAX
+size_t am_process_length_of_fstack(am_process_t *proc);
+
+// 功能说明：新建闭包并返回其handle。成功返回handle，失败返回AM_HANDLE_NULL
+am_handle_t am_process_make_closure(am_process_t *proc, am_iaddr_t iaddr, am_handle_t parent) {
+    // 首先在proc->heap中申请一个新的handle：am_handle_t hd
+    // 新建闭包对象：am_closure_t *closure_obj = am_closure_create(proc->heap_alloc, iaddr, parent, 16);
+    // 将闭包对象的指针绑定到hd上：am_heap_set(proc->heap_alloc, proc->heap, make_value(hd), make_value(closure_obj));
+    // 成功返回hd，失败返回AM_HANDLE_NULL
+}
+
+// 功能说明：根据闭包handle获取闭包对象。成功返回指针，失败返回NULL
+am_closure_t *am_process_get_closure(am_process_t *proc, am_handle_t hd);
+
+// 功能说明：获取进程的当前闭包对象。成功返回指针，失败返回NULL
+am_closure_t *am_process_get_current_closure(am_process_t *proc);
+
+// 功能说明：设置进程的当前闭包handle字段。成功返回0，失败返回-1
+inline int32_t am_process_set_current_closure(am_process_t *proc, am_handle_t hd);
+
+// 功能说明：变量解引用。成功返回TPV，失败返回UINTPTR_MAX
+am_value_t am_process_dereference(am_process_t *proc, am_varid_t varid);
+
+// 功能说明：获取当前指令，并取出opcode和operand。成功返回0，失败返回-1
+int32_t am_process_current_instruction(am_process_t *proc, uint32_t opcode, am_value_t operand);
+
+// 功能说明：前进一步（PC加1）
+void am_process_step(am_process_t *proc);
+
+// 功能说明：无条件跳转（PC置数iaddr）
+void am_process_goto(am_process_t *proc, am_iaddr_t iaddr);
+
+// 功能说明：设置进程状态
+void am_process_set_state(am_process_t *proc, int32_t s);
+
+
+
+// 以下为计算续体（continuation）的捕获和恢复的实现。
+
+// 功能说明：捕获当前续体，保存为堆对象，并返回其handle。成功返回handle，失败返回AM_HANDLE_NULL
+am_handle_t am_process_capture_continuation(am_process_t *proc, am_iaddr_t cont_return_target_iaddr);
+
+// 功能说明：恢复指定的计算续体到当前进程。成功返回其返回目标位置的iaddr，失败返回UINTPTR_MAX
+am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd);
+
+
+
+// 以下为垃圾回收算法的实现。垃圾回收是分进程进行的，其管理的对象是进程的堆、及其背后的heap_allocator。垃圾回收采用简单的标记-清除算法，分为3步：确定GC根、从GC根开始递归标记存活堆对象、清理堆对象。清理堆对象后，allocator管理的底层物理内存（例如arena）可能会碎片化，此处应当实现碎片整理，但现在暂不实现。
+
+// 功能说明：从当前进程和续体环境中收集GC根。成功返回0，失败返回-1
+// 设计说明：可达性分析的根（GC根）有：当前闭包本身、当前闭包和函数调用栈对应闭包内的变量绑定、操作数栈内的把柄、函数调用栈内所有栈帧对应的闭包把柄、所有continuation中保留的上面的各项
+// 实现说明：gcroots是收集到的GC根的TPV的列表，由外部分配和释放。
+int32_t am_process_gc_root(am_process_t *proc, am_list_t *gcroots) {
+    // 分析当前进程中的GC根
+    size_t opstack_length = am_process_length_of_opstack(proc);
+    size_t fstack_length = am_process_length_of_fstack(proc);
+    gc_root_helper(proc, gcroots, proc->current_closure_handle, proc->opstack, opstack_length, proc->fstack, fstack_length);
+    // 分析所有已保存的续体环境中的GC根
+    for (am_handle_t hd in proc->heap) {
+        am_object_t *obj = get_obj_from_heap_by_handle(proc->heap_alloc, proc->heap_heap, hd); // 伪代码
+        if(obj->base.type == AM_OBJECT_TYPE_CONTINUATION) {
+            // 将续体内部环境加入GC根
+            size_t cont_opstack_length = 0, cont_fstack_length = 0;
+            am_value_t *cont_opstack = am_continuation_get_opstack(proc->vm_alloc, obj, &cont_opstack_length);
+            am_value_t *cont_fstack = am_continuation_get_fstack(proc->vm_alloc, obj, &cont_fstack_length);
+            gc_root_helper(proc, gcroots, obj->current_closure_handle, cont_opstack, cont_opstack_length, cont_fstack, cont_fstack_length);
+            am_free(proc->vm_alloc, cont_opstack);
+            am_free(proc->vm_alloc, cont_fstack);
+        }
+    }
+}
+static int32_t gc_root_helper(
+    am_process_t *proc, am_list_t *gcroots,
+    am_handle_t current_closure_handle,
+    am_value_t *opstack, size_t opstack_length, am_value_t *fstack, size_t fstack_length
+) {
+    // 加入当前闭包handle
+    am_list_push(proc->vm_alloc, gcroots, make_value(current_closure_handle));
+
+    // 加入当前闭包和函数调用栈对应闭包内的变量绑定
+    am_closure_t *current_closure_obj = am_process_get_closure(proc, current_closure_handle);
+    for ((am_varid_t varid, am_value_t value) in current_closure_obj.bindings) {
+        if (is_handle(value)) {
+            am_list_push(proc->vm_alloc, gcroots, value);
+        }
+    }
+    for (am_value_t v of opstack) { // opstack_length
+        if (is_handle(v)) {
+            am_list_push(proc->vm_alloc, gcroots, v);
+        }
+    }
+    // 注意fstack的出栈入栈都是成对的
+    for ((am_value_t closure_handle_value, am_value_t return_target_iaddr_value) of fstack) { // fstack_length
+        am_closure_t *closure_obj = am_process_get_closure(proc, value_to_handle(closure_handle_value));
+        if (closure_obj->base.type == AM_OBJECT_TYPE_CLOSURE) {
+            am_list_push(proc->vm_alloc, gcroots, make_value(closure_handle_value));
+            for ((am_varid_t varid, am_value_t value) in closure_obj.bindings) {
+                if (is_handle(value)) {
+                    am_list_push(proc->vm_alloc, gcroots, value);
+                }
+            }
+        }
+        else {
+            error("预期闭包，实际非闭包");
+        }
+    }
+}
+
+// 功能说明：从GC根开始，递归标记存活对象。成功返回0，失败返回-1（或更小的负数）
+int32_t am_process_gc_mark(am_process_t *proc, am_value_t v) {
+    int32_t ret = 0; // 收集整体的返回值
+    if (not value_is_handle(v)) return 0;
+    am_handle_t hd = value_to_handle(v);
+    if (am_heap_has_handle(proc->heap_alloc, proc->heap, hd) < 0) return 0;
+    am_object_t *obj = get_obj_from_heap_by_handle(proc->heap_alloc, proc->heap_heap, hd); // 伪代码
+    if (!obj) return -1;
+    if (am_object_check_alive(obj) == 0) return 0;
+    if (obj->base.type == AM_OBJECT_TYPE_LIST) { // 实际上应该是QUOTE|QUASIQUOTE|UNQUOTE|APPLICATION
+        am_object_set_alive(obj, 0);
+        for (am_value_t child of obj->chindren) {
+            ret += am_process_gc_mark(proc, child);
+        }
+    }
+    else if (obj->base.type == AM_OBJECT_TYPE_WSTRING) {
+        am_object_set_alive(obj, 0);
+    }
+    else if (obj->base.type == AM_OBJECT_TYPE_CLOSURE) {
+        am_object_set_alive(obj, 0);
+        ret += am_process_gc_mark(proc, make_value(obj->parent));
+        for ((am_varid_t varid, am_value_t value) in obj.bindings) {
+            if (is_handle(value)) {
+                ret += am_process_gc_mark(proc, value);
+            }
+        }
+    }
+    return ret;
+}
+
+// 功能说明：基于存活标记结果，删除所有未被标记存活的非静态对象和对应的handle。成功返回0，失败返回-1
+int32_t am_process_gc_sweep(am_process_t *proc) {
+    size_t gcount = 0;
+    size_t count = 0;
+    for (am_handle_t hd in proc->heap) {
+        count++;
+        am_object_t *obj = get_obj_from_heap_by_handle(proc->heap_alloc, proc->heap_heap, hd); // 伪代码
+        if (am_object_check_static(obj) == 0) continue;
+        int32_t obj_type = obj->base.type;
+        if (obj_type == AM_OBJECT_TYPE_LIST|STRING|CLOSURE) {
+            if (am_object_check_alive(obj) < 0) {
+                // 不仅删除handle，还穿透释放其映射的obj
+                am_heap_free_handle(proc->heap_alloc, proc->heap, hd);
+                gcount++;
+            }
+            else {
+                // 对于存活对象，将其alive标识清空为否，以便下次gc重新标记
+                am_object_set_alive(obj, -1);
+            }
+        }
+    }
+    printf("已清理 %zu / %zu 个对象\n", gcount, count);
+    // TODO 暂不实现alloc管理的内存的整理
+}
+
+// 功能说明：对进程执行全量的标记-清除GC。成功返回0，失败返回-1
+int32_t am_process_gc(am_process_t *proc) {
+    am_list_t *gcroots = am_list_create(proc->vm_alloc, 128, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    // 收集GC根对象
+    am_process_gc_root(proc, gcroots);
+    // 从GC根对象开始递归标记存活对象
+    for (am_value_t v of gcroots) {
+        am_process_gc_mark(proc, v);
+    }
+    // 清除未被标记为存活的非静态对象及其handle
+    am_process_gc_sweep(proc);
+}
+
+```
+
+## 测试要求
+
+你可以参照 @test/test_linker.c 中test_linker_recursive的完整实现，将其从分析到链接到AST打印的全部流程（包括可视化），取其核心流程移植到 @test/test_process.c 中，以实现从代码到进程数据结构的完整链路。再根据你的理解，增加测试用例和断言。
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个Scheme解释器。为了确定运行时操作数栈（求值栈）opstack的最大深度，请你阅读项目现有C语言代码，重点理解进程数据结构（ @src/process.c ），在 @src/parser.c 和 @include/parser.h 中，实现基于AST静态分析的操作数栈最大深度估计算法。
+
+接口定义如下：
+
+```
+// opstack最大深度的静态分析。成功返回最大深度，失败返回SIZE_MAX。
+size_t am_parser_opstack_depth_analysis(am_ast_t *ast);
+```
+
+在 @test/test_parser.c 中补充测试。
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

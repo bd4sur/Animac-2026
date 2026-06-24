@@ -104,7 +104,7 @@ int32_t am_highlight_code(wchar_t *code, am_token_t *tokens, int32_t count,
     reset_color();  // 确保起始为默认颜色
 
     while(code[pos]) {
-        while(tok_idx < count && pos >= tokens[tok_idx].index + tokens[tok_idx].length) {
+        while(tok_idx < count && pos >= (int32_t)(tokens[tok_idx].index + tokens[tok_idx].length)) {
             tok_idx++;
         }
 

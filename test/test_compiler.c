@@ -8,6 +8,7 @@
 #include "linker.h"
 #include "compiler.h"
 #include "debug.h"
+#include "opcode.h"
 
 
 // ===============================================================================
@@ -86,121 +87,6 @@ static const am_allocator_vtable_t test_allocator_vtable = {
 };
 
 static am_allocator_t test_allocator = { &test_allocator_vtable, &test_allocator_state };
-
-
-// ===============================================================================
-// 指令打印辅助
-// ===============================================================================
-
-static const char *opcode_name(uint32_t opcode) {
-    switch (opcode) {
-        case AM_VM_OP_nop:         return "nop";
-        case AM_VM_OP_store:       return "store";
-        case AM_VM_OP_load:        return "load";
-        case AM_VM_OP_loadclosure: return "loadclosure";
-        case AM_VM_OP_push:        return "push";
-        case AM_VM_OP_pop:         return "pop";
-        case AM_VM_OP_swap:        return "swap";
-        case AM_VM_OP_set:         return "set";
-        case AM_VM_OP_call:        return "call";
-        case AM_VM_OP_callnative:  return "callnative";
-        case AM_VM_OP_tailcall:    return "tailcall";
-        case AM_VM_OP_return:      return "return";
-        case AM_VM_OP_capturecc:   return "capturecc";
-        case AM_VM_OP_iftrue:      return "iftrue";
-        case AM_VM_OP_iffalse:     return "iffalse";
-        case AM_VM_OP_goto:        return "goto";
-        case AM_VM_OP_read:        return "read";
-        case AM_VM_OP_write:       return "write";
-        case AM_VM_OP_pause:       return "pause";
-        case AM_VM_OP_halt:        return "halt";
-        case AM_VM_OP_fork:        return "fork";
-        case AM_VM_OP_display:     return "display";
-        case AM_VM_OP_newline:     return "newline";
-        case AM_VM_OP_add:         return "add";
-        case AM_VM_OP_sub:         return "sub";
-        case AM_VM_OP_mul:         return "mul";
-        case AM_VM_OP_div:         return "div";
-        case AM_VM_OP_mod:         return "mod";
-        case AM_VM_OP_eq:          return "eq";
-        case AM_VM_OP_eqv:         return "eqv";
-        case AM_VM_OP_ge:          return "ge";
-        case AM_VM_OP_le:          return "le";
-        case AM_VM_OP_gt:          return "gt";
-        case AM_VM_OP_lt:          return "lt";
-        case AM_VM_OP_not:         return "not";
-        case AM_VM_OP_and:         return "and";
-        case AM_VM_OP_or:          return "or";
-        case AM_VM_OP_typeof:      return "typeof";
-        case AM_VM_OP_car:         return "car";
-        case AM_VM_OP_cdr:         return "cdr";
-        case AM_VM_OP_cons:        return "cons";
-        case AM_VM_OP_get_item:    return "get_item";
-        case AM_VM_OP_set_item:    return "set_item";
-        case AM_VM_OP_list_push:   return "list_push";
-        case AM_VM_OP_list_pop:    return "list_pop";
-        case AM_VM_OP_length:      return "length";
-        case AM_VM_OP_concat:      return "concat";
-        case AM_VM_OP_duplicate:   return "duplicate";
-        default:                   return "?";
-    }
-}
-
-
-static void print_operand(am_ast_t *ast, am_value_t op) {
-    if (am_value_is_varid(op)) {
-        am_varid_t v = am_value_to_varid(op);
-        wchar_t *name = am_vocab_get(ast->alloc, ast->var_vocab, &v);
-        printf("%ls(%zu)", name ? name : L"?", (size_t)v);
-    }
-    else if (am_value_is_handle(op)) {
-        printf("handle_%zu", am_value_to_handle(op));
-    }
-    else if (am_value_is_iaddr(op)) {
-        printf("iaddr_%zu", am_value_to_iaddr(op));
-    }
-    else if (am_value_is_label(op)) {
-        printf("label_%zu", am_value_to_label(op));
-    }
-    else if (am_value_is_symbol(op)) {
-        am_symbol_t s = am_value_to_symbol(op);
-        wchar_t *name = am_vocab_get(ast->alloc, ast->symbol_vocab, &s);
-        printf("%ls", name ? name : L"?");
-    }
-    else if (am_value_is_uint(op)) {
-        printf("%llu", (unsigned long long)am_value_to_uint(op));
-    }
-    else if (am_value_is_int(op)) {
-        printf("%lld", (long long)am_value_to_int(op));
-    }
-    else if (am_value_is_float(op)) {
-        printf("%g", (double)am_value_to_float(op));
-    }
-    else if (am_value_is_boolean(op)) {
-        printf("%s", am_value_to_boolean(op) ? "#t" : "#f");
-    }
-    else if (am_value_is_null(op)) {
-        printf("#null");
-    }
-    else if (am_value_is_undefined(op)) {
-        printf("#undefined");
-    }
-    else {
-        printf("?");
-    }
-}
-
-
-static void print_ilcode(am_ast_t *ast, am_instruction_t *ilcode, am_iaddr_t icount) {
-    for (am_iaddr_t i = 0; i < icount; i++) {
-        printf("[%4zu] %-12s", (size_t)i, opcode_name(ilcode[i].opcode));
-        if (!am_value_is_undefined(ilcode[i].operand)) {
-            printf(" ");
-            print_operand(ast, ilcode[i].operand);
-        }
-        printf("\n");
-    }
-}
 
 
 // ===============================================================================
@@ -291,7 +177,7 @@ static void test_compiler_basic(void) {
         return;
     }
 
-    print_ilcode(ast, ctx->ilcode, ctx->icount);
+    am_debug_print_ilcode(ast, ctx->ilcode, ctx->icount);
 
     printf("\n=== IL Code (after label resolution) ===\n");
     if (am_compiler_label_resolution(ctx) != 0) {
@@ -301,7 +187,7 @@ static void test_compiler_basic(void) {
         return;
     }
 
-    print_ilcode(ast, ctx->ilcode, ctx->icount);
+    am_debug_print_ilcode(ast, ctx->ilcode, ctx->icount);
 
     am_compiler_ctx_destroy(ctx);
     am_ast_destroy(ast);
@@ -463,7 +349,7 @@ static void test_compiler_recursive(void) {
         return;
     }
 
-    print_ilcode(linked, ctx->ilcode, ctx->icount);
+    am_debug_print_ilcode(linked, ctx->ilcode, ctx->icount);
 
     printf("\n=== IL Code (after label resolution) ===\n");
     if (am_compiler_label_resolution(ctx) != 0) {
@@ -473,7 +359,7 @@ static void test_compiler_recursive(void) {
         return;
     }
 
-    print_ilcode(linked, ctx->ilcode, ctx->icount);
+    am_debug_print_ilcode(linked, ctx->ilcode, ctx->icount);
 
     am_compiler_ctx_destroy(ctx);
     am_ast_destroy(linked);

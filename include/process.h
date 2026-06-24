@@ -1,0 +1,194 @@
+#ifndef __AM_PROCESS_H__
+#define __AM_PROCESS_H__
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <stdint.h>
+#include <stdlib.h>
+#include <stddef.h>
+
+#include "object.h"
+#include "allocator.h"
+#include "heap.h"
+#include "closure.h"
+#include "continuation.h"
+#include "compiler.h"
+#include "ast.h"
+#include "list.h"
+#include "module.h"
+
+
+///////////////////////////////////////////
+// 进程状态常量
+///////////////////////////////////////////
+
+#define AM_PROCESS_STATE_READY     (1)
+#define AM_PROCESS_STATE_RUNNING   (2)
+#define AM_PROCESS_STATE_SLEEPING  (3)
+#define AM_PROCESS_STATE_SUSPENDED (4)
+#define AM_PROCESS_STATE_STOPPED   (5)
+
+
+///////////////////////////////////////////
+// 进程ID
+///////////////////////////////////////////
+
+typedef size_t am_pid_t;
+
+
+///////////////////////////////////////////
+// 进程数据结构
+// 说明：进程是Scheme解释器的核心运行时数据结构，包含执行所需的全部状态。
+//       每个进程拥有独立的堆、操作数栈和函数调用栈，是虚拟机调度的基本单位。
+///////////////////////////////////////////
+
+typedef struct am_process_t {
+    am_object_t base; // 基类头：am_process_t也视为对象语言的数据对象
+
+    am_allocator_t *vm_alloc; // VM工作内存分配器
+    am_allocator_t *heap_alloc; // 堆内存分配器
+
+    am_pid_t pid;        // 进程ID
+    am_pid_t parent_pid; // 亲进程ID
+    int32_t state;       // 进程状态
+
+    am_iaddr_t PC;     // 程序计数器：代表下一条指令的iaddr
+    am_instruction_t *ilcode; // 中间语言代码
+    am_iaddr_t ilcode_length; // 中间语言代码长度
+
+    am_heap_t *heap;   // 进程私有堆（由堆内存专用allocator管理）
+
+    am_handle_t current_closure_handle; // 指向当前闭包的把柄
+
+    // 操作数栈（其容量为opstack_depth）
+    am_value_t *opstack;
+    am_value_t *opstack_top; // opstack栈顶指针
+    size_t opstack_capacity; // opstack容量（am_value_t元素个数）
+
+    // 函数调用栈（默认容量1000，TODO 后面改成可配置）
+    // 注意，成对入栈出栈，栈帧结构为{am_value_t(handle) closure_handle; am_value_t(iaddr) return_target_iaddr; }
+    am_value_t *fstack;
+    am_value_t *fstack_top; // fstack栈顶指针，注意每次操作加减2个元素
+    size_t fstack_capacity; // fstack容量（am_value_t元素个数）
+} am_process_t;
+
+
+///////////////////////////////////////////
+// 生命周期
+///////////////////////////////////////////
+
+// 功能说明：从模块构造并初始化一个新的进程数据结构
+// 实现说明：成功返回新进程对象指针；失败返回NULL
+am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator_t *heap_alloc, am_module_t *mod);
+
+// 功能说明：销毁进程数据结构，释放其占用的全部资源
+// 实现说明：成功返回0，失败返回-1
+int32_t am_process_destroy(am_process_t *proc);
+
+
+///////////////////////////////////////////
+// 操作数栈操作
+///////////////////////////////////////////
+
+// 功能说明：向操作数栈中压入值。成功返回0，失败返回-1
+int32_t am_process_push_operand(am_process_t *proc, am_value_t v);
+
+// 功能说明：从操作数栈中弹出一个值。成功返回弹出值，失败返回UINTPTR_MAX
+am_value_t am_process_pop_operand(am_process_t *proc);
+
+// 功能说明：根据栈顶指针计算opstack中有多少个am_value_t。成功返回长度值，失败返回SIZE_MAX
+size_t am_process_length_of_opstack(am_process_t *proc);
+
+
+///////////////////////////////////////////
+// 函数调用栈操作
+///////////////////////////////////////////
+
+// 功能说明：向fstack中压入栈帧（两个值）。成功返回0，失败返回-1
+int32_t am_process_push_stack_frame(am_process_t *proc, am_value_t closure_handle_value, am_value_t return_target_iaddr_value);
+
+// 功能说明：从fstack中弹出栈帧的两个值，通过两个指针传出。成功返回0，失败返回-1
+int32_t am_process_pop_stack_frame(am_process_t *proc, am_value_t *closure_handle_value, am_value_t *return_target_iaddr_value);
+
+// 功能说明：根据栈顶指针计算fstack中有多少个am_value_t（因为是成对push/pop，所以正常情况下必为偶数）。成功返回长度值，失败返回SIZE_MAX
+size_t am_process_length_of_fstack(am_process_t *proc);
+
+
+///////////////////////////////////////////
+// 闭包操作
+///////////////////////////////////////////
+
+// 功能说明：新建闭包并返回其handle。成功返回handle，失败返回AM_HANDLE_NULL
+am_handle_t am_process_make_closure(am_process_t *proc, am_iaddr_t iaddr, am_handle_t parent);
+
+// 功能说明：根据闭包handle获取闭包对象。成功返回指针，失败返回NULL
+am_obj_closure_t *am_process_get_closure(am_process_t *proc, am_handle_t hd);
+
+// 功能说明：获取进程的当前闭包对象。成功返回指针，失败返回NULL
+am_obj_closure_t *am_process_get_current_closure(am_process_t *proc);
+
+// 功能说明：设置进程的当前闭包handle字段。成功返回0，失败返回-1
+static inline int32_t am_process_set_current_closure(am_process_t *proc, am_handle_t hd) {
+    if (!proc) return -1;
+    proc->current_closure_handle = hd;
+    return 0;
+}
+
+// 功能说明：变量解引用。成功返回TPV，失败返回UINTPTR_MAX
+am_value_t am_process_dereference(am_process_t *proc, am_varid_t varid);
+
+
+///////////////////////////////////////////
+// 程序流程控制
+///////////////////////////////////////////
+
+// 功能说明：获取当前指令，并取出opcode和operand。成功返回0，失败返回-1
+int32_t am_process_current_instruction(am_process_t *proc, uint32_t *opcode, am_value_t *operand);
+
+// 功能说明：前进一步（PC加1）
+void am_process_step(am_process_t *proc);
+
+// 功能说明：无条件跳转（PC置数iaddr）
+void am_process_goto(am_process_t *proc, am_iaddr_t iaddr);
+
+// 功能说明：设置进程状态
+void am_process_set_state(am_process_t *proc, int32_t s);
+
+
+///////////////////////////////////////////
+// 计算续体（continuation）的捕获和恢复
+///////////////////////////////////////////
+
+// 功能说明：捕获当前续体，保存为堆对象，并返回其handle。成功返回handle，失败返回AM_HANDLE_NULL
+am_handle_t am_process_capture_continuation(am_process_t *proc, am_iaddr_t cont_return_target_iaddr);
+
+// 功能说明：恢复指定的计算续体到当前进程。成功返回其返回目标位置的iaddr，失败返回SIZE_MAX
+am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd);
+
+
+///////////////////////////////////////////
+// 垃圾回收（分进程标记-清除算法）
+///////////////////////////////////////////
+
+// 功能说明：从当前进程和续体环境中收集GC根。成功返回0，失败返回-1
+// 设计说明：可达性分析的根（GC根）有：当前闭包本身、当前闭包和函数调用栈对应闭包内的变量绑定、操作数栈内的把柄、函数调用栈内所有栈帧对应的闭包把柄、所有continuation中保留的上面的各项
+// 实现说明：gcroots是收集到的GC根的TPV的列表，由外部分配和释放。
+int32_t am_process_gc_root(am_process_t *proc, am_list_t *gcroots);
+
+// 功能说明：从GC根开始，递归标记存活对象。成功返回0，失败返回-1（或更小的负数）
+int32_t am_process_gc_mark(am_process_t *proc, am_value_t v);
+
+// 功能说明：基于存活标记结果，删除所有未被标记存活的非静态对象和对应的handle。成功返回0，失败返回-1
+int32_t am_process_gc_sweep(am_process_t *proc);
+
+// 功能说明：对进程执行全量的标记-清除GC。成功返回0，失败返回-1
+int32_t am_process_gc(am_process_t *proc);
+
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

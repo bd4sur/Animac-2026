@@ -17,6 +17,11 @@ extern "C" {
 #include "list.h"
 
 
+// 全局内置变量
+#define AM_GLOBAL_BUILTIN_VAR_NUM (34)
+extern const wchar_t* AM_GLOBAL_BUILTIN_VAR[];
+
+
 // 顶级词法节点、顶级作用域和顶级闭包的parent字段，用于判断上溯结束
 // 注意其类型为 am_handle_t，不要与 am_value_t AM_VALUE_HANDLE_NULL 混淆
 #define AM_TOP_NODE_HANDLE AM_HANDLE_NULL

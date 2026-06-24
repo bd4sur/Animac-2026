@@ -8,11 +8,8 @@ extern "C" {
 #include <stdint.h>
 #include <wchar.h>
 #include "ast.h"
+#include "opcode.h"
 
-
-// 全局内置变量
-#define AM_GLOBAL_BUILTIN_VAR_NUM (33)
-extern const wchar_t* AM_GLOBAL_BUILTIN_VAR[];
 
 
 /************
@@ -102,6 +99,12 @@ am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path
 // 调用前会清空已有的 tailcall_handles。
 // 成功返回 0，失败返回 -1。
 int32_t am_parser_tail_call_analysis(am_ast_t *ast);
+
+
+// opstack最大深度的静态分析。成功返回最大深度，失败返回SIZE_MAX。
+// 说明：本分析基于当前编译器对AST的代码生成策略，估算运行时操作数栈可能达到的最大深度。
+//       分析覆盖所有lambda函数体以及顶层thunk，取其中的最大值。
+size_t am_parser_opstack_depth_analysis(am_ast_t *ast);
 
 
 #ifdef __cplusplus

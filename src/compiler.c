@@ -101,41 +101,11 @@ static int32_t compiler_primitive_opcode_for_varid(am_compiler_ctx_t *ctx, am_va
     wchar_t *name = am_vocab_get(ctx->ast->alloc, ctx->ast->var_vocab, &varid);
     if (!name) return -1;
 
-    struct {
-        const wchar_t *name;
-        uint32_t opcode;
-    } table[] = {
-        { L"+",        AM_VM_OP_add },
-        { L"-",        AM_VM_OP_sub },
-        { L"*",        AM_VM_OP_mul },
-        { L"/",        AM_VM_OP_div },
-        { L"mod",      AM_VM_OP_mod },
-        { L"not",      AM_VM_OP_not },
-        { L">",        AM_VM_OP_gt },
-        { L"<",        AM_VM_OP_lt },
-        { L">=",       AM_VM_OP_ge },
-        { L"<=",       AM_VM_OP_le },
-        { L"==",       AM_VM_OP_eq },
-        { L"eq?",      AM_VM_OP_eqv },
-        { L"eqn?",     AM_VM_OP_eq },
-        { L"equal?",   AM_VM_OP_eqv },
-        { L"car",      AM_VM_OP_car },
-        { L"cdr",      AM_VM_OP_cdr },
-        { L"cons",     AM_VM_OP_cons },
-        { L"get_item", AM_VM_OP_get_item },
-        { L"set_item!", AM_VM_OP_set_item },
-        { L"length",   AM_VM_OP_length },
-        { L"display",  AM_VM_OP_display },
-        { L"newline",  AM_VM_OP_newline },
-        { L"write",    AM_VM_OP_write },
-        { L"read",     AM_VM_OP_read },
-        { L"fork",     AM_VM_OP_fork },
-        { NULL, 0 }
-    };
-
-    for (size_t i = 0; table[i].name; i++) {
-        if (wcscmp(name, table[i].name) == 0) {
-            return (int32_t)table[i].opcode;
+    // 通过 AM_GLOBAL_BUILTIN_VAR 查找 builtin 下标，再通过 AM_BUILTIN_OPCODE_MAP 取得 opcode。
+    // 这样 compiler 与 parser 对 builtin/primitive 的认知保持一致。
+    for (size_t i = 0; i < AM_GLOBAL_BUILTIN_VAR_NUM; i++) {
+        if (wcscmp(name, AM_GLOBAL_BUILTIN_VAR[i]) == 0) {
+            return AM_BUILTIN_OPCODE_MAP[i];
         }
     }
     return -1;

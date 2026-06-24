@@ -41,7 +41,7 @@ am_scope_t *am_scope_create(am_allocator_t *alloc, am_handle_t parent_scope_hand
 int32_t am_scope_destroy(am_allocator_t *alloc, am_scope_t *scope);
 
 // 深拷贝（头部与所有 binding）。value 按位拷贝（与 TS Copy 语义一致，不递归释放对象）。
-am_scope_t *am_closure_copy(am_allocator_t *alloc, am_scope_t *scope);
+am_scope_t *am_scope_copy(am_allocator_t *alloc, am_scope_t *scope);
 
 // 将对象的二进制内存布局从alloc管理的内存中倒出来，返回一个系统malloc的二进制序列，以及序列长度
 //   注意：压缩对象，将capacity压缩到跟length一致，删除多余分配的空闲部分

@@ -1343,6 +1343,124 @@ static void test_ast_merge(const wchar_t *importer_path, const wchar_t *importee
 }
 
 
+static void test_parse_opstack_depth_analysis(void) {
+    printf("test_parse_opstack_depth_analysis ... ");
+    test_allocator_reset();
+
+    // 简单字面量：push 1 个值
+    {
+        wchar_t *code = L"((lambda () 42))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 1);
+        am_ast_destroy(ast);
+    }
+
+    // primitive：(+ 1 2) 需要同时压入 2 个参数
+    {
+        wchar_t *code = L"((lambda () (+ 1 2)))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 2);
+        am_ast_destroy(ast);
+    }
+
+    // 普通函数调用：(f 1 2 3) 需要同时压入 3 个参数
+    {
+        wchar_t *code = L"((lambda () (f 1 2 3)))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 3);
+        am_ast_destroy(ast);
+    }
+
+    // 嵌套表达式：(+ (* 2 3) 4)，内层 * 达到深度 2，外层 + 达到深度 2
+    {
+        wchar_t *code = L"((lambda () (+ (* 2 3) 4)))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 2);
+        am_ast_destroy(ast);
+    }
+
+    // 带形参的 lambda：进入体时已有 2 个参数在栈上
+    {
+        wchar_t *code = L"((lambda (x y) (+ x y)))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 2);
+        am_ast_destroy(ast);
+    }
+
+    // begin：中间结果会被 pop，最大深度为 1
+    {
+        wchar_t *code = L"((lambda () (begin 1 2 3)))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 1);
+        am_ast_destroy(ast);
+    }
+
+    // if：predicate 和分支各自只产生 1 个值
+    {
+        wchar_t *code = L"((lambda () (if #t 1 2)))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 1);
+        am_ast_destroy(ast);
+    }
+
+    // 复杂 application（首项本身是 application）：需要压入所有子表达式
+    {
+        wchar_t *code = L"((lambda () (((lambda () +)) 1 2)))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 3);
+        am_ast_destroy(ast);
+    }
+
+    // quasiquote：push 所有子项和 count
+    {
+        wchar_t *code = L"((lambda () `(1 2 3)))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 4);
+        am_ast_destroy(ast);
+    }
+
+    // 嵌套 lambda：内层 (lambda (x) (+ x 1)) 体深度为 2（store x 后 load x、push 1）
+    {
+        wchar_t *code = L"((lambda () (define f (lambda (x) (+ x 1))) (f 2)))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 2);
+        am_ast_destroy(ast);
+    }
+
+    // 更大深度的 primitive：(+ 1 2 3 4 5) 同时压入 5 个参数
+    {
+        wchar_t *code = L"((lambda () (+ 1 2 3 4 5)))";
+        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 5);
+        am_ast_destroy(ast);
+    }
+
+    printf("OK\n");
+}
+
+
 // ===============================================================================
 // 主函数
 // ===============================================================================
@@ -1373,6 +1491,7 @@ int main(void) {
     test_parse_import_alias_rename();
     test_parse_top_lambda_and_var_top();
     test_parse_tail_call_analysis();
+    test_parse_opstack_depth_analysis();
     test_parse_many_variables_arn();
     test_print_tokens();
     test_ast_print(L"/home/bd4sur/animac/test.scm");
