@@ -353,10 +353,11 @@ typedef am_map_t am_obj_map_t;
 
 
 ///////////////////////////////////////////
-// 虚拟机运行时环境
+// 虚拟机运行时环境（前向声明，完整定义在 runtime.h 中）
 ///////////////////////////////////////////
 
-typedef void am_runtime_t;
+struct am_runtime_t;
+typedef struct am_runtime_t am_runtime_t;
 
 ///////////////////////////////////////////
 // 虚拟机进程（前向声明，完整定义在 process.h 中）
