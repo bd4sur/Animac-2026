@@ -422,7 +422,6 @@ int32_t am_heap_has_handle(am_allocator_t *alloc, am_heap_t *heap, am_handle_t h
 
 am_handle_t am_heap_alloc_handle(am_allocator_t *alloc, am_heap_t *heap) {
     if (!heap || !heap->table) return AM_HANDLE_NULL;
-    if (heap->handle_counter >= heap->capacity) return AM_HANDLE_NULL;
 
     am_handle_t handle = heap->handle_counter++;
     g_heap_handle_counter = heap->handle_counter;

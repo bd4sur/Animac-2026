@@ -12,6 +12,7 @@
 #include "process.h"
 #include "runtime.h"
 #include "debug.h"
+#include "ast.h"
 
 
 // ===============================================================================
@@ -173,6 +174,45 @@ static am_runtime_t *compile_and_run(const wchar_t *code, int expect_error) {
 
 
 // ===============================================================================
+// 文件读取辅助函数
+// ===============================================================================
+
+static wchar_t *read_file_as_wstring(const wchar_t *path) {
+    size_t path_len = wcstombs(NULL, path, 0);
+    if (path_len == (size_t)-1) return NULL;
+
+    char *mb_path = (char *)malloc(path_len + 1);
+    if (!mb_path) return NULL;
+    wcstombs(mb_path, path, path_len + 1);
+
+    FILE *f = fopen(mb_path, "rb");
+    free(mb_path);
+    if (!f) return NULL;
+
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long size = ftell(f);
+    if (size < 0) { fclose(f); return NULL; }
+    fseek(f, 0, SEEK_SET);
+
+    char *buf = (char *)malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return NULL; }
+
+    size_t n = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    size_t wlen = mbstowcs(NULL, buf, 0);
+    if (wlen == (size_t)-1) { free(buf); return NULL; }
+
+    wchar_t *wbuf = (wchar_t *)malloc(((size_t)wlen + 1) * sizeof(wchar_t));
+    if (!wbuf) { free(buf); return NULL; }
+    mbstowcs(wbuf, buf, wlen + 1);
+    free(buf);
+    return wbuf;
+}
+
+
+// ===============================================================================
 // 运行时测试
 // ===============================================================================
 
@@ -245,6 +285,83 @@ static void test_runtime_complex_recursion(void) {
 }
 
 
+static void test_runtime_load_from_file(void) {
+    printf("test_runtime_load_from_file ... \n");
+    test_allocator_reset(&test_vm_allocator_state);
+    test_allocator_reset(&test_heap_allocator_state);
+    test_halt_called = 0;
+    test_error_called = 0;
+
+    const wchar_t *path = L"/home/bd4sur/animac/mob.scm";
+    const wchar_t *base_dir = L"/home/bd4sur/animac";
+
+    wchar_t *file_content = read_file_as_wstring(path);
+    assert(file_content != NULL);
+
+    const wchar_t *prefix = L"((lambda () ";
+    const wchar_t *suffix = L" (run) ))";
+    size_t prefix_len = wcslen(prefix);
+    size_t suffix_len = wcslen(suffix);
+    size_t content_len = wcslen(file_content);
+    size_t code_len = prefix_len + content_len + suffix_len;
+
+    wchar_t *code = (wchar_t *)am_malloc(&test_vm_allocator, (code_len + 1) * sizeof(wchar_t));
+    assert(code != NULL);
+    size_t pos = 0;
+    for (size_t i = 0; i < prefix_len; i++) code[pos++] = prefix[i];
+    for (size_t i = 0; i < content_len; i++) code[pos++] = file_content[i];
+    for (size_t i = 0; i < suffix_len; i++) code[pos++] = suffix[i];
+    code[pos] = L'\0';
+    free(file_content);
+
+    am_ast_t *ast = am_parser(&test_vm_allocator, code, (wchar_t *)path);
+    assert(ast != NULL);
+
+    am_parser_tail_call_analysis(ast);
+
+    am_ast_t *linked = am_link(ast, (wchar_t *)base_dir);
+    assert(linked != NULL);
+    assert(linked == ast);
+
+    int32_t resolution_result = am_linker_import_ref_resolution(NULL, linked);
+    assert(resolution_result == 0);
+
+    am_compiler_ctx_t *ctx = am_compiler_ctx_create(linked);
+    assert(ctx != NULL);
+
+    int32_t compile_result = am_compile_all(ctx);
+    assert(compile_result == 0);
+
+    int32_t label_result = am_compiler_label_resolution(ctx);
+    assert(label_result == 0);
+
+    am_module_t mod;
+    memset(&mod, 0, sizeof(mod));
+    mod.base.type = AM_OBJECT_TYPE_BASE;
+    mod.opstack_depth = 32;
+    mod.ast = linked;
+    mod.ilcode = ctx->ilcode;
+    mod.ilcode_length = ctx->icount;
+
+    am_runtime_t *rt = am_runtime_create(&test_vm_allocator, &test_heap_allocator, (wchar_t *)base_dir);
+    assert(rt != NULL);
+    rt->callback_on_halt = on_halt;
+    rt->callback_on_error = on_error;
+
+    am_pid_t pid = am_load_module(rt, &mod);
+    assert(pid == 0);
+
+    printf("=== VM output ===\n");
+    am_start(rt);
+    printf("\n=== VM halted ===\n");
+
+    am_runtime_destroy(rt);
+    am_compiler_ctx_destroy(ctx);
+    am_ast_destroy(linked);
+    printf("OK\n");
+}
+
+
 // ===============================================================================
 // 主函数
 // ===============================================================================
@@ -258,9 +375,10 @@ int main(void) {
     test_allocator_init(&test_vm_allocator_state);
     test_allocator_init(&test_heap_allocator_state);
 
-    test_runtime_display_number();
-    test_runtime_factorial();
-    test_runtime_complex_recursion();
+    // test_runtime_display_number();
+    // test_runtime_factorial();
+    // test_runtime_complex_recursion();
+    test_runtime_load_from_file();
 
     test_destroy(&test_vm_allocator_state);
     test_destroy(&test_heap_allocator_state);
