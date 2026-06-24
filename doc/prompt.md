@@ -1761,6 +1761,90 @@ size_t am_parser_opstack_depth_analysis(am_ast_t *ast);
 
 ---------------------
 
+# 运行时（VM）
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个Scheme解释器。请你通读整个项目的全部C语言代码，根据下面的伪代码草稿，重点参照 @typescript/src/Runtime.ts 中提供的既有实现，在 @src/runtime.c 和 @include/runtime.h 中，完成虚拟机运行时的实现。
+
+```
+typedef struct am_runtime_t {
+    am_allocator_t *vm_alloc;
+    am_allocator_t *heap_alloc;
+
+    wchar_t *working_dir;
+
+    size_t process_poll_counter; // 进程计数器（进程池中有多少进程）
+    am_process_t *process_pool;  // 进程池
+    am_list_t *process_queue;    // 进程队列：List<am_value_t(uint:pid)>
+
+    am_list_t *input_fifo;
+    am_list_t *output_fifo;
+    am_list_t *error_fifo;
+
+    (void)(*callback_on_tick)(?);
+    (void)(*callback_on_event)(?);
+    (void)(*callback_on_halt)(?);
+    (void)(*callback_on_error)(?);
+
+    time_t tick_counter;
+    time_t gc_timestamp;
+} am_runtime_t;
+
+
+
+am_runtime_execute(am_runtime_t *rt, am_process_t *proc) {
+    uint32_t opcode = 0;
+    am_value_t operand = 0;
+    am_process_current_instruction(proc, &opcode, &operand);
+    switch (opcode) {
+        case AM_VM_OP_call: am_op_call(rt, proc, operand); break;
+        // ...
+        default: error("错误指令");
+    }
+}
+
+
+am_runtime_tick(am_runtime_t *rt, uint32_t timeslice) {
+    current_process = process_queue.shift();
+    while (timeslice--) {
+        am_runtime_execute(rt, current_process);
+    }
+    process_queue.push(current_process);
+    callback_on_tick();
+}
+
+am_runtime_event_handler(am_runtime_t *rt) {
+    am_runtime_tick(rt, 1000);
+    // GC
+    if (AM_ENABLE_GC && current_timestamp - gc_timestamp > AM_GC_INTERVAL) {
+        gc_timestamp = current_timestamp;
+        for (am_process_t p of process_queue) {
+            am_process_gc(p);
+        }
+    }
+    // 其他IO事件
+}
+
+am_runtime_start(am_runtime_t *rt) {
+    while (1) {
+        am_runtime_event_handler(rt);
+    }
+}
+```
+
+根据以下提供的解释器整体框架的参考用法，补全相关入口函数的实现。
+
+```
+am_module_t mod = am_compile(wchar_t *code, wchar_t *absolute_path, wchar_t *base_dir);
+// 中间可以有dump/load
+am_runtime_t rt = am_runtime_create(wchar_t *base_dir, ...);
+am_load_module(rt, mod);
+am_start(rt);
+```
+
+请你实现上述需求。你可以使用WSL进行编译构建和测试。
+
 
 ---------------------
 

@@ -1,5 +1,9 @@
 TODO linker相对路径到绝对路径
 
+TODO 遗留问题：进程初始化时为什么要新建一个顶级闭包？为了防止闭包链上溯时访问失败？
+
+TODO 模块的转储（dump）和加载（load）
+
 TODO capturecc指令的参数改成iaddr，其返回的把柄直接入栈
 
 TODO TS：tailcall实现，复用CallAsync函数
