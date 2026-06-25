@@ -2,8 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <wchar.h>
 
 #include "process.h"
+#include "wstring.h"
 
 
 // ===============================================================================
@@ -520,6 +522,255 @@ am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd) {
     am_free(proc->vm_alloc, cont_fstack);
 
     return cont->cont_return_target;
+}
+
+
+// ===============================================================================
+// 列表字符串化辅助结构
+// ===============================================================================
+
+typedef struct {
+    am_allocator_t *alloc;
+    wchar_t *buf;
+    size_t len;
+    size_t cap;
+} am_process_strbuf_t;
+
+
+static int32_t am_process_strbuf_init(am_allocator_t *alloc, am_process_strbuf_t *sb, size_t initial_cap) {
+    if (!alloc || !sb || initial_cap == 0) return -1;
+    sb->alloc = alloc;
+    sb->buf = (wchar_t *)am_malloc(alloc, initial_cap * sizeof(wchar_t));
+    if (!sb->buf) return -1;
+    sb->buf[0] = L'\0';
+    sb->len = 0;
+    sb->cap = initial_cap;
+    return 0;
+}
+
+
+static int32_t am_process_strbuf_ensure(am_process_strbuf_t *sb, size_t needed) {
+    if (!sb || !sb->buf) return -1;
+    if (needed <= sb->cap) return 0;
+
+    size_t new_cap = sb->cap;
+    while (new_cap < needed) {
+        new_cap *= 2;
+    }
+
+    wchar_t *new_buf = (wchar_t *)am_malloc(sb->alloc, new_cap * sizeof(wchar_t));
+    if (!new_buf) return -1;
+
+    memcpy(new_buf, sb->buf, (sb->len + 1) * sizeof(wchar_t));
+    am_free(sb->alloc, sb->buf);
+    sb->buf = new_buf;
+    sb->cap = new_cap;
+    return 0;
+}
+
+
+static int32_t am_process_strbuf_append_char(am_process_strbuf_t *sb, wchar_t c) {
+    if (!sb) return -1;
+    if (am_process_strbuf_ensure(sb, sb->len + 2) != 0) return -1;
+    sb->buf[sb->len++] = c;
+    sb->buf[sb->len] = L'\0';
+    return 0;
+}
+
+
+static int32_t am_process_strbuf_append_string(am_process_strbuf_t *sb, const wchar_t *s) {
+    if (!sb || !s) return -1;
+    size_t slen = wcslen(s);
+    if (am_process_strbuf_ensure(sb, sb->len + slen + 1) != 0) return -1;
+    memcpy(&sb->buf[sb->len], s, slen * sizeof(wchar_t));
+    sb->len += slen;
+    sb->buf[sb->len] = L'\0';
+    return 0;
+}
+
+
+static int32_t am_process_append_value_to_strbuf(am_process_strbuf_t *sb, am_process_t *proc, am_value_t value, bool in_quote);
+
+
+static int32_t am_process_append_lambda_to_strbuf(am_process_strbuf_t *sb, am_process_t *proc, am_list_t *lambda, bool in_quote) {
+    if (!sb || !proc || !lambda) return -1;
+
+    if (am_process_strbuf_append_string(sb, L"(lambda (") != 0) return -1;
+
+    size_t n_param = 0;
+    if (lambda->length >= 2) {
+        am_value_t n_param_val = am_list_get(proc->vm_alloc, lambda, 1);
+        if (am_value_is_uint(n_param_val)) {
+            n_param = (size_t)am_value_to_uint(n_param_val);
+        }
+    }
+
+    for (size_t i = 0; i < n_param; i++) {
+        if (i > 0) {
+            if (am_process_strbuf_append_char(sb, L' ') != 0) return -1;
+        }
+        am_value_t param = am_list_get(proc->vm_alloc, lambda, 2 + i);
+        if (am_process_append_value_to_strbuf(sb, proc, param, in_quote) != 0) return -1;
+    }
+    if (am_process_strbuf_append_char(sb, L')') != 0) return -1;
+
+    size_t n_body = am_list_lambda_get_body_number(proc->vm_alloc, lambda);
+    for (size_t i = 0; i < n_body; i++) {
+        if (am_process_strbuf_append_char(sb, L' ') != 0) return -1;
+        am_value_t body = am_list_get(proc->vm_alloc, lambda, 2 + n_param + i);
+        if (am_process_append_value_to_strbuf(sb, proc, body, in_quote) != 0) return -1;
+    }
+
+    if (am_process_strbuf_append_char(sb, L')') != 0) return -1;
+    return 0;
+}
+
+
+static int32_t am_process_append_list_to_strbuf(am_process_strbuf_t *sb, am_process_t *proc, am_list_t *lst, bool in_quote) {
+    if (!sb || !proc || !lst) return -1;
+
+    const wchar_t *prefix = L"(";
+    if (lst->length == 0) {
+        // 空列表无论位于何处都显示前导单引号
+        prefix = L"'(";
+    }
+    else if (lst->type == AM_LIST_TYPE_QUOTE) {
+        // quote 列表（无论最外层还是嵌套内层）不显示前导单引号
+        prefix = L"(";
+    }
+    else if (lst->type == AM_LIST_TYPE_QUASIQUOTE) prefix = L"`(";
+    else if (lst->type == AM_LIST_TYPE_UNQUOTE)    prefix = L",(";
+
+    if (am_process_strbuf_append_string(sb, prefix) != 0) return -1;
+
+    bool child_in_quote = in_quote || (lst->type == AM_LIST_TYPE_QUOTE);
+
+    for (size_t i = 0; i < lst->length; i++) {
+        if (i > 0) {
+            if (am_process_strbuf_append_char(sb, L' ') != 0) return -1;
+        }
+        am_value_t child = am_list_get(proc->vm_alloc, lst, i);
+        if (am_process_append_value_to_strbuf(sb, proc, child, child_in_quote) != 0) return -1;
+    }
+
+    if (am_process_strbuf_append_char(sb, L')') != 0) return -1;
+    return 0;
+}
+
+
+static int32_t am_process_append_value_to_strbuf(am_process_strbuf_t *sb, am_process_t *proc, am_value_t value, bool in_quote) {
+    if (!sb || !proc) return -1;
+
+    if (am_value_is_handle(value)) {
+        am_handle_t h = am_value_to_handle(value);
+        if (h == AM_HANDLE_NULL) {
+            return am_process_strbuf_append_string(sb, L"#<null-handle>");
+        }
+        am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, h);
+        if (!am_value_is_ptr(obj_val)) {
+            return am_process_strbuf_append_string(sb, L"#<handle>");
+        }
+        am_object_t *obj = am_value_to_ptr(obj_val);
+        if (obj->type == AM_OBJECT_TYPE_LIST) {
+            am_list_t *lst = (am_list_t *)obj;
+            if (lst->type == AM_LIST_TYPE_LAMBDA) {
+                return am_process_append_lambda_to_strbuf(sb, proc, lst, in_quote);
+            }
+            return am_process_append_list_to_strbuf(sb, proc, lst, in_quote);
+        }
+        else if (obj->type == AM_OBJECT_TYPE_WSTRING) {
+            am_wstring_t *ws = (am_wstring_t *)obj;
+            for (size_t i = 0; i < ws->length; i++) {
+                am_value_t cv = ws->content[i];
+                if (!am_value_is_wchar(cv)) continue;
+                if (am_process_strbuf_append_char(sb, (wchar_t)am_value_to_wchar(cv)) != 0) return -1;
+            }
+            return 0;
+        }
+        return am_process_strbuf_append_string(sb, L"#<object>");
+    }
+    else if (am_value_is_varid(value)) {
+        am_varid_t varid = am_value_to_varid(value);
+        wchar_t *text = am_vocab_get(proc->vm_alloc, proc->var_vocab, &varid);
+        if (!text) return am_process_strbuf_append_string(sb, L"#<var>");
+        return am_process_strbuf_append_string(sb, text);
+    }
+    else if (am_value_is_symbol(value)) {
+        am_symbol_t sym = am_value_to_symbol(value);
+        wchar_t *text = am_vocab_get(proc->vm_alloc, proc->symbol_vocab, &sym);
+        if (!text) return am_process_strbuf_append_string(sb, L"#<sym>");
+        if (*text == L'\'') {
+            // symbol 字面量（词汇表中已带前导单引号）
+            if (in_quote) {
+                // 在 quote 列表内部：去掉前导单引号
+                while (*text == L'\'') text++;
+            }
+            return am_process_strbuf_append_string(sb, text);
+        }
+        // 关键字等不带前导单引号的 symbol：原样输出
+        return am_process_strbuf_append_string(sb, text);
+    }
+    else if (am_value_is_uint(value)) {
+        wchar_t tmp[64];
+        swprintf(tmp, 64, L"%llu", (unsigned long long)am_value_to_uint(value));
+        return am_process_strbuf_append_string(sb, tmp);
+    }
+    else if (am_value_is_int(value)) {
+        wchar_t tmp[64];
+        swprintf(tmp, 64, L"%lld", (long long)am_value_to_int(value));
+        return am_process_strbuf_append_string(sb, tmp);
+    }
+    else if (am_value_is_float(value)) {
+        wchar_t tmp[128];
+        swprintf(tmp, 128, L"%g", (double)am_value_to_float(value));
+        return am_process_strbuf_append_string(sb, tmp);
+    }
+    else if (am_value_is_boolean(value)) {
+        return am_process_strbuf_append_string(sb, am_value_to_boolean(value) ? L"#t" : L"#f");
+    }
+    else if (am_value_is_null(value)) {
+        return am_process_strbuf_append_string(sb, L"#null");
+    }
+    else if (am_value_is_undefined(value)) {
+        return am_process_strbuf_append_string(sb, L"#undefined");
+    }
+
+    return am_process_strbuf_append_string(sb, L"#<value>");
+}
+
+
+// 功能说明：将进程堆中的列表对象转换为可显示宽字符串。成功返回新分配的 wchar_t*，失败返回 NULL。
+// 实现说明：从 proc->heap 中取得对象，从 proc->var_vocab / proc->symbol_vocab 中解析变量名和符号名。
+//          symbol 的处理规则：不在 quote 列表内时带前导单引号；在 quote 列表内时不带前导单引号。
+wchar_t *am_process_list_to_string(am_process_t *proc, am_handle_t hd, size_t *length) {
+    if (!proc || !proc->heap || hd == AM_HANDLE_NULL) return NULL;
+
+    am_value_t value = am_heap_get(proc->heap_alloc, proc->heap, hd);
+    if (!am_value_is_ptr(value)) return NULL;
+
+    am_object_t *obj = am_value_to_ptr(value);
+    if (obj->type != AM_OBJECT_TYPE_LIST) return NULL;
+
+    am_process_strbuf_t sb;
+    if (am_process_strbuf_init(proc->vm_alloc, &sb, 256) != 0) return NULL;
+
+    am_list_t *lst = (am_list_t *)obj;
+    bool in_quote = (lst->type == AM_LIST_TYPE_QUOTE);
+    if (lst->type == AM_LIST_TYPE_LAMBDA) {
+        if (am_process_append_lambda_to_strbuf(&sb, proc, lst, in_quote) != 0) {
+            am_free(proc->vm_alloc, sb.buf);
+            return NULL;
+        }
+    }
+    else {
+        if (am_process_append_list_to_strbuf(&sb, proc, lst, in_quote) != 0) {
+            am_free(proc->vm_alloc, sb.buf);
+            return NULL;
+        }
+    }
+
+    if (length) *length = sb.len;
+    return sb.buf;
 }
 
 

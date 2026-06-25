@@ -132,6 +132,54 @@ static void value_to_wchar_buf(am_process_t *proc, am_value_t v, wchar_t *buf, s
 }
 
 
+// 递归比较两个值是否结构相等（用于 equal?）
+static bool runtime_value_equal(am_process_t *proc, am_value_t a, am_value_t b) {
+    if (a == b) return true;
+
+    // 数字按数值比较
+    if (am_value_is_number(a) && am_value_is_number(b)) {
+        am_float_t fa = runtime_number_to_float(a);
+        am_float_t fb = runtime_number_to_float(b);
+        return fa == fb;
+    }
+
+    // 同为 handle 时按对象类型递归比较
+    if (am_value_is_handle(a) && am_value_is_handle(b)) {
+        am_handle_t ha = am_value_to_handle(a);
+        am_handle_t hb = am_value_to_handle(b);
+        am_value_t va = am_heap_get(proc->heap_alloc, proc->heap, ha);
+        am_value_t vb = am_heap_get(proc->heap_alloc, proc->heap, hb);
+        if (!am_value_is_ptr(va) || !am_value_is_ptr(vb)) return false;
+
+        am_object_t *oa = am_value_to_ptr(va);
+        am_object_t *ob = am_value_to_ptr(vb);
+        if (oa->type != ob->type) return false;
+
+        if (oa->type == AM_OBJECT_TYPE_LIST) {
+            am_list_t *la = (am_list_t *)oa;
+            am_list_t *lb = (am_list_t *)ob;
+            if (la->length != lb->length) return false;
+            for (size_t i = 0; i < la->length; i++) {
+                if (!runtime_value_equal(proc, la->children[i], lb->children[i])) return false;
+            }
+            return true;
+        }
+
+        if (oa->type == AM_OBJECT_TYPE_WSTRING) {
+            am_wstring_t *wa = (am_wstring_t *)oa;
+            am_wstring_t *wb = (am_wstring_t *)ob;
+            if (wa->length != wb->length) return false;
+            for (size_t i = 0; i < wa->length; i++) {
+                if (wa->content[i] != wb->content[i]) return false;
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
 // ===============================================================================
 // 第一类：基本存取指令
 // ===============================================================================
@@ -880,6 +928,19 @@ static int32_t op_mod(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
 }
 
 
+static int32_t op_pow(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt;
+    (void)operand;
+    am_value_t a = am_process_pop_operand(proc);
+    am_value_t b = am_process_pop_operand(proc);
+    if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
+    am_float_t result = pow(runtime_number_to_float(b), runtime_number_to_float(a));
+    am_process_push_operand(proc, am_make_value_of_float(result));
+    am_process_step(proc);
+    return 0;
+}
+
+
 static int32_t op_eq(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)rt;
     (void)operand;
@@ -904,6 +965,18 @@ static int32_t op_eqv(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
     else {
         equal = (a == b);
     }
+    am_process_push_operand(proc, equal ? AM_VALUE_TRUE : AM_VALUE_FALSE);
+    am_process_step(proc);
+    return 0;
+}
+
+
+static int32_t op_equal(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt;
+    (void)operand;
+    am_value_t a = am_process_pop_operand(proc);
+    am_value_t b = am_process_pop_operand(proc);
+    bool equal = runtime_value_equal(proc, b, a);
     am_process_push_operand(proc, equal ? AM_VALUE_TRUE : AM_VALUE_FALSE);
     am_process_step(proc);
     return 0;
@@ -996,6 +1069,95 @@ static int32_t op_or(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
 }
 
 
+static int32_t op_isnull(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt;
+    (void)operand;
+    am_value_t v = am_process_pop_operand(proc);
+    bool result = false;
+    if (am_value_is_null(v)) {
+        result = true;
+    }
+    else if (am_value_is_handle(v)) {
+        am_handle_t hd = am_value_to_handle(v);
+        am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, hd);
+        if (am_value_is_ptr(obj_val)) {
+            am_object_t *obj = am_value_to_ptr(obj_val);
+            if (obj->type == AM_OBJECT_TYPE_LIST && ((am_list_t *)obj)->length == 0) {
+                result = true;
+            }
+        }
+    }
+    am_process_push_operand(proc, result ? AM_VALUE_TRUE : AM_VALUE_FALSE);
+    am_process_step(proc);
+    return 0;
+}
+
+
+static int32_t op_isundef(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt;
+    (void)operand;
+    am_value_t v = am_process_pop_operand(proc);
+    am_process_push_operand(proc, am_value_is_undefined(v) ? AM_VALUE_TRUE : AM_VALUE_FALSE);
+    am_process_step(proc);
+    return 0;
+}
+
+
+static int32_t op_isatom(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt;
+    (void)operand;
+    am_value_t v = am_process_pop_operand(proc);
+    am_process_push_operand(proc, !am_value_is_handle(v) ? AM_VALUE_TRUE : AM_VALUE_FALSE);
+    am_process_step(proc);
+    return 0;
+}
+
+
+static int32_t op_islist(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt;
+    (void)operand;
+    am_value_t v = am_process_pop_operand(proc);
+    bool result = false;
+    if (am_value_is_handle(v)) {
+        am_handle_t hd = am_value_to_handle(v);
+        am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, hd);
+        if (am_value_is_ptr(obj_val)) {
+            am_object_t *obj = am_value_to_ptr(obj_val);
+            if (obj->type == AM_OBJECT_TYPE_LIST) {
+                result = true;
+            }
+        }
+    }
+    am_process_push_operand(proc, result ? AM_VALUE_TRUE : AM_VALUE_FALSE);
+    am_process_step(proc);
+    return 0;
+}
+
+
+static int32_t op_isnumber(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt;
+    (void)operand;
+    am_value_t v = am_process_pop_operand(proc);
+    am_process_push_operand(proc, am_value_is_number(v) ? AM_VALUE_TRUE : AM_VALUE_FALSE);
+    am_process_step(proc);
+    return 0;
+}
+
+
+static int32_t op_isnan(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt;
+    (void)operand;
+    am_value_t v = am_process_pop_operand(proc);
+    bool result = false;
+    if (am_value_is_float(v)) {
+        result = isnan(runtime_number_to_float(v));
+    }
+    am_process_push_operand(proc, result ? AM_VALUE_TRUE : AM_VALUE_FALSE);
+    am_process_step(proc);
+    return 0;
+}
+
+
 static int32_t op_typeof(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)rt;
     (void)operand;
@@ -1069,6 +1231,26 @@ static int32_t op_fork(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
 static int32_t op_display(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)operand;
     am_value_t content = am_process_pop_operand(proc);
+
+    // 列表对象使用专门的字符串化函数
+    if (am_value_is_handle(content)) {
+        am_handle_t hd = am_value_to_handle(content);
+        am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, hd);
+        if (am_value_is_ptr(obj_val)) {
+            am_object_t *obj = am_value_to_ptr(obj_val);
+            if (obj->type == AM_OBJECT_TYPE_LIST) {
+                size_t len = 0;
+                wchar_t *str = am_process_list_to_string(proc, hd, &len);
+                if (str) {
+                    am_runtime_output(rt, str);
+                    am_free(proc->vm_alloc, str);
+                    am_process_step(proc);
+                    return 0;
+                }
+            }
+        }
+    }
+
     wchar_t buf[1024];
     value_to_wchar_buf(proc, content, buf, 1024);
     am_runtime_output(rt, buf);
@@ -1315,8 +1497,10 @@ int32_t am_runtime_op_dispatch(am_runtime_t *rt, am_process_t *proc, uint32_t op
         case AM_VM_OP_mul:         return op_mul(rt, proc, operand);
         case AM_VM_OP_div:         return op_div(rt, proc, operand);
         case AM_VM_OP_mod:         return op_mod(rt, proc, operand);
+        case AM_VM_OP_pow:         return op_pow(rt, proc, operand);
         case AM_VM_OP_eq:          return op_eq(rt, proc, operand);
         case AM_VM_OP_eqv:         return op_eqv(rt, proc, operand);
+        case AM_VM_OP_equal:       return op_equal(rt, proc, operand);
         case AM_VM_OP_ge:          return op_ge(rt, proc, operand);
         case AM_VM_OP_le:          return op_le(rt, proc, operand);
         case AM_VM_OP_gt:          return op_gt(rt, proc, operand);
@@ -1324,6 +1508,12 @@ int32_t am_runtime_op_dispatch(am_runtime_t *rt, am_process_t *proc, uint32_t op
         case AM_VM_OP_not:         return op_not(rt, proc, operand);
         case AM_VM_OP_and:         return op_and(rt, proc, operand);
         case AM_VM_OP_or:          return op_or(rt, proc, operand);
+        case AM_VM_OP_isnull:      return op_isnull(rt, proc, operand);
+        case AM_VM_OP_isundef:     return op_isundef(rt, proc, operand);
+        case AM_VM_OP_isatom:      return op_isatom(rt, proc, operand);
+        case AM_VM_OP_islist:      return op_islist(rt, proc, operand);
+        case AM_VM_OP_isnumber:    return op_isnumber(rt, proc, operand);
+        case AM_VM_OP_isnan:       return op_isnan(rt, proc, operand);
         case AM_VM_OP_typeof:      return op_typeof(rt, proc, operand);
         case AM_VM_OP_car:         return op_car(rt, proc, operand);
         case AM_VM_OP_cdr:         return op_cdr(rt, proc, operand);

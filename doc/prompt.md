@@ -1955,9 +1955,43 @@ for t in test_closure test_map test_ast test_parser test_linker test_wstring tes
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个C语言实现的Scheme解释器，采用编译器+中间语言VM架构。中间语言运行时VM的实现主要位于 @src/runtime.c ，其中 op_* 开头的函数是所有VM指令的具体实现。完整的opcode定义位于 @include/opcode.h 。请你检查 @src/runtime.c 中是否还有 @include/opcode.h 中定义了但是没有实现的指令。如果有，则参照其他指令的实现方式，并参考既有TS实现 @typescript/src/Runtime.ts 新增实现。不要改动已有的其他指令的实现。同时，根据实际情况，修改指令译码函数 am_runtime_op_dispatch 。
+
+请你实现上述需求，并参照 @test/test_runtime.c 另写一个文件，对新引入的指令进行测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
+完成以下两项需求：
+
+1、参照 @src/ast.c 中的am_ast_node_to_string，在 @src/process.c 中，实现功能相同的函数，其签名如下：
+
+wchar_t *am_process_list_to_string(am_process_t *proc, am_handle_t hd, size_t *length);
+
+该函数从process的heap、var_vocab和symbol_vocab中取得显示列表所需的字符串信息。其中symbol的处理需要特别注意：凡是不在quote列表内的symbol，都带上前缀单引号“'”；凡是在quote列表内的symbol，都不带前缀单引号“'”。
+
+2、基于刚刚实现的 am_process_list_to_string ，在 @src/runtime.c 的 op_display 中，新增列表对象显示的功能。
+
+请你实现上述需求，并基于 @test/test_runtime_new_opcodes.c 对各类数据（包括列表）的display进行测试。你可以使用WSL进行编译构建和测试。
+
+修改需求：对于 am_process_list_to_string ，增加以下要求：显示quote列表时，无论最外层list还是嵌套的内层list，都不显示前导单引号“'”；但是空列表除外，空list无论位于何处，都应显示前导单引号，即“'()”。
+
+请你在 @test/test_runtime_new_opcodes.c 中，增加以下测试用例：
+
+```
+(display
+((lambda (x) (cons x (cons (cons quote (cons x '())) '()))) (quote (lambda (x) (cons x (cons (cons quote (cons x '())) '())))))
+)
+```
+
+这是著名的Quine，即输出自身代码的程序。因此，该程序的期望输出结果，就是：
+
+```
+((lambda (x) (cons x (cons (cons quote (cons x '())) '()))) (quote (lambda (x) (cons x (cons (cons quote (cons x '())) '())))))
+```
+
+你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

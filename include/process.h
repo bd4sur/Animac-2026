@@ -143,6 +143,12 @@ static inline int32_t am_process_set_current_closure(am_process_t *proc, am_hand
 am_value_t am_process_dereference(am_process_t *proc, am_varid_t varid);
 
 
+// 功能说明：将进程堆中的列表对象转换为可显示宽字符串。成功返回新分配的 wchar_t*（由调用者释放），失败返回 NULL。
+// 实现说明：从 proc->heap 中取得对象，从 proc->var_vocab / proc->symbol_vocab 中解析变量名和符号名。
+//          symbol 的处理规则：不在 quote 列表内时带前导单引号；在 quote 列表内时不带前导单引号。
+wchar_t *am_process_list_to_string(am_process_t *proc, am_handle_t hd, size_t *length);
+
+
 ///////////////////////////////////////////
 // 程序流程控制
 ///////////////////////////////////////////
