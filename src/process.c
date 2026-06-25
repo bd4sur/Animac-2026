@@ -31,17 +31,17 @@ static inline bool is_handle_value(am_value_t v) {
 
 // GC根收集辅助函数：分析一组运行时环境（当前闭包、opstack、fstack）中的GC根
 static int32_t gc_root_helper(
-    am_process_t *proc, am_list_t *gcroots,
+    am_process_t *proc, am_list_t **gcroots,
     am_handle_t current_closure_handle,
     am_value_t *opstack, size_t opstack_length,
     am_value_t *fstack, size_t fstack_length
 ) {
-    if (!proc || !gcroots) return -1;
+    if (!proc || !gcroots || !*gcroots) return -1;
 
     // 加入当前闭包handle
-    am_list_t *lst = am_list_push(proc->vm_alloc, gcroots, am_make_value_of_handle(current_closure_handle));
+    am_list_t *lst = am_list_push(proc->vm_alloc, *gcroots, am_make_value_of_handle(current_closure_handle));
     if (!lst) return -1;
-    gcroots = lst;
+    *gcroots = lst;
 
     // 加入当前闭包内的变量绑定（约束变量和自由变量）
     am_obj_closure_t *current_closure_obj = am_process_get_closure(proc, current_closure_handle);
@@ -49,9 +49,9 @@ static int32_t gc_root_helper(
         for (size_t i = 0; i < current_closure_obj->length; i++) {
             am_value_t value = current_closure_obj->bindings[i].value;
             if (is_handle_value(value)) {
-                lst = am_list_push(proc->vm_alloc, gcroots, value);
+                lst = am_list_push(proc->vm_alloc, *gcroots, value);
                 if (!lst) return -1;
-                gcroots = lst;
+                *gcroots = lst;
             }
         }
     }
@@ -60,9 +60,9 @@ static int32_t gc_root_helper(
     for (size_t i = 0; i < opstack_length; i++) {
         am_value_t v = opstack[i];
         if (is_handle_value(v)) {
-            lst = am_list_push(proc->vm_alloc, gcroots, v);
+            lst = am_list_push(proc->vm_alloc, *gcroots, v);
             if (!lst) return -1;
-            gcroots = lst;
+            *gcroots = lst;
         }
     }
 
@@ -91,17 +91,17 @@ static int32_t gc_root_helper(
         }
 
         // 将栈帧的闭包handle加入GC根
-        lst = am_list_push(proc->vm_alloc, gcroots, closure_handle_value);
+        lst = am_list_push(proc->vm_alloc, *gcroots, closure_handle_value);
         if (!lst) return -1;
-        gcroots = lst;
+        *gcroots = lst;
 
         // 将该闭包内的变量绑定中的handle加入GC根
         for (size_t j = 0; j < closure_obj->length; j++) {
             am_value_t value = closure_obj->bindings[j].value;
             if (is_handle_value(value)) {
-                lst = am_list_push(proc->vm_alloc, gcroots, value);
+                lst = am_list_push(proc->vm_alloc, *gcroots, value);
                 if (!lst) return -1;
-                gcroots = lst;
+                *gcroots = lst;
             }
         }
     }
@@ -530,8 +530,8 @@ am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd) {
 // 功能说明：从当前进程和续体环境中收集GC根。成功返回0，失败返回-1
 // 设计说明：可达性分析的根（GC根）有：当前闭包本身、当前闭包和函数调用栈对应闭包内的变量绑定、操作数栈内的把柄、函数调用栈内所有栈帧对应的闭包把柄、所有continuation中保留的上面的各项
 // 实现说明：gcroots是收集到的GC根的TPV的列表，由外部分配和释放。
-int32_t am_process_gc_root(am_process_t *proc, am_list_t *gcroots) {
-    if (!proc || !gcroots || !proc->heap) return -1;
+int32_t am_process_gc_root(am_process_t *proc, am_list_t **gcroots) {
+    if (!proc || !gcroots || !*gcroots || !proc->heap) return -1;
 
     // 分析当前进程中的GC根
     size_t opstack_length = am_process_length_of_opstack(proc);
@@ -712,13 +712,13 @@ int32_t am_process_gc_sweep(am_process_t *proc) {
 int32_t am_process_gc(am_process_t *proc) {
     if (!proc || !proc->heap || !proc->heap_alloc || !proc->vm_alloc) return -1;
 
-    // 收集GC根对象
-    am_list_t *gcroots = am_list_create(proc->vm_alloc, 4096, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    // 收集GC根对象 TODO 初始容量可调
+    am_list_t *gcroots = am_list_create(proc->vm_alloc, 2048, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
     if (!gcroots) return -1;
 
     int32_t ret = 0;
 
-    if (am_process_gc_root(proc, gcroots) != 0) {
+    if (am_process_gc_root(proc, &gcroots) != 0) {
         ret = -1;
         goto cleanup;
     }

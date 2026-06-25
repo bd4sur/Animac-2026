@@ -178,7 +178,7 @@ am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd);
 // 功能说明：从当前进程和续体环境中收集GC根。成功返回0，失败返回-1
 // 设计说明：可达性分析的根（GC根）有：当前闭包本身、当前闭包和函数调用栈对应闭包内的变量绑定、操作数栈内的把柄、函数调用栈内所有栈帧对应的闭包把柄、所有continuation中保留的上面的各项
 // 实现说明：gcroots是收集到的GC根的TPV的列表，由外部分配和释放。
-int32_t am_process_gc_root(am_process_t *proc, am_list_t *gcroots);
+int32_t am_process_gc_root(am_process_t *proc, am_list_t **gcroots);
 
 // 功能说明：从GC根开始，递归标记存活对象。成功返回0，失败返回-1（或更小的负数）
 int32_t am_process_gc_mark(am_process_t *proc, am_value_t v);

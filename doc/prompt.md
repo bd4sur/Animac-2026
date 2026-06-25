@@ -1947,6 +1947,11 @@ for t in test_closure test_map test_ast test_parser test_linker test_wstring tes
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+在 @src/process.c 中，实现了若干与垃圾回收（GC）相关的函数。其中 am_process_gc_root、gc_root_helper 两个函数涉及对于 am_list_t 对象 gcroots 的读写。然而，am_list_t 是可扩容的容器，对其进行读写，可能导致 am_list_t 对象的指针发生变化。在当前的实现中，am_process_gc_root、gc_root_helper 仅接受指向 gcroots 对象的指针，这会导致调用方失去扩容后 gcroots 的新指针。因此，我要求你将这两个函数的参数改为指向gcroots对象的二级指针，使得调用者能够始终跟踪到扩容后（指针发生变化的）gcroots对象。
+
+无需测试。
 
 ---------------------
 
