@@ -97,13 +97,13 @@ static int32_t compiler_is_native_ref(am_compiler_ctx_t *ctx, am_value_t v) {
 }
 
 
-static int32_t compiler_primitive_opcode_for_varid(am_compiler_ctx_t *ctx, am_varid_t varid) {
+static int32_t compiler_builtin_opcode_for_varid(am_compiler_ctx_t *ctx, am_varid_t varid) {
     if (!ctx || !ctx->ast || !ctx->ast->var_vocab) return -1;
     wchar_t *name = am_vocab_get(ctx->ast->alloc, ctx->ast->var_vocab, &varid);
     if (!name) return -1;
 
     // 通过 AM_GLOBAL_BUILTIN_VAR 查找 builtin 下标，再通过 AM_BUILTIN_OPCODE_MAP 取得 opcode。
-    // 这样 compiler 与 parser 对 builtin/primitive 的认知保持一致。
+    // 这样 compiler 与 parser 对 builtin 的认知保持一致。
     for (size_t i = 0; i < AM_GLOBAL_BUILTIN_VAR_NUM; i++) {
         if (wcscmp(name, AM_GLOBAL_BUILTIN_VAR[i]) == 0) {
             return AM_BUILTIN_OPCODE_MAP[i];
@@ -371,7 +371,7 @@ static int32_t compile_value(am_compiler_ctx_t *ctx, am_value_t v) {
             return emit_instruction(ctx, AM_VM_OP_push, v);
         }
         am_varid_t varid = am_value_to_varid(v);
-        if (compiler_primitive_opcode_for_varid(ctx, varid) >= 0) {
+        if (compiler_builtin_opcode_for_varid(ctx, varid) >= 0) {
             return emit_instruction(ctx, AM_VM_OP_push, v);
         }
         return emit_instruction(ctx, AM_VM_OP_load, v);
@@ -479,18 +479,19 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
         return compile_complex_application(ctx, handle);
     }
 
-    // 首项是合法的可调用项，包括变量、Native、Primitive、Lambda
+    // 首项是合法的可调用项，包括变量、Native、Builtin、Lambda
     if (am_value_is_handle(first) || am_value_is_varid(first) || am_value_is_symbol(first)) {
         // call/cc 与 fork 是全局内置变量形式的特殊形式
         if (am_value_is_varid(first)) {
             am_varid_t first_varid = am_value_to_varid(first);
+            // 特殊Builtin：call/cc
             if (compiler_varid_name_equals(ctx, first_varid, L"call/cc") == 0) {
                 return compile_callcc(ctx, handle);
             }
+            // 特殊Builtin：fork
             if (compiler_varid_name_equals(ctx, first_varid, L"fork") == 0) {
                 if (node->length < 2) return -1;
-                return emit_instruction(ctx, AM_VM_OP_fork,
-                                       am_list_get(ctx->ast->alloc, node, 1));
+                return emit_instruction(ctx, AM_VM_OP_fork, am_list_get(ctx->ast->alloc, node, 1));
             }
         }
 
@@ -499,14 +500,9 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
             if (compile_value(ctx, am_list_get(ctx->ast->alloc, node, i)) != 0) return -1;
         }
 
-        // Primitive（关键字或全局内置变量）
-        if (am_value_is_symbol(first)) {
-            // 在C实现中，关键字符号作为特殊形式已在上方处理；剩余情况按不可调用处理
-            return -1;
-        }
-
+        // 一般Builtin：对应特定VM指令
         if (am_value_is_varid(first)) {
-            int32_t opcode = compiler_primitive_opcode_for_varid(ctx, am_value_to_varid(first));
+            int32_t opcode = compiler_builtin_opcode_for_varid(ctx, am_value_to_varid(first));
             if (opcode >= 0) {
                 return emit_instruction(ctx, (uint32_t)opcode, AM_VALUE_UNDEFINED);
             }

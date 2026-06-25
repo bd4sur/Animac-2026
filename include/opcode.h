@@ -61,7 +61,7 @@ extern "C" {
 
 
 // 全局内置变量到 VM opcode 的映射表。
-// 下标与 AM_GLOBAL_BUILTIN_VAR 一一对应；-1 表示该 builtin 没有对应 primitive opcode。
+// 下标与 AM_GLOBAL_BUILTIN_VAR 一一对应；-1 表示该 builtin 没有对应 opcode。
 extern const int32_t AM_BUILTIN_OPCODE_MAP[AM_GLOBAL_BUILTIN_VAR_NUM];
 
 

@@ -1357,7 +1357,7 @@ static void test_parse_opstack_depth_analysis(void) {
         am_ast_destroy(ast);
     }
 
-    // primitive：(+ 1 2) 需要同时压入 2 个参数
+    // builtin：(+ 1 2) 需要同时压入 2 个参数
     {
         wchar_t *code = L"((lambda () (+ 1 2)))";
         am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
@@ -1447,7 +1447,7 @@ static void test_parse_opstack_depth_analysis(void) {
         am_ast_destroy(ast);
     }
 
-    // 更大深度的 primitive：(+ 1 2 3 4 5) 同时压入 5 个参数
+    // 更大深度的 builtin：(+ 1 2 3 4 5) 同时压入 5 个参数
     {
         wchar_t *code = L"((lambda () (+ 1 2 3 4 5)))";
         am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");

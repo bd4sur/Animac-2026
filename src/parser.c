@@ -21,7 +21,7 @@
 #define PARSER_LOG(x) ((void)x); // printf(x);
 
 // 全局内置变量到 VM opcode 的映射表。
-// 下标与 AM_GLOBAL_BUILTIN_VAR 一一对应；-1 表示该 builtin 没有对应 primitive opcode。
+// 下标与 AM_GLOBAL_BUILTIN_VAR 一一对应；-1 表示该 builtin 没有对应 opcode。
 const int32_t AM_BUILTIN_OPCODE_MAP[AM_GLOBAL_BUILTIN_VAR_NUM] = {
     [0]  = AM_VM_OP_add,         // +
     [1]  = AM_VM_OP_sub,         // -
@@ -1940,9 +1940,9 @@ static int32_t analyze_value(am_ast_t *ast, am_value_t v, opstack_depth_result_t
 static int32_t analyze_application(am_ast_t *ast, am_handle_t handle, opstack_depth_result_t *out);
 
 
-// 判断变量名是否对应 primitive 操作。
-// 基于 AM_GLOBAL_BUILTIN_VAR 与 AM_BUILTIN_OPCODE_MAP：若变量名是 builtin 且映射opcode非 -1，则是 primitive。
-static int32_t is_primitive_varid(am_ast_t *ast, am_varid_t varid) {
+// 判断变量名是否对应 builtin 操作。
+// 基于 AM_GLOBAL_BUILTIN_VAR 与 AM_BUILTIN_OPCODE_MAP：若变量名是 builtin 且映射opcode非 -1，则是 builtin。
+static int32_t is_builtin_varid(am_ast_t *ast, am_varid_t varid) {
     if (!ast || !ast->var_vocab) return -1;
     wchar_t *name = am_vocab_get(ast->alloc, ast->var_vocab, &varid);
     if (!name) return -1;
@@ -1956,7 +1956,7 @@ static int32_t is_primitive_varid(am_ast_t *ast, am_varid_t varid) {
 }
 
 
-// 分析参数列表：从 start_index 开始连续压入 n_args 个参数，随后调用（或primitive）消耗参数并可能压入结果。
+// 分析参数列表：从 start_index 开始连续压入 n_args 个参数，随后调用（或builtin）消耗参数并可能压入结果。
 static int32_t analyze_args_call(
     am_ast_t *ast, am_list_t *lst,
     size_t start_index, int32_t n_args, int32_t push_result,
@@ -1979,7 +1979,7 @@ static int32_t analyze_args_call(
         current += arg.effect;
     }
 
-    // 调用/primitive 消耗 n_args 个参数
+    // 调用/builtin 消耗 n_args 个参数
     if ((int32_t)current >= n_args) {
         current -= (size_t)n_args;
     } else {
@@ -1999,7 +1999,7 @@ static int32_t analyze_args_call(
 
 
 // 分析 begin 形式：(begin e1 e2 ... en)
-// 编译器会在相邻表达式之间插入 pop 指令丢弃中间结果。
+// TODO 编译器【暂不】会在相邻表达式之间插入 pop 指令丢弃中间结果。
 static int32_t analyze_begin(am_ast_t *ast, am_list_t *lst, opstack_depth_result_t *out) {
     if (!ast || !lst || !out) return -1;
 
@@ -2014,10 +2014,10 @@ static int32_t analyze_begin(am_ast_t *ast, am_list_t *lst, opstack_depth_result
         if (expr_max > max) max = expr_max;
         current += expr.effect;
 
-        // 编译器会在非最后一个表达式后插入 pop
-        if (i < lst->length - 1 && current > 0) {
-            current--;
-        }
+        // TODO 编译器【暂不】会在非最后一个表达式后插入 pop
+        // if (i < lst->length - 1 && current > 0) {
+        //     current--;
+        // }
     }
 
     out->max = max;
@@ -2300,8 +2300,8 @@ static int32_t analyze_application(am_ast_t *ast, am_handle_t handle, opstack_de
 
     // 普通调用：首项为 lambda handle / varid，参数从 children[1] 开始
     int32_t n_args = (int32_t)lst->length - 1;
-    if (am_value_is_varid(first) && is_primitive_varid(ast, am_value_to_varid(first)) == 0) {
-        // primitive：操作符本身不入栈，只压参数
+    if (am_value_is_varid(first) && is_builtin_varid(ast, am_value_to_varid(first)) == 0) {
+        // builtin：操作符本身不入栈（自己就是单条opcode），只压参数
         return analyze_args_call(ast, lst, 1, n_args, 1, out);
     }
 
