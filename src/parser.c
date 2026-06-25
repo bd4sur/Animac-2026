@@ -34,7 +34,7 @@ const int32_t AM_BUILTIN_OPCODE_MAP[AM_GLOBAL_BUILTIN_VAR_NUM] = {
     [8]  = AM_VM_OP_lt,          // <
     [9]  = AM_VM_OP_ge,          // >=
     [10] = AM_VM_OP_le,          // <=
-    [11] = AM_VM_OP_eq,          // ==
+    [11] = AM_VM_OP_eqv,         // ==
     [12] = AM_VM_OP_eq,          // eq?
     [13] = AM_VM_OP_eqv,         // eqv?
     [14] = AM_VM_OP_eqv,         // equal?
@@ -2460,7 +2460,7 @@ size_t am_parser_opstack_depth_analysis(am_ast_t *ast) {
 // 解析器入口
 // ===============================================================================
 
-am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path) {
+am_ast_t *am_parse(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path) {
     if (!alloc || !code || !absolute_path) return NULL;
 
     // 词法分析

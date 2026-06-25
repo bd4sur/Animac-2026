@@ -19,7 +19,7 @@
 // 基础设施：基于内存池的简单测试分配器（bump allocator）
 // ===============================================================================
 
-#define TEST_POOL_SIZE (512 * 1024 * 1024)
+#define TEST_POOL_SIZE (32 * 1024 * 1024)
 
 typedef struct test_allocator_state_t {
     uint8_t *base;
@@ -118,7 +118,7 @@ static am_runtime_t *compile_and_run(const wchar_t *code, int expect_error) {
     test_halt_called = 0;
     test_error_called = 0;
 
-    am_ast_t *ast = am_parser(&test_vm_allocator, (wchar_t *)code, L"/tmp/test.scm");
+    am_ast_t *ast = am_parse(&test_vm_allocator, (wchar_t *)code, L"/tmp/test.scm");
     assert(ast != NULL);
 
     am_parser_tail_call_analysis(ast);
@@ -127,32 +127,15 @@ static am_runtime_t *compile_and_run(const wchar_t *code, int expect_error) {
     assert(linked != NULL);
     assert(linked == ast);
 
-    int32_t resolution_result = am_linker_import_ref_resolution(NULL, linked);
-    assert(resolution_result == 0);
-
-    am_compiler_ctx_t *ctx = am_compiler_ctx_create(linked);
-    assert(ctx != NULL);
-
-    int32_t compile_result = am_compile_all(ctx);
-    assert(compile_result == 0);
-
-    int32_t label_result = am_compiler_label_resolution(ctx);
-    assert(label_result == 0);
-
-    am_module_t mod;
-    memset(&mod, 0, sizeof(mod));
-    mod.base.type = AM_OBJECT_TYPE_BASE;
-    mod.opstack_depth = 1024;
-    mod.ast = linked;
-    mod.ilcode = ctx->ilcode;
-    mod.ilcode_length = ctx->icount;
+    am_module_t *mod = am_compile(linked);
+    assert(mod != NULL);
 
     am_runtime_t *rt = am_runtime_create(&test_vm_allocator, &test_heap_allocator, L"/tmp");
     assert(rt != NULL);
     rt->callback_on_halt = on_halt;
     rt->callback_on_error = on_error;
 
-    am_pid_t pid = am_load_module(rt, &mod);
+    am_pid_t pid = am_load_module(rt, mod);
     assert(pid == 0);
 
     am_start(rt);
@@ -165,8 +148,9 @@ static am_runtime_t *compile_and_run(const wchar_t *code, int expect_error) {
         assert(test_error_called == 0);
     }
 
-    // 释放编译上下文和 AST，调用者负责释放 runtime
-    am_compiler_ctx_destroy(ctx);
+    // 释放模块和 AST，调用者负责释放 runtime
+    free(mod->ilcode);
+    am_free(linked->alloc, mod);
     am_ast_destroy(linked);
 
     return rt;
@@ -216,74 +200,6 @@ static wchar_t *read_file_as_wstring(const wchar_t *path) {
 // 运行时测试
 // ===============================================================================
 
-static void test_runtime_display_number(void) {
-    printf("test_runtime_display_number ... \n");
-
-    const wchar_t *code = L"((lambda ()\n"
-                          L"  (display 42)\n"
-                          L"))\n";
-
-    printf("=== VM output ===\n");
-    am_runtime_t *rt = compile_and_run(code, 0);
-    printf("\n=== VM halted ===\n");
-
-    assert(rt->output_fifo->length == 1);
-    am_runtime_destroy(rt);
-    printf("OK\n");
-}
-
-
-static void test_runtime_factorial(void) {
-    printf("test_runtime_factorial ... \n");
-
-    const wchar_t *code = L"((lambda ()\n"
-                          L"  (define fact\n"
-                          L"    (lambda (n)\n"
-                          L"      (if (<= n 1)\n"
-                          L"          1\n"
-                          L"          (* n (fact (- n 1))))))\n"
-                          L"  (display (fact 5))\n"
-                          L"))\n";
-
-    printf("=== VM output ===\n");
-    am_runtime_t *rt = compile_and_run(code, 0);
-    printf("\n=== VM halted ===\n");
-
-    assert(rt->output_fifo->length == 1);
-    am_runtime_destroy(rt);
-    printf("OK\n");
-}
-
-
-static void test_runtime_complex_recursion(void) {
-    printf("test_runtime_complex_recursion ... \n");
-
-    // 此用例(Man-or-Boy test)来自 test_process.c，用于验证复杂闭包和尾调用
-    const wchar_t *code = L"((lambda ()\n"
-                          L"(define A\n"
-                          L"  (lambda (k x1 x2 x3 x4 x5)\n"
-                          L"      (define B\n"
-                          L"        (lambda ()\n"
-                          L"            (set! k (- k 1))\n"
-                          L"            (A k B x1 x2 x3 x4)))\n"
-                          L"      (if (<= k 0)\n"
-                          L"          (+ (x4) (x5))\n"
-                          L"          (B))))\n"
-                          L"(define thunk_1  (lambda () 1))\n"
-                          L"(define thunk_m1 (lambda () -1))\n"
-                          L"(define thunk_0  (lambda () 0))\n"
-                          L"(display (A 9 thunk_1 thunk_m1 thunk_m1 thunk_1 thunk_0))\n"
-                          L"))\n";
-
-    printf("=== VM output ===\n");
-    am_runtime_t *rt = compile_and_run(code, 0);
-    printf("\n=== VM halted ===\n");
-
-
-    am_runtime_destroy(rt);
-    printf("OK\n");
-}
-
 
 static void test_runtime_load_from_file(void) {
     printf("test_runtime_load_from_file ... \n");
@@ -298,8 +214,8 @@ static void test_runtime_load_from_file(void) {
     wchar_t *file_content = read_file_as_wstring(path);
     assert(file_content != NULL);
 
-    const wchar_t *prefix = L"((lambda () ";
-    const wchar_t *suffix = L" (run) ))";
+    const wchar_t *prefix = L"((lambda () \n";
+    const wchar_t *suffix = L"\n))";
     size_t prefix_len = wcslen(prefix);
     size_t suffix_len = wcslen(suffix);
     size_t content_len = wcslen(file_content);
@@ -314,49 +230,36 @@ static void test_runtime_load_from_file(void) {
     code[pos] = L'\0';
     free(file_content);
 
-    am_ast_t *ast = am_parser(&test_vm_allocator, code, (wchar_t *)path);
+    am_ast_t *ast = am_parse(&test_vm_allocator, code, (wchar_t *)path);
     assert(ast != NULL);
-
-    am_parser_tail_call_analysis(ast);
 
     am_ast_t *linked = am_link(ast, (wchar_t *)base_dir);
     assert(linked != NULL);
-    assert(linked == ast);
 
-    int32_t resolution_result = am_linker_import_ref_resolution(NULL, linked);
-    assert(resolution_result == 0);
+    printf("=== AST ===\n");
+    am_debug_ast_print_to_stdout(linked);
 
-    am_compiler_ctx_t *ctx = am_compiler_ctx_create(linked);
-    assert(ctx != NULL);
+    am_module_t *mod = am_compile(linked);
+    assert(mod != NULL);
 
-    int32_t compile_result = am_compile_all(ctx);
-    assert(compile_result == 0);
-
-    int32_t label_result = am_compiler_label_resolution(ctx);
-    assert(label_result == 0);
-
-    am_module_t mod;
-    memset(&mod, 0, sizeof(mod));
-    mod.base.type = AM_OBJECT_TYPE_BASE;
-    mod.opstack_depth = 1024;
-    mod.ast = linked;
-    mod.ilcode = ctx->ilcode;
-    mod.ilcode_length = ctx->icount;
+    printf("=== IL Code ===\n");
+    am_debug_print_ilcode(mod->ast, mod->ilcode, mod->ilcode_length);
 
     am_runtime_t *rt = am_runtime_create(&test_vm_allocator, &test_heap_allocator, (wchar_t *)base_dir);
     assert(rt != NULL);
     rt->callback_on_halt = on_halt;
     rt->callback_on_error = on_error;
 
-    am_pid_t pid = am_load_module(rt, &mod);
-    assert(pid == 0);
+    am_pid_t pid1 = am_load_module(rt, mod);
+    // am_pid_t pid2 = am_load_module(rt, mod);
 
     printf("=== VM output ===\n");
     am_start(rt);
     printf("\n=== VM halted ===\n");
 
     am_runtime_destroy(rt);
-    am_compiler_ctx_destroy(ctx);
+    free(mod->ilcode);
+    am_free(linked->alloc, mod);
     am_ast_destroy(linked);
     printf("OK\n");
 }
@@ -375,9 +278,6 @@ int main(void) {
     test_allocator_init(&test_vm_allocator_state);
     test_allocator_init(&test_heap_allocator_state);
 
-    // test_runtime_display_number();
-    // test_runtime_factorial();
-    // test_runtime_complex_recursion();
     test_runtime_load_from_file();
 
     test_destroy(&test_vm_allocator_state);

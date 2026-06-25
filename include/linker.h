@@ -31,10 +31,9 @@ typedef struct am_linker_ctx_t am_linker_ctx_t;
 
 
 // 功能描述：对合并后的 AST 执行外部引用解析。
-// 参数说明：ctx 为链接器上下文（当前实现不使用，可传 NULL）；
-//          merged_ast 为已完成模块合并的 AST。
+// 参数说明：merged_ast 为已完成模块合并的 AST。
 // 返回值：  成功返回 0；失败返回 -1。
-int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx, am_ast_t *merged_ast);
+int32_t am_linker_import_ref_resolution(am_ast_t *merged_ast);
 
 
 #ifdef __cplusplus

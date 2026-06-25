@@ -226,7 +226,7 @@ static void test_parse_empty_arglist(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () #null))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_app = am_ast_get_top_node_handle(ast);
@@ -251,7 +251,7 @@ static void test_parse_number_literal(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () 42))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -272,7 +272,7 @@ static void test_parse_negative_number(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () -3.14))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -294,7 +294,7 @@ static void test_parse_string_literal(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () \"hello\"))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -319,7 +319,7 @@ static void test_parse_application(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda (x) (display x)))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -352,7 +352,7 @@ static void test_parse_lambda(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () (lambda (y) y)))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -388,7 +388,7 @@ static void test_parse_quote_shorthand(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () 'x))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -409,7 +409,7 @@ static void test_parse_quote_list(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () '(a b)))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -441,7 +441,7 @@ static void test_parse_quote_keyword(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () 'lambda))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -460,7 +460,7 @@ static void test_node_to_string(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda (x) (define y 10) (+ x y) '(a b) #t \"hi\"))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_app = am_ast_get_top_node_handle(ast);
@@ -496,7 +496,7 @@ static void test_parse_unquote_in_quasiquote(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda (x) `(,x)))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -526,7 +526,7 @@ static void test_parse_import_native(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () (import m \"path/to/m.scm\") (native N)))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     // import 别名和 native 模块名保持原形，不参与 Alpha-renaming
@@ -566,7 +566,7 @@ static void test_parse_alpha_renaming(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda (x) (display x)))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     // 原始变量名仍然保留在词汇表中
@@ -610,7 +610,7 @@ static void test_parse_alpha_renaming_nested(void) {
     // 外层 lambda 中有同名变量 x 的引用；内层 lambda 将 x 作为参数并在体中引用。
     // 二者应被换名为不同的 varid。
     wchar_t *code = L"((lambda (x f) (lambda (x) x) (f x)))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -684,7 +684,7 @@ static void test_man_or_boy(void) {
         L"(display (A 10 thunk_1 thunk_m1 thunk_m1 thunk_1 thunk_0)) "
         L"))";
 
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
@@ -793,7 +793,7 @@ static void test_parse_import_alias_rename(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () (import Lib \"path/to/lib.scm\") (Lib.foo x)))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/path/to/a.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/path/to/a.scm");
     assert(ast != NULL);
 
     // module_id 应为 path.to.a
@@ -857,7 +857,7 @@ static void test_parse_top_lambda_and_var_top(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () (define x 1) (define y 2) (define f (lambda (a) a)) (display x)))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     // top_lambda_handle 已设置
@@ -903,7 +903,7 @@ static void test_parse_tail_call_analysis(void) {
     // 顶层 lambda 最后一个 body 是 (begin ...)，其最后一个子表达式 (display 2) 应为尾调用。
     // 顶层 application 自身也作为入口点被标记为尾调用。
     wchar_t *code = L"((lambda () (begin (display 1) (display 2))))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
     assert(am_parser_tail_call_analysis(ast) == 0);
 
@@ -986,7 +986,7 @@ static void test_ast_print(wchar_t *path) {
     code[pos] = L'\0';
     free(file_content);
 
-    am_ast_t *ast = am_parser(&test_allocator, code, path);
+    am_ast_t *ast = am_parse(&test_allocator, code, path);
     assert(ast != NULL);
 
     printf("=== highlighted code ===\n");
@@ -1085,7 +1085,7 @@ static void test_parse_many_variables_arn(void) {
     pos += suffix_len;
     code[pos] = L'\0';
 
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/many_vars.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/many_vars.scm");
     assert(ast != NULL);
 
     // 33 个原始变量和 33 个 ARN 后的变量都应存在于词汇表中
@@ -1175,7 +1175,7 @@ static am_ast_t *parse_file(const wchar_t *path) {
     code[pos2] = L'\0';
     free(file_content);
 
-    am_ast_t *ast = am_parser(&test_allocator, code, (wchar_t *)path);
+    am_ast_t *ast = am_parse(&test_allocator, code, (wchar_t *)path);
     assert(ast != NULL);
     return ast;
 }
@@ -1350,7 +1350,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // 简单字面量：push 1 个值
     {
         wchar_t *code = L"((lambda () 42))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 1);
@@ -1360,7 +1360,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // primitive：(+ 1 2) 需要同时压入 2 个参数
     {
         wchar_t *code = L"((lambda () (+ 1 2)))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 2);
@@ -1370,7 +1370,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // 普通函数调用：(f 1 2 3) 需要同时压入 3 个参数
     {
         wchar_t *code = L"((lambda () (f 1 2 3)))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 3);
@@ -1380,7 +1380,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // 嵌套表达式：(+ (* 2 3) 4)，内层 * 达到深度 2，外层 + 达到深度 2
     {
         wchar_t *code = L"((lambda () (+ (* 2 3) 4)))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 2);
@@ -1390,7 +1390,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // 带形参的 lambda：进入体时已有 2 个参数在栈上
     {
         wchar_t *code = L"((lambda (x y) (+ x y)))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 2);
@@ -1400,7 +1400,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // begin：中间结果会被 pop，最大深度为 1
     {
         wchar_t *code = L"((lambda () (begin 1 2 3)))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 1);
@@ -1410,7 +1410,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // if：predicate 和分支各自只产生 1 个值
     {
         wchar_t *code = L"((lambda () (if #t 1 2)))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 1);
@@ -1420,7 +1420,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // 复杂 application（首项本身是 application）：需要压入所有子表达式
     {
         wchar_t *code = L"((lambda () (((lambda () +)) 1 2)))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 3);
@@ -1430,7 +1430,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // quasiquote：push 所有子项和 count
     {
         wchar_t *code = L"((lambda () `(1 2 3)))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 4);
@@ -1440,7 +1440,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // 嵌套 lambda：内层 (lambda (x) (+ x 1)) 体深度为 2（store x 后 load x、push 1）
     {
         wchar_t *code = L"((lambda () (define f (lambda (x) (+ x 1))) (f 2)))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 2);
@@ -1450,7 +1450,7 @@ static void test_parse_opstack_depth_analysis(void) {
     // 更大深度的 primitive：(+ 1 2 3 4 5) 同时压入 5 个参数
     {
         wchar_t *code = L"((lambda () (+ 1 2 3 4 5)))";
-        am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 5);

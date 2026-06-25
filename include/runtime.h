@@ -46,7 +46,7 @@ typedef struct am_runtime_t am_runtime_t;
 ///////////////////////////////////////////
 
 #ifndef AM_COMPUTATION_PHASE_LENGTH
-#define AM_COMPUTATION_PHASE_LENGTH (100)
+#define AM_COMPUTATION_PHASE_LENGTH (1)
 #endif
 
 
@@ -124,6 +124,9 @@ int32_t am_runtime_event_handler(am_runtime_t *rt);
 
 // 执行一个时间片。返回 AM_VM_STATE_IDLE 或 AM_VM_STATE_RUNNING。
 int32_t am_runtime_tick(am_runtime_t *rt, uint32_t timeslice);
+
+// 根据opcode和operand分派具体的执行逻辑（指令译码）
+int32_t am_runtime_op_dispatch(am_runtime_t *rt, am_process_t *proc, uint32_t opcode, am_value_t operand);
 
 // 执行当前进程的一条指令。成功返回 0，失败返回 -1。
 int32_t am_runtime_execute(am_runtime_t *rt, am_process_t *proc);

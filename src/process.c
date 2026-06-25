@@ -79,10 +79,11 @@ static int32_t gc_root_helper(
         }
 
         am_handle_t closure_handle = am_value_to_handle(closure_handle_value);
+        if (closure_handle == AM_HANDLE_NULL) continue;
         am_obj_closure_t *closure_obj = am_process_get_closure(proc, closure_handle);
         if (!closure_obj) {
-            fprintf(stderr, "[gc_root_helper] 无法获取闭包对象\n");
-            return -1;
+            fprintf(stderr, "[gc_root_helper] 无法获取闭包对象 %zu\n", closure_handle);
+            continue;
         }
         if (closure_obj->base.type != AM_OBJECT_TYPE_CLOSURE) {
             fprintf(stderr, "[gc_root_helper] 预期闭包，实际非闭包\n");
@@ -176,6 +177,10 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
 
     // 将拷贝进来的AST节点全部标记为静态对象，避免被GC回收
     am_heap_iter(heap_alloc, proc->heap, set_all_heap_objects_static, NULL);
+
+    // 拷贝符号表
+    proc->var_vocab = am_vocab_copy(proc->vm_alloc, mod->ast->var_vocab);
+    proc->symbol_vocab = am_vocab_copy(proc->vm_alloc, mod->ast->symbol_vocab);
 
     // 分配操作数栈
     proc->opstack_capacity = (size_t)(mod->opstack_depth > 0 ? mod->opstack_depth : 1024);
@@ -695,7 +700,7 @@ int32_t am_process_gc_sweep(am_process_t *proc) {
 
     free(keys);
 
-    printf("[GC] 已清理 %zu / %zu 个对象\n", gcount, count);
+    // printf("[GC] 已清理 %zu / %zu 个对象\n", gcount, count);
 
     // TODO 暂不实现allocator管理的底层物理内存的整理
 
@@ -708,7 +713,7 @@ int32_t am_process_gc(am_process_t *proc) {
     if (!proc || !proc->heap || !proc->heap_alloc || !proc->vm_alloc) return -1;
 
     // 收集GC根对象
-    am_list_t *gcroots = am_list_create(proc->vm_alloc, 128, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    am_list_t *gcroots = am_list_create(proc->vm_alloc, 4096, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
     if (!gcroots) return -1;
 
     int32_t ret = 0;

@@ -279,6 +279,21 @@ static int32_t op_set(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
 // 第二类：分支跳转指令
 // ===============================================================================
 
+// 判断变量名是否对应 builtin 操作。
+// 基于 AM_GLOBAL_BUILTIN_VAR 与 AM_BUILTIN_OPCODE_MAP：若变量名是 builtin 且映射opcode非 -1，则是 builtin。
+static int32_t check_builtin_varid(am_process_t *proc, am_varid_t varid) {
+    if (!proc || !proc->var_vocab) return -1;
+    wchar_t *name = am_vocab_get(proc->vm_alloc, proc->var_vocab, &varid);
+    if (!name) return -1;
+
+    for (size_t i = 0; i < AM_GLOBAL_BUILTIN_VAR_NUM; i++) {
+        if (wcscmp(name, AM_GLOBAL_BUILTIN_VAR[i]) == 0) {
+            return AM_BUILTIN_OPCODE_MAP[i];
+        }
+    }
+    return -1;
+}
+
 // call / tailcall 的共享实现。return_target 为 SIZE_MAX 表示尾调用不压栈帧。
 static int32_t op_call_async(am_runtime_t *rt, am_process_t *proc, am_value_t operand, am_iaddr_t return_target) {
     (void)rt;
@@ -359,6 +374,12 @@ static int32_t op_call_async(am_runtime_t *rt, am_process_t *proc, am_value_t op
             fprintf(stderr, "[Runtime] call: 目标对象类型错误\n");
             return -1;
         }
+    }
+
+    if (am_value_is_varid(target)) {
+        int32_t opcode = check_builtin_varid(proc, am_value_to_varid(target));
+        if (opcode >= 0)
+            return am_runtime_op_dispatch(rt, proc, (uint32_t)opcode, operand);
     }
 
     fprintf(stderr, "[Runtime] call: 非法调用目标\n");
@@ -1263,15 +1284,8 @@ am_pid_t am_load_module(am_runtime_t *rt, am_module_t *mod) {
 // 调度器
 // ===============================================================================
 
-int32_t am_runtime_execute(am_runtime_t *rt, am_process_t *proc) {
-    if (!rt || !proc) return -1;
 
-    uint32_t opcode;
-    am_value_t operand;
-    if (am_process_current_instruction(proc, &opcode, &operand) != 0) {
-        return -1;
-    }
-
+int32_t am_runtime_op_dispatch(am_runtime_t *rt, am_process_t *proc, uint32_t opcode, am_value_t operand) {
     switch (opcode) {
         case AM_VM_OP_nop:         return op_nop(rt, proc, operand);
         case AM_VM_OP_store:       return op_store(rt, proc, operand);
@@ -1328,6 +1342,20 @@ int32_t am_runtime_execute(am_runtime_t *rt, am_process_t *proc) {
 }
 
 
+int32_t am_runtime_execute(am_runtime_t *rt, am_process_t *proc) {
+    if (!rt || !proc) return -1;
+
+    uint32_t opcode;
+    am_value_t operand;
+    if (am_process_current_instruction(proc, &opcode, &operand) != 0) {
+        return -1;
+    }
+
+    // printf("Exec: PC=%zu | OpCode=%u | Oprand=%zu(varid=%zu)\n", proc->PC, opcode, operand, am_value_to_varid(operand));
+    return am_runtime_op_dispatch(rt, proc, opcode, operand);
+}
+
+
 int32_t am_runtime_tick(am_runtime_t *rt, uint32_t timeslice) {
     if (!rt || !rt->process_queue) return AM_VM_STATE_IDLE;
     if (rt->process_queue->length == 0) return AM_VM_STATE_IDLE;
@@ -1347,6 +1375,7 @@ int32_t am_runtime_tick(am_runtime_t *rt, uint32_t timeslice) {
         if (am_runtime_execute(rt, proc) != 0) {
             proc->state = AM_PROCESS_STATE_STOPPED;
             if (rt->callback_on_error) rt->callback_on_error(rt);
+            fprintf(stderr, "[Runtime] 指令执行异常\n");
             break;
         }
         timeslice--;
@@ -1375,14 +1404,14 @@ int32_t am_runtime_event_handler(am_runtime_t *rt) {
 
     int32_t vm_state = AM_VM_STATE_IDLE;
     for (int i = 0; i < AM_COMPUTATION_PHASE_LENGTH; i++) {
-        vm_state = am_runtime_tick(rt, 1000);
+        vm_state = am_runtime_tick(rt, 10000);
         if (vm_state == AM_VM_STATE_IDLE) break;
     }
 
 #if AM_ENABLE_GC
-    time_t now = time(NULL);
-    if (now - rt->gc_timestamp >= AM_GC_INTERVAL) {
-        rt->gc_timestamp = now;
+    // time_t now = time(NULL);
+    // if (now - rt->gc_timestamp >= AM_GC_INTERVAL) {
+    //     rt->gc_timestamp = now;
         for (size_t i = 0; i < rt->process_queue->length; i++) {
             am_value_t pid_val = am_list_get(rt->vm_alloc, rt->process_queue, i);
             if (!am_value_is_uint(pid_val)) continue;
@@ -1391,7 +1420,7 @@ int32_t am_runtime_event_handler(am_runtime_t *rt) {
                 am_process_gc(rt->process_pool[pid]);
             }
         }
-    }
+    // }
 #endif
 
     if (rt->callback_on_event) rt->callback_on_event(rt);

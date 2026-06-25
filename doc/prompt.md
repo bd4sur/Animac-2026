@@ -372,7 +372,7 @@ void import_analysis(am_linker_ctx_t *ctx, wchar_t *importee_path, size_t import
         current_module_index = ctx->module_counter;
         ctx->all_module_path[current_module_index] = importee_path;
         wchar_t *code = read_from_file(importee_path);
-        am_ast_t *current_ast = am_parser(ctx->alloc, code, importee_path);
+        am_ast_t *current_ast = am_parse(ctx->alloc, code, importee_path);
         ctx->ALLAST[current_module_index] = current_ast;
         foreach (path of current_ast->dependencies) {
             import_analysis(ctx, path, current_module_index);
@@ -693,7 +693,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
 ```
 // 对合并后的AST执行外部引用解析，也就是将AST中所有的var_type=AM_VAR_TYPE_IMPORT_REF类型的变量，替换为dependencies对应模块中的变量全限定名
 // 成功返回0，失败返回-1。
-int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx, am_ast_t *merged_ast);
+int32_t am_linker_import_ref_resolution(am_ast_t *merged_ast);
 ```
 
 外部引用解析算法：

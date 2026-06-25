@@ -118,7 +118,7 @@ static void test_process_basic(void) {
                           L"(display (A 10 thunk_1 thunk_m1 thunk_m1 thunk_1 thunk_0))\n"
                           L"))\n";
 
-    am_ast_t *ast = am_parser(&test_vm_allocator, (wchar_t *)code, L"/tmp/test.scm");
+    am_ast_t *ast = am_parse(&test_vm_allocator, (wchar_t *)code, L"/tmp/test.scm");
     assert(ast != NULL);
 
     am_parser_tail_call_analysis(ast);
@@ -129,7 +129,7 @@ static void test_process_basic(void) {
     assert(linked == ast);
 
     // 执行外部引用解析
-    int32_t resolution_result = am_linker_import_ref_resolution(NULL, linked);
+    int32_t resolution_result = am_linker_import_ref_resolution(linked);
     assert(resolution_result == 0);
 
     printf("=== resolved AST ===\n");

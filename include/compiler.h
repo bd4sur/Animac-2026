@@ -43,7 +43,7 @@ am_compiler_ctx_t *am_compiler_ctx_create(am_ast_t *ast);
 void am_compiler_ctx_destroy(am_compiler_ctx_t *ctx);
 
 
-// 功能描述：编译器入口。将AST编译为中间语言指令序列。
+// 功能描述：AST编译的起点，将AST编译为中间语言指令序列。
 // 实现说明：成功返回0，失败返回-1。编译结果写入ctx->ilcode和ctx->icount。
 //         注意：本函数不执行标签解析，调用者应在am_compile_all结束后调用am_compiler_label_resolution。
 int32_t am_compile_all(am_compiler_ctx_t *ctx);
@@ -52,6 +52,12 @@ int32_t am_compile_all(am_compiler_ctx_t *ctx);
 // 功能描述：编译后处理——全局标签解析，该函数在am_compile_all结束后调用，用于将所有的label替换为绝对iaddr。
 // 实现描述：遍历所有ilcode，检查am_instruction.operand的am_value_t的TPV类型是否是AM_VALUE_TYPE_LABEL。如果是，则调用am_compiler_parse_label_to_iaddr将其转换为iaddr，并替换掉原来的label。成功返回0，失败返回-1。
 int32_t am_compiler_label_resolution(am_compiler_ctx_t *ctx);
+
+typedef struct am_module_t am_module_t;
+
+// 功能描述：编译器入口。将AST编译为am_module_t。
+// 实现说明：成功返回指针，失败返回NULL。
+am_module_t *am_compile(am_ast_t *ast);
 
 
 #ifdef __cplusplus

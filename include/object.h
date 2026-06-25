@@ -272,6 +272,8 @@ static inline am_value_t am_make_value_of_float(am_float_t x) {
 #define AM_OBJECT_TYPE_TOKEN        (0x0A)  // 词元
 #define AM_OBJECT_TYPE_SCOPE        (0x0B)  // 词法作用域（环境帧）
 #define AM_OBJECT_TYPE_VOCAB        (0x0C)  // 词典（字符串集合）
+#define AM_OBJECT_TYPE_MODULE       (0x0D)  // 模块
+#define AM_OBJECT_TYPE_PROCESS      (0x0E)  // 进程
 
 
 // Object基类（公共头）

@@ -60,6 +60,9 @@ typedef struct am_process_t {
 
     am_heap_t *heap;   // 进程私有堆（由堆内存专用allocator管理）
 
+    am_vocab_t *var_vocab;    // 变量词表
+    am_vocab_t *symbol_vocab; // 符号词表
+
     am_handle_t current_closure_handle; // 指向当前闭包的把柄
 
     // 操作数栈（其容量为opstack_depth）

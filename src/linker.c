@@ -90,17 +90,17 @@ static wchar_t *linker_resolve_path(const wchar_t *base_dir, const wchar_t *path
 }
 
 
-// 从 WString 节点中提取 import 路径，去掉首尾双引号。
+// 从 WString 节点中提取 import 路径。
 // 返回系统 malloc 的字符串；失败返回 NULL。
 static wchar_t *linker_extract_path_from_wstring(am_wstring_t *ws) {
-    if (!ws || ws->length < 2) return NULL;
+    if (!ws || ws->length <= 0) return NULL;
 
-    size_t len = ws->length - 2; // 去掉首尾引号
+    size_t len = ws->length;
     wchar_t *buf = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
     if (!buf) return NULL;
 
     for (size_t i = 0; i < len; i++) {
-        buf[i] = (wchar_t)am_value_to_wchar(ws->content[i + 1]);
+        buf[i] = (wchar_t)am_value_to_wchar(ws->content[i]);
     }
     buf[len] = L'\0';
     return buf;
@@ -222,7 +222,7 @@ static int32_t import_analysis(am_linker_ctx_t *ctx, wchar_t *importee_path, siz
             code[pos] = L'\0';
             free(raw_code);
 
-            current_ast = am_parser(ctx->alloc, code, path_copy);
+            current_ast = am_parse(ctx->alloc, code, path_copy);
             if (!current_ast) {
                 free(code);
                 free(path_copy);
@@ -546,8 +546,7 @@ static void import_ref_resolution_iter_cb(am_handle_t handle, am_value_t value, 
 // 对合并后的AST执行外部引用解析，也就是将AST中所有的 var_type=AM_VAR_TYPE_IMPORT_REF 类型的变量，
 // 替换为 dependencies 对应模块中的变量全限定名。
 // 成功返回 0，失败返回 -1。
-int32_t am_linker_import_ref_resolution(am_linker_ctx_t *ctx, am_ast_t *merged_ast) {
-    (void)ctx;
+int32_t am_linker_import_ref_resolution(am_ast_t *merged_ast) {
 
     if (!merged_ast || !merged_ast->alloc || !merged_ast->nodes ||
         !merged_ast->var_vocab || !merged_ast->var_type || !merged_ast->var_top ||
@@ -654,6 +653,13 @@ am_ast_t *am_link(am_ast_t *main_ast, wchar_t *base_dir) {
 
     // 模块合并会改变 AST 结构，需要重新进行整体的尾位置分析
     if (am_parser_tail_call_analysis(global_ast) != 0) {
+        free(sorted);
+        linker_ctx_destroy(ctx);
+        return NULL;
+    }
+
+    // 对合并后的AST执行外部引用解析
+    if (am_linker_import_ref_resolution(global_ast) != 0) {
         free(sorted);
         linker_ctx_destroy(ctx);
         return NULL;

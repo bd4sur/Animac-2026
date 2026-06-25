@@ -80,7 +80,7 @@ Analyser需要对AST做两趟扫描。分别是“词法作用域分析”和“
 
 # 实现说明
 
-- 调用 am_parser(code, absolute_path) 即可完成词法分析、词汇表构建、语法分析和预处理指令解析。
+- 调用 am_parse(code, absolute_path) 即可完成词法分析、词汇表构建、语法分析和预处理指令解析。
 - 返回的 am_ast_t 由调用者负责销毁。
 - 若解析失败，返回 NULL。
 
@@ -91,7 +91,7 @@ Analyser需要对AST做两趟扫描。分别是“词法作用域分析”和“
 // 输入：内存分配器 alloc、Scheme 源码 code、模块绝对路径 absolute_path。
 // 输出：解析得到的 AST；失败返回 NULL。
 // 说明：code 与 absolute_path 由调用者所有；tokens 由返回的 AST 所有，随 AST 销毁而释放。
-am_ast_t *am_parser(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path);
+am_ast_t *am_parse(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path);
 
 
 // 对 AST 执行整体的尾位置分析，将处于尾位置的 application 节点把柄记录到 ast->tailcall_handles。

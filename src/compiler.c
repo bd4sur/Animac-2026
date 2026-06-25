@@ -11,6 +11,7 @@
 #include "map.h"
 #include "vocab.h"
 #include "compiler.h"
+#include "module.h"
 
 
 // ===============================================================================
@@ -603,6 +604,8 @@ static int32_t compile_callcc(am_compiler_ctx_t *ctx, am_handle_t handle) {
     }
 
     // 续体返回点标签
+    am_value_t cont_label = am_compiler_make_label(ctx, cont_idx);
+    (void)cont_label;
     return am_compiler_locate_label(ctx, cont_idx, ctx->icount);
 }
 
@@ -666,7 +669,7 @@ static int32_t compile_begin(am_compiler_ctx_t *ctx, am_handle_t handle) {
     for (size_t i = 1; i < node->length; i++) {
         if (compile_value(ctx, am_list_get(ctx->ast->alloc, node, i)) != 0) return -1;
         if (i < node->length - 1) {
-            if (emit_instruction(ctx, AM_VM_OP_pop, AM_VALUE_UNDEFINED) != 0) return -1;
+            // if (emit_instruction(ctx, AM_VM_OP_pop, AM_VALUE_UNDEFINED) != 0) return -1;
         }
     }
     return 0;
@@ -949,6 +952,42 @@ int32_t am_compiler_label_resolution(am_compiler_ctx_t *ctx) {
         }
     }
     return 0;
+}
+
+
+am_module_t *am_compile(am_ast_t *ast) {
+    if (!ast || !ast->alloc) return NULL;
+
+    am_compiler_ctx_t *ctx = am_compiler_ctx_create(ast);
+    if (!ctx) return NULL;
+
+    if (am_compile_all(ctx) != 0) {
+        am_compiler_ctx_destroy(ctx);
+        return NULL;
+    }
+
+    if (am_compiler_label_resolution(ctx) != 0) {
+        am_compiler_ctx_destroy(ctx);
+        return NULL;
+    }
+
+    am_module_t *mod = (am_module_t *)am_calloc(ast->alloc, sizeof(am_module_t));
+    if (!mod) {
+        am_compiler_ctx_destroy(ctx);
+        return NULL;
+    }
+
+    mod->base.type = AM_OBJECT_TYPE_MODULE;
+    mod->opstack_depth = 1024;
+    mod->ast = ast;
+    mod->ilcode = ctx->ilcode;
+    mod->ilcode_length = ctx->icount;
+
+    // ilcode所有权转移给module，避免ctx销毁时释放ilcode
+    ctx->ilcode = NULL;
+
+    am_compiler_ctx_destroy(ctx);
+    return mod;
 }
 
 

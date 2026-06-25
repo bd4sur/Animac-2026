@@ -561,17 +561,17 @@ void am_debug_ast_print(FILE *out, am_ast_t *ast) {
 
     debug_ast_print_nodes_map(out, ast);
 
-    debug_ast_print_indent(out, 1);
-    fwprintf(out, L"top_node: ");
-    am_handle_t top = am_ast_get_top_node_handle(ast);
-    if (top == AM_HANDLE_NULL) {
-        fwprintf(out, L"null\n");
-    }
-    else {
-        fputwc(L'\n', out);
-        debug_ast_print_node(ast, top, out, &visited, &visited_count, &visited_capacity, 2);
-        fputwc(L'\n', out);
-    }
+    // debug_ast_print_indent(out, 1);
+    // fwprintf(out, L"top_node: ");
+    // am_handle_t top = am_ast_get_top_node_handle(ast);
+    // if (top == AM_HANDLE_NULL) {
+    //     fwprintf(out, L"null\n");
+    // }
+    // else {
+    //     fputwc(L'\n', out);
+    //     debug_ast_print_node(ast, top, out, &visited, &visited_count, &visited_capacity, 2);
+    //     fputwc(L'\n', out);
+    // }
 
     free(visited);
     fwprintf(out, L"}\n");

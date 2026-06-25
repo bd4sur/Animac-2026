@@ -152,7 +152,7 @@ static void test_compiler_basic(void) {
                           L"(display (A 10 thunk_1 thunk_m1 thunk_m1 thunk_1 thunk_0))\n"
                           L"))\n";
 
-    am_ast_t *ast = am_parser(&test_allocator, (wchar_t *)code, L"/tmp/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, (wchar_t *)code, L"/tmp/test.scm");
     if (!ast) {
         fprintf(stderr, "Parser failed\n");
         return;
@@ -228,7 +228,7 @@ static void test_compiler_recursive(void) {
     code[pos] = L'\0';
     free(file_content);
 
-    am_ast_t *ast = am_parser(&test_allocator, code, (wchar_t *)path);
+    am_ast_t *ast = am_parse(&test_allocator, code, (wchar_t *)path);
     if (!ast) {
         fprintf(stderr, "Parser failed\n");
         return;
@@ -250,7 +250,7 @@ static void test_compiler_recursive(void) {
     }
 
     // 执行外部引用解析
-    int32_t resolution_result = am_linker_import_ref_resolution(NULL, linked);
+    int32_t resolution_result = am_linker_import_ref_resolution(linked);
     if (resolution_result != 0) {
         fprintf(stderr, "Import ref resolution failed\n");
         am_ast_destroy(linked);

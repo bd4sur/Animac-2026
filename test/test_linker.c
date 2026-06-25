@@ -176,7 +176,7 @@ static void test_linker_no_dependencies(void) {
     test_allocator_reset();
 
     wchar_t *code = L"((lambda () (define x 42) x))";
-    am_ast_t *ast = am_parser(&test_allocator, code, L"/test.scm");
+    am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
     assert(ast != NULL);
 
     am_ast_t *linked = am_link(ast, L"/");
@@ -218,7 +218,7 @@ static void test_linker_recursive(void) {
     code[pos] = L'\0';
     free(file_content);
 
-    am_ast_t *ast = am_parser(&test_allocator, code, (wchar_t *)path);
+    am_ast_t *ast = am_parse(&test_allocator, code, (wchar_t *)path);
     assert(ast != NULL);
 
     am_handle_t importer_top_lambda = ast->top_lambda_handle;
@@ -230,7 +230,7 @@ static void test_linker_recursive(void) {
     assert(linked == ast);
 
     // 执行外部引用解析
-    int32_t resolution_result = am_linker_import_ref_resolution(NULL, linked);
+    int32_t resolution_result = am_linker_import_ref_resolution(linked);
     assert(resolution_result == 0);
 
     // 可视化输出解析后的 AST
