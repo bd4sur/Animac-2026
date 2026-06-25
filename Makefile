@@ -16,10 +16,10 @@ test_map: test/test_map.c src/map.c src/object.c
 test_ast: test/test_ast.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_parser: test/test_parser.c src/parser.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
+test_parser: test/test_parser.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_linker: test/test_linker.c src/linker.c src/parser.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
+test_linker: test/test_linker.c src/linker.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 test_wstring: test/test_wstring.c src/wstring.c src/object.c
@@ -31,16 +31,16 @@ test_list: test/test_list.c src/list.c src/object.c
 test_vocab: test/test_vocab.c src/vocab.c src/object.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_compiler: test/test_compiler.c src/compiler.c src/linker.c src/parser.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
+test_compiler: test/test_compiler.c src/compiler.c src/linker.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 test_continuation: test/test_continuation.c src/continuation.c src/object.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_process: test/test_process.c src/process.c src/continuation.c src/closure.c src/compiler.c src/linker.c src/parser.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
+test_process: test/test_process.c src/process.c src/continuation.c src/closure.c src/compiler.c src/linker.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_runtime: test/test_runtime.c src/runtime.c src/process.c src/continuation.c src/closure.c src/compiler.c src/linker.c src/parser.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
+test_runtime: test/test_runtime.c src/runtime.c src/process.c src/continuation.c src/closure.c src/compiler.c src/linker.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 clean:

@@ -18,7 +18,7 @@ extern "C" {
 
 
 // 全局内置变量
-#define AM_GLOBAL_BUILTIN_VAR_NUM (34)
+#define AM_GLOBAL_BUILTIN_VAR_NUM (36)
 extern const wchar_t* AM_GLOBAL_BUILTIN_VAR[];
 
 
