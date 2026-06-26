@@ -191,7 +191,7 @@ static void test_make_nodes(void) {
     am_list_t *new_app = am_list_push(&test_allocator, app_lst, am_make_value_of_handle(lambda));
     assert(new_app != NULL);
     if (new_app != app_lst) {
-        assert(am_heap_set(&test_allocator, ast->nodes, app, am_make_value_of_ptr((am_object_t *)new_app)) == 0);
+        assert(am_heap_set(&test_allocator, &test_allocator, ast->nodes, app, am_make_value_of_ptr((am_object_t *)new_app)) == 0);
     }
 
     // 添加一个 body: 42 (uint)
@@ -200,7 +200,7 @@ static void test_make_nodes(void) {
     am_list_t *new_lambda = am_list_lambda_add_body(&test_allocator, lambda_lst, am_make_value_of_uint(42));
     assert(new_lambda != NULL);
     if (new_lambda != lambda_lst) {
-        assert(am_heap_set(&test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)new_lambda)) == 0);
+        assert(am_heap_set(&test_allocator, &test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)new_lambda)) == 0);
     }
 
     // 查找顶级节点
@@ -300,7 +300,7 @@ static void test_find_nearest_lambda(void) {
     am_list_t *app_lst = (am_list_t *)am_value_to_ptr(app_val);
     am_list_t *new_app = am_list_push(&test_allocator, app_lst, am_make_value_of_handle(lambda));
     if (new_app != app_lst) {
-        am_heap_set(&test_allocator, ast->nodes, app, am_make_value_of_ptr((am_object_t *)new_app));
+        am_heap_set(&test_allocator, &test_allocator, ast->nodes, app, am_make_value_of_ptr((am_object_t *)new_app));
     }
 
     am_handle_t found = am_ast_find_nearest_lambda_handle(ast, lambda);
@@ -334,14 +334,14 @@ static void test_copy(void) {
     am_list_t *app_lst = (am_list_t *)am_value_to_ptr(app_val);
     am_list_t *new_app = am_list_push(&test_allocator, app_lst, am_make_value_of_handle(lambda));
     if (new_app != app_lst) {
-        am_heap_set(&test_allocator, ast->nodes, app, am_make_value_of_ptr((am_object_t *)new_app));
+        am_heap_set(&test_allocator, &test_allocator, ast->nodes, app, am_make_value_of_ptr((am_object_t *)new_app));
     }
 
     am_value_t lambda_val = am_ast_get_node(ast, lambda);
     am_list_t *lambda_lst = (am_list_t *)am_value_to_ptr(lambda_val);
     am_list_t *new_lambda = am_list_lambda_add_body(&test_allocator, lambda_lst, am_make_value_of_uint(42));
     if (new_lambda != lambda_lst) {
-        am_heap_set(&test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)new_lambda));
+        am_heap_set(&test_allocator, &test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)new_lambda));
     }
 
     am_ast_t *copy = am_ast_copy(ast);
@@ -395,7 +395,7 @@ static void test_node_to_string(void) {
         am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_handle(lambda));
         assert(n != NULL);
         if (n != lst) {
-            assert(am_heap_set(&test_allocator, ast->nodes, app, am_make_value_of_ptr((am_object_t *)n)) == 0);
+            assert(am_heap_set(&test_allocator, &test_allocator, ast->nodes, app, am_make_value_of_ptr((am_object_t *)n)) == 0);
         }
     }
 
@@ -409,7 +409,7 @@ static void test_node_to_string(void) {
         am_list_t *n = am_list_lambda_add_parameter(&test_allocator, lst, am_make_value_of_varid(x_varid));
         assert(n != NULL);
         if (n != lst) {
-            assert(am_heap_set(&test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
+            assert(am_heap_set(&test_allocator, &test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
         }
     }
     {
@@ -418,7 +418,7 @@ static void test_node_to_string(void) {
         am_list_t *n = am_list_lambda_add_parameter(&test_allocator, lst, am_make_value_of_varid(y_varid));
         assert(n != NULL);
         if (n != lst) {
-            assert(am_heap_set(&test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
+            assert(am_heap_set(&test_allocator, &test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
         }
     }
 
@@ -434,7 +434,7 @@ static void test_node_to_string(void) {
         am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_varid(plus_varid));
         assert(n != NULL);
         if (n != lst) {
-            assert(am_heap_set(&test_allocator, ast->nodes, body1, am_make_value_of_ptr((am_object_t *)n)) == 0);
+            assert(am_heap_set(&test_allocator, &test_allocator, ast->nodes, body1, am_make_value_of_ptr((am_object_t *)n)) == 0);
         }
     }
     {
@@ -443,7 +443,7 @@ static void test_node_to_string(void) {
         am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_varid(x_varid));
         assert(n != NULL);
         if (n != lst) {
-            assert(am_heap_set(&test_allocator, ast->nodes, body1, am_make_value_of_ptr((am_object_t *)n)) == 0);
+            assert(am_heap_set(&test_allocator, &test_allocator, ast->nodes, body1, am_make_value_of_ptr((am_object_t *)n)) == 0);
         }
     }
     {
@@ -452,7 +452,7 @@ static void test_node_to_string(void) {
         am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_varid(y_varid));
         assert(n != NULL);
         if (n != lst) {
-            assert(am_heap_set(&test_allocator, ast->nodes, body1, am_make_value_of_ptr((am_object_t *)n)) == 0);
+            assert(am_heap_set(&test_allocator, &test_allocator, ast->nodes, body1, am_make_value_of_ptr((am_object_t *)n)) == 0);
         }
     }
 
@@ -463,7 +463,7 @@ static void test_node_to_string(void) {
         am_list_t *n = am_list_lambda_add_body(&test_allocator, lst, am_make_value_of_handle(body1));
         assert(n != NULL);
         if (n != lst) {
-            assert(am_heap_set(&test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
+            assert(am_heap_set(&test_allocator, &test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
         }
     }
     // lambda body2: 42
@@ -473,7 +473,7 @@ static void test_node_to_string(void) {
         am_list_t *n = am_list_lambda_add_body(&test_allocator, lst, am_make_value_of_uint(42));
         assert(n != NULL);
         if (n != lst) {
-            assert(am_heap_set(&test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
+            assert(am_heap_set(&test_allocator, &test_allocator, ast->nodes, lambda, am_make_value_of_ptr((am_object_t *)n)) == 0);
         }
     }
 
@@ -502,14 +502,14 @@ static void test_node_to_string(void) {
         am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
         am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_varid(x_varid));
         assert(n != NULL);
-        if (n != lst) am_heap_set(&test_allocator, ast->nodes, quote, am_make_value_of_ptr((am_object_t *)n));
+        if (n != lst) am_heap_set(&test_allocator, &test_allocator, ast->nodes, quote, am_make_value_of_ptr((am_object_t *)n));
     }
     {
         am_value_t v = am_ast_get_node(ast, quote);
         am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
         am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_varid(y_varid));
         assert(n != NULL);
-        if (n != lst) am_heap_set(&test_allocator, ast->nodes, quote, am_make_value_of_ptr((am_object_t *)n));
+        if (n != lst) am_heap_set(&test_allocator, &test_allocator, ast->nodes, quote, am_make_value_of_ptr((am_object_t *)n));
     }
     s = am_ast_node_to_string(&test_allocator, ast, quote, &len);
     assert(s != NULL);
@@ -557,13 +557,13 @@ static void test_merge(void) {
         am_value_t v = am_ast_get_node(target, app1);
         am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
         am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_handle(lambda1));
-        if (n != lst) am_heap_set(&test_allocator, target->nodes, app1, am_make_value_of_ptr((am_object_t *)n));
+        if (n != lst) am_heap_set(&test_allocator, &test_allocator, target->nodes, app1, am_make_value_of_ptr((am_object_t *)n));
     }
     {
         am_value_t v = am_ast_get_node(target, lambda1);
         am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
         am_list_t *n = am_list_lambda_add_body(&test_allocator, lst, am_make_value_of_uint(100));
-        if (n != lst) am_heap_set(&test_allocator, target->nodes, lambda1, am_make_value_of_ptr((am_object_t *)n));
+        if (n != lst) am_heap_set(&test_allocator, &test_allocator, target->nodes, lambda1, am_make_value_of_ptr((am_object_t *)n));
     }
 
     // 源 AST: ((lambda () 200))
@@ -582,13 +582,13 @@ static void test_merge(void) {
         am_value_t v = am_ast_get_node(source, app2);
         am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
         am_list_t *n = am_list_push(&test_allocator, lst, am_make_value_of_handle(lambda2));
-        if (n != lst) am_heap_set(&test_allocator, source->nodes, app2, am_make_value_of_ptr((am_object_t *)n));
+        if (n != lst) am_heap_set(&test_allocator, &test_allocator, source->nodes, app2, am_make_value_of_ptr((am_object_t *)n));
     }
     {
         am_value_t v = am_ast_get_node(source, lambda2);
         am_list_t *lst = (am_list_t *)am_value_to_ptr(v);
         am_list_t *n = am_list_lambda_add_body(&test_allocator, lst, am_make_value_of_uint(200));
-        if (n != lst) am_heap_set(&test_allocator, source->nodes, lambda2, am_make_value_of_ptr((am_object_t *)n));
+        if (n != lst) am_heap_set(&test_allocator, &test_allocator, source->nodes, lambda2, am_make_value_of_ptr((am_object_t *)n));
     }
 
     // 设置顶层 lambda 把柄，便于 am_ast_merge 和后续检查定位

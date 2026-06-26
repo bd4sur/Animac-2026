@@ -555,7 +555,7 @@ int32_t am_linker_import_ref_resolution(am_ast_t *merged_ast) {
     }
 
     import_ref_resolution_ctx_t iter_ctx = { merged_ast, 0 };
-    am_heap_iter(merged_ast->alloc, merged_ast->nodes,
+    am_heap_iter(merged_ast->alloc, merged_ast->alloc, merged_ast->nodes,
                  import_ref_resolution_iter_cb, &iter_ctx);
 
     return iter_ctx.error;
@@ -590,7 +590,7 @@ static void mark_node_static_cb(am_handle_t handle, am_value_t value, void *user
 static int32_t linker_mark_all_nodes_static(am_ast_t *ast) {
     if (!ast || !ast->alloc || !ast->nodes) return -1;
     mark_static_ctx_t ms = { 0 };
-    am_heap_iter(ast->alloc, ast->nodes, mark_node_static_cb, &ms);
+    am_heap_iter(ast->alloc, ast->alloc, ast->nodes, mark_node_static_cb, &ms);
     return ms.error;
 }
 

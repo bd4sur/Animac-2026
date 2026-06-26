@@ -239,10 +239,10 @@ static void test_linker_recursive(void) {
 
     // 将 ast->nodes 深度转储后再加载，验证 dump/load 正确性
     printf("=== dump/load nodes ===\n");
-    am_heap_t *nodes_copy = am_heap_copy(&test_allocator, linked->nodes);
+    am_heap_t *nodes_copy = am_heap_copy(&test_allocator, &test_allocator, linked->nodes);
     assert(nodes_copy != NULL);
 
-    size_t dump_size = am_heap_deep_dump(&test_allocator, nodes_copy, NULL, 0);
+    size_t dump_size = am_heap_deep_dump(&test_allocator, &test_allocator, nodes_copy, NULL, 0);
     assert(dump_size != SIZE_MAX);
     printf("deep dump size: %zu\n", dump_size);
 
@@ -250,10 +250,10 @@ static void test_linker_recursive(void) {
     assert(dump_buffer != NULL);
     memset(dump_buffer, 0, dump_size);
 
-    size_t written = am_heap_deep_dump(&test_allocator, nodes_copy, dump_buffer, 0);
+    size_t written = am_heap_deep_dump(&test_allocator, &test_allocator, nodes_copy, dump_buffer, 0);
     assert(written == dump_size);
 
-    am_heap_t *loaded_nodes = am_heap_deep_load(&test_allocator, dump_buffer, 0);
+    am_heap_t *loaded_nodes = am_heap_deep_load(&test_allocator, &test_allocator, dump_buffer, 0);
     assert(loaded_nodes != NULL);
 
     // 用原 AST 的元数据构造一个临时 AST，仅替换 nodes 为加载后的 heap，

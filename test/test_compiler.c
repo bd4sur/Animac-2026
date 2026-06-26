@@ -263,14 +263,14 @@ static void test_compiler_recursive(void) {
 
     // 将 ast->nodes 深度转储后再加载，验证 dump/load 正确性
     printf("=== dump/load nodes ===\n");
-    am_heap_t *nodes_copy = am_heap_copy(&test_allocator, linked->nodes);
+    am_heap_t *nodes_copy = am_heap_copy(&test_allocator, &test_allocator, linked->nodes);
     if (!nodes_copy) {
         fprintf(stderr, "Failed to copy nodes\n");
         am_ast_destroy(linked);
         return;
     }
 
-    size_t dump_size = am_heap_deep_dump(&test_allocator, nodes_copy, NULL, 0);
+    size_t dump_size = am_heap_deep_dump(&test_allocator, &test_allocator, nodes_copy, NULL, 0);
     if (dump_size == SIZE_MAX) {
         fprintf(stderr, "deep dump size calculation failed\n");
         am_ast_destroy(linked);
@@ -286,7 +286,7 @@ static void test_compiler_recursive(void) {
     }
     memset(dump_buffer, 0, dump_size);
 
-    size_t written = am_heap_deep_dump(&test_allocator, nodes_copy, dump_buffer, 0);
+    size_t written = am_heap_deep_dump(&test_allocator, &test_allocator, nodes_copy, dump_buffer, 0);
     if (written != dump_size) {
         fprintf(stderr, "deep dump failed\n");
         free(dump_buffer);
@@ -294,7 +294,7 @@ static void test_compiler_recursive(void) {
         return;
     }
 
-    am_heap_t *loaded_nodes = am_heap_deep_load(&test_allocator, dump_buffer, 0);
+    am_heap_t *loaded_nodes = am_heap_deep_load(&test_allocator, &test_allocator, dump_buffer, 0);
     if (!loaded_nodes) {
         fprintf(stderr, "deep load failed\n");
         free(dump_buffer);

@@ -483,7 +483,7 @@ static void debug_ast_print_nodes_map(FILE *out, am_ast_t *ast) {
     fwprintf(out, L"nodes: {\n");
 
     debug_ast_collect_handles_ctx_t ctx = { NULL, 0, 0 };
-    am_heap_iter(ast->alloc, ast->nodes, debug_ast_collect_handles_cb, &ctx);
+    am_heap_iter(ast->alloc, ast->alloc, ast->nodes, debug_ast_collect_handles_cb, &ctx);
 
     if (ctx.handles) {
         qsort(ctx.handles, ctx.count, sizeof(am_handle_t), debug_ast_compare_handles);

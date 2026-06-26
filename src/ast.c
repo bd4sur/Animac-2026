@@ -145,7 +145,7 @@ am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_
     ast->symbol_vocab = am_vocab_create(alloc, 64);
     ast->var_vocab = am_vocab_create(alloc, 64);
     ast->var_type = am_list_create(alloc, 64, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
-    ast->nodes = am_heap_create(alloc, 1024);
+    ast->nodes = am_heap_create(alloc, alloc, 1024);
     ast->node_token_mapping = am_map_create(alloc, 64);
     ast->scopes = am_map_create(alloc, 64);
     ast->var_arn_mapping = am_map_create(alloc, 64);
@@ -177,7 +177,7 @@ int32_t am_ast_destroy(am_ast_t *ast) {
     if (ast->symbol_vocab) am_vocab_destroy(alloc, ast->symbol_vocab);
     if (ast->var_vocab) am_vocab_destroy(alloc, ast->var_vocab);
     if (ast->var_type) am_list_destroy(alloc, ast->var_type);
-    if (ast->nodes) am_heap_destroy(alloc, ast->nodes);
+    if (ast->nodes) am_heap_destroy(alloc, alloc, ast->nodes);
     if (ast->node_token_mapping) am_map_destroy(alloc, ast->node_token_mapping);
     if (ast->scopes) am_map_destroy(alloc, ast->scopes);
     if (ast->var_arn_mapping) am_map_destroy(alloc, ast->var_arn_mapping);
@@ -213,7 +213,7 @@ am_ast_t *am_ast_copy(am_ast_t *ast) {
     copy->symbol_vocab = ast->symbol_vocab ? am_vocab_copy(ast->alloc, ast->symbol_vocab) : NULL;
     copy->var_vocab = ast->var_vocab ? am_vocab_copy(ast->alloc, ast->var_vocab) : NULL;
     copy->var_type = ast->var_type ? am_list_copy(ast->alloc, ast->var_type) : NULL;
-    copy->nodes = ast->nodes ? am_heap_copy(ast->alloc, ast->nodes) : NULL;
+    copy->nodes = ast->nodes ? am_heap_copy(ast->alloc, ast->alloc, ast->nodes) : NULL;
     copy->node_token_mapping = ast->node_token_mapping ? am_map_copy(ast->alloc, ast->node_token_mapping) : NULL;
     copy->scopes = ast->scopes ? am_map_copy(ast->alloc, ast->scopes) : NULL;
     copy->var_arn_mapping = ast->var_arn_mapping ? am_map_copy(ast->alloc, ast->var_arn_mapping) : NULL;
@@ -395,7 +395,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     // 预先收集 importee->nodes 中所有节点，便于多遍扫描
     merge_node_collect_ctx_t node_ctx = { NULL, 0, 0 };
     if (importee->nodes) {
-        am_heap_iter(importee->alloc, importee->nodes, merge_collect_node_cb, &node_ctx);
+        am_heap_iter(importee->alloc, importee->alloc, importee->nodes, merge_collect_node_cb, &node_ctx);
     }
     size_t n_nodes = node_ctx.length;
 
@@ -408,7 +408,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     }
 
     for (size_t i = 0; i < n_nodes; i++) {
-        am_handle_t new_handle = am_heap_alloc_handle(importer->alloc, importer->nodes);
+        am_handle_t new_handle = am_heap_alloc_handle(importer->alloc, importer->alloc, importer->nodes);
         if (new_handle == AM_HANDLE_NULL) {
             free(node_ctx.entries);
             return -1;
@@ -537,12 +537,12 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     // 避免 importee 顶层 application 也被拷贝到 importer 后产生查找歧义。
     am_handle_t importer_top_lambda = importer->top_lambda_handle;
     if (importer_top_lambda == AM_HANDLE_NULL ||
-        am_heap_has_handle(importer->alloc, importer->nodes, importer_top_lambda) != 0) {
+        am_heap_has_handle(importer->alloc, importer->alloc, importer->nodes, importer_top_lambda) != 0) {
         importer_top_lambda = am_ast_get_top_lambda_node_handle(importer);
     }
     am_handle_t importee_top_lambda = importee->top_lambda_handle;
     if (importee_top_lambda == AM_HANDLE_NULL ||
-        am_heap_has_handle(importee->alloc, importee->nodes, importee_top_lambda) != 0) {
+        am_heap_has_handle(importee->alloc, importee->alloc, importee->nodes, importee_top_lambda) != 0) {
         importee_top_lambda = am_ast_get_top_lambda_node_handle(importee);
     }
     if (importer_top_lambda == AM_HANDLE_NULL || importee_top_lambda == AM_HANDLE_NULL) {
@@ -596,7 +596,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
             return -1;
         }
 
-        if (am_heap_set(importer->alloc, importer->nodes, new_h, new_val) != 0) {
+        if (am_heap_set(importer->alloc, importer->alloc, importer->nodes, new_h, new_val) != 0) {
             free(node_ctx.entries);
             return -1;
         }
@@ -607,7 +607,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     // =============================================================================
 
     // importee 顶层 lambda 的函数体
-    am_value_t importee_top_lambda_val = am_heap_get(importee->alloc, importee->nodes,
+    am_value_t importee_top_lambda_val = am_heap_get(importee->alloc, importee->alloc, importee->nodes,
                                                        importee_top_lambda);
     if (!am_value_is_ptr(importee_top_lambda_val)) {
         free(node_ctx.entries);
@@ -632,7 +632,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
         am_value_t body = importee_bodies[i];
         if (am_value_is_handle(body)) {
             am_handle_t body_h = am_value_to_handle(body);
-            am_value_t body_val = am_heap_get(importer->alloc, importer->nodes, body_h);
+            am_value_t body_val = am_heap_get(importer->alloc, importer->alloc, importer->nodes, body_h);
             if (am_value_is_ptr(body_val)) {
                 am_object_t *body_obj = am_value_to_ptr(body_val);
                 if (body_obj->type == AM_OBJECT_TYPE_LIST) {
@@ -643,7 +643,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     }
 
     // importer 现有的顶层函数体
-    am_value_t importer_top_lambda_val = am_heap_get(importer->alloc, importer->nodes,
+    am_value_t importer_top_lambda_val = am_heap_get(importer->alloc, importer->alloc, importer->nodes,
                                                        importer_top_lambda);
     if (!am_value_is_ptr(importer_top_lambda_val)) {
         free(importee_bodies);
@@ -694,7 +694,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
         if (!new_lambda) {
             set_result = -1;
         } else if (new_lambda != importer_top_lambda_lst) {
-            if (am_heap_set(importer->alloc, importer->nodes, importer_top_lambda,
+            if (am_heap_set(importer->alloc, importer->alloc, importer->nodes, importer_top_lambda,
                             am_make_value_of_ptr((am_object_t *)new_lambda)) != 0) {
                 set_result = -1;
             }
@@ -720,8 +720,8 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
                                                                         dead_app_h);
 
             // 从 importer->nodes 中释放死节点
-            am_heap_free_handle(importer->alloc, importer->nodes, dead_app_h);
-            am_heap_free_handle(importer->alloc, importer->nodes, dead_lambda_h);
+            am_heap_free_handle(importer->alloc, importer->alloc, importer->nodes, dead_app_h);
+            am_heap_free_handle(importer->alloc, importer->alloc, importer->nodes, dead_lambda_h);
         }
     }
 
@@ -892,7 +892,7 @@ int32_t am_ast_check_import_ref(am_ast_t *ast, am_varid_t v) {
 // 功能描述：根据把柄从AST->nodes堆中获取相应的am_value_t。
 am_value_t am_ast_get_node(am_ast_t *ast, am_handle_t handle) {
     if (!ast || !ast->nodes) return AM_VALUE_UNDEFINED;
-    return am_heap_get(ast->alloc, ast->nodes, handle);
+    return am_heap_get(ast->alloc, ast->alloc, ast->nodes, handle);
 }
 
 
@@ -904,36 +904,36 @@ am_value_t am_ast_get_node(am_ast_t *ast, am_handle_t handle) {
 am_handle_t am_ast_make_lambda_node(am_ast_t *ast, am_handle_t parent) {
     if (!ast || !ast->nodes) return AM_HANDLE_NULL;
 
-    am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->nodes);
+    am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->alloc, ast->nodes);
     if (handle == AM_HANDLE_NULL) return AM_HANDLE_NULL;
 
     am_list_t *lambda = am_list_create(ast->alloc, 32, AM_LIST_TYPE_LAMBDA, parent);
     if (!lambda) {
-        am_heap_free_handle(ast->alloc, ast->nodes, handle);
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
 
     // Lambda表结构：children[0] = 'lambda, children[1] = 参数数量(uint)
     lambda = am_list_push(ast->alloc, lambda, AM_VALUE_KW_lambda);
     if (!lambda) {
-        am_heap_free_handle(ast->alloc, ast->nodes, handle);
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
     lambda = am_list_push(ast->alloc, lambda, am_make_value_of_uint(0));
     if (!lambda) {
-        am_heap_free_handle(ast->alloc, ast->nodes, handle);
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
 
-    if (am_heap_set(ast->alloc, ast->nodes, handle, am_make_value_of_ptr((am_object_t *)lambda)) != 0) {
+    if (am_heap_set(ast->alloc, ast->alloc, ast->nodes, handle, am_make_value_of_ptr((am_object_t *)lambda)) != 0) {
         am_list_destroy(ast->alloc, lambda);
-        am_heap_free_handle(ast->alloc, ast->nodes, handle);
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
 
     am_list_t *lst = am_list_push(ast->alloc, ast->lambda_handles, am_make_value_of_handle(handle));
     if (!lst) {
-        am_heap_free_handle(ast->alloc, ast->nodes, handle);
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
     ast->lambda_handles = lst;
@@ -950,18 +950,18 @@ am_handle_t am_ast_make_slist_node(am_ast_t *ast, am_handle_t parent, int32_t ty
         return AM_HANDLE_NULL;
     }
 
-    am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->nodes);
+    am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->alloc, ast->nodes);
     if (handle == AM_HANDLE_NULL) return AM_HANDLE_NULL;
 
     am_list_t *lst = am_list_create(ast->alloc, 32, type, parent);
     if (!lst) {
-        am_heap_free_handle(ast->alloc, ast->nodes, handle);
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
 
-    if (am_heap_set(ast->alloc, ast->nodes, handle, am_make_value_of_ptr((am_object_t *)lst)) != 0) {
+    if (am_heap_set(ast->alloc, ast->alloc, ast->nodes, handle, am_make_value_of_ptr((am_object_t *)lst)) != 0) {
         am_list_destroy(ast->alloc, lst);
-        am_heap_free_handle(ast->alloc, ast->nodes, handle);
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
 
@@ -973,7 +973,7 @@ am_handle_t am_ast_make_slist_node(am_ast_t *ast, am_handle_t parent, int32_t ty
 am_handle_t am_ast_make_wstring_node(am_ast_t *ast, am_token_t *str_token) {
     if (!ast || !ast->nodes || !str_token) return AM_HANDLE_NULL;
 
-    am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->nodes);
+    am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->alloc, ast->nodes);
     if (handle == AM_HANDLE_NULL) return AM_HANDLE_NULL;
 
     // 从token指示的位置截取字符串（去掉两侧引号）
@@ -981,7 +981,7 @@ am_handle_t am_ast_make_wstring_node(am_ast_t *ast, am_token_t *str_token) {
     if (len >= 2) len -= 2;
     wchar_t *text = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
     if (!text) {
-        am_heap_free_handle(ast->alloc, ast->nodes, handle);
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
     wcsncpy(text, &ast->code[str_token->index + 1], len);
@@ -990,14 +990,14 @@ am_handle_t am_ast_make_wstring_node(am_ast_t *ast, am_token_t *str_token) {
     am_wstring_t *ws = am_wstring_create(ast->alloc, text, len);
     free(text);
     if (!ws) {
-        am_heap_free_handle(ast->alloc, ast->nodes, handle);
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
 
-    if (am_heap_set(ast->alloc, ast->nodes, handle, am_make_value_of_ptr((am_object_t *)ws)) != 0) {
+    if (am_heap_set(ast->alloc, ast->alloc, ast->nodes, handle, am_make_value_of_ptr((am_object_t *)ws)) != 0) {
         // 注：am_wstring_t 的 content 是柔性数组，am_free 即可释放整个对象
         am_free(ast->alloc, ws);
-        am_heap_free_handle(ast->alloc, ast->nodes, handle);
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
         return AM_HANDLE_NULL;
     }
 
@@ -1033,7 +1033,7 @@ am_handle_t am_ast_get_top_node_handle(am_ast_t *ast) {
     if (!ast || !ast->nodes) return AM_HANDLE_NULL;
 
     am_top_node_search_t ctx = { AM_HANDLE_NULL };
-    am_heap_iter(ast->alloc, ast->nodes, am_ast_top_node_iter, &ctx);
+    am_heap_iter(ast->alloc, ast->alloc, ast->nodes, am_ast_top_node_iter, &ctx);
     return ctx.found_handle;
 }
 
@@ -1043,7 +1043,7 @@ am_handle_t am_ast_get_top_lambda_node_handle(am_ast_t *ast) {
     am_handle_t top_app = am_ast_get_top_node_handle(ast);
     if (top_app == AM_HANDLE_NULL) return AM_HANDLE_NULL;
 
-    am_value_t app_val = am_heap_get(ast->alloc, ast->nodes, top_app);
+    am_value_t app_val = am_heap_get(ast->alloc, ast->alloc, ast->nodes, top_app);
     if (!am_value_is_ptr(app_val)) return AM_HANDLE_NULL;
 
     am_list_t *app = (am_list_t *)am_value_to_ptr(app_val);
@@ -1063,7 +1063,7 @@ am_value_t *am_ast_get_global_nodes(am_ast_t *ast) {
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
     if (top_lambda == AM_HANDLE_NULL) return NULL;
 
-    am_value_t lambda_val = am_heap_get(ast->alloc, ast->nodes, top_lambda);
+    am_value_t lambda_val = am_heap_get(ast->alloc, ast->alloc, ast->nodes, top_lambda);
     if (!am_value_is_ptr(lambda_val)) return NULL;
 
     am_list_t *lambda = (am_list_t *)am_value_to_ptr(lambda_val);
@@ -1079,7 +1079,7 @@ int32_t am_ast_set_global_nodes(am_ast_t *ast, am_value_t *bodies, size_t n_body
     am_handle_t top_lambda = am_ast_get_top_lambda_node_handle(ast);
     if (top_lambda == AM_HANDLE_NULL) return -1;
 
-    am_value_t lambda_val = am_heap_get(ast->alloc, ast->nodes, top_lambda);
+    am_value_t lambda_val = am_heap_get(ast->alloc, ast->alloc, ast->nodes, top_lambda);
     if (!am_value_is_ptr(lambda_val)) return -1;
 
     am_list_t *lambda = (am_list_t *)am_value_to_ptr(lambda_val);
@@ -1089,7 +1089,7 @@ int32_t am_ast_set_global_nodes(am_ast_t *ast, am_value_t *bodies, size_t n_body
 
     // 如果lambda对象指针发生变化，更新heap中的绑定
     if (new_lambda != lambda) {
-        if (am_heap_set(ast->alloc, ast->nodes, top_lambda, am_make_value_of_ptr((am_object_t *)new_lambda)) != 0) {
+        if (am_heap_set(ast->alloc, ast->alloc, ast->nodes, top_lambda, am_make_value_of_ptr((am_object_t *)new_lambda)) != 0) {
             am_list_destroy(ast->alloc, new_lambda);
             return -1;
         }
@@ -1109,7 +1109,7 @@ am_handle_t am_ast_find_var_lambda_handle(am_ast_t *ast, am_varid_t varid, am_ha
 
     am_handle_t current = from_node_handle;
     while (current != AM_TOP_NODE_HANDLE) {
-        am_value_t node_val = am_heap_get(ast->alloc, ast->nodes, current);
+        am_value_t node_val = am_heap_get(ast->alloc, ast->alloc, ast->nodes, current);
         if (!am_value_is_ptr(node_val)) return AM_HANDLE_NULL;
 
         am_object_t *obj = am_value_to_ptr(node_val);
@@ -1120,7 +1120,7 @@ am_handle_t am_ast_find_var_lambda_handle(am_ast_t *ast, am_varid_t varid, am_ha
                 am_value_t scope_handle_val = am_map_get(ast->alloc, ast->scopes, am_make_value_of_handle(current));
                 if (am_value_is_handle(scope_handle_val)) {
                     am_handle_t scope_handle = am_value_to_handle(scope_handle_val);
-                    am_value_t scope_val = am_heap_get(ast->alloc, ast->nodes, scope_handle);
+                    am_value_t scope_val = am_heap_get(ast->alloc, ast->alloc, ast->nodes, scope_handle);
                     if (am_value_is_ptr(scope_val)) {
                         am_scope_t *scope = (am_scope_t *)am_value_to_ptr(scope_val);
                         if (am_scope_has_var(ast->alloc, scope, varid) >= 0) {
@@ -1380,7 +1380,7 @@ am_handle_t am_ast_find_nearest_lambda_handle(am_ast_t *ast, am_handle_t from_no
 
     am_handle_t current = from_node_handle;
     while (current != AM_TOP_NODE_HANDLE) {
-        am_value_t node_val = am_heap_get(ast->alloc, ast->nodes, current);
+        am_value_t node_val = am_heap_get(ast->alloc, ast->alloc, ast->nodes, current);
         if (!am_value_is_ptr(node_val)) return AM_HANDLE_NULL;
 
         am_object_t *obj = am_value_to_ptr(node_val);

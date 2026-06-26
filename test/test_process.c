@@ -250,7 +250,7 @@ static void test_process_basic(void) {
     closure = am_closure_init_bound_var(proc->heap_alloc, closure, var_x, val_x);
     assert(closure != NULL);
     // 更新堆中闭包指针（闭包可能因扩容而移动）
-    assert(am_heap_set(proc->heap_alloc, proc->heap, closure_hd,
+    assert(am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, closure_hd,
                        am_make_value_of_ptr((am_object_t *)closure)) == 0);
 
     proc->current_closure_handle = closure_hd;

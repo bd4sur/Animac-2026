@@ -146,7 +146,7 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
 
     // 将mod->ast->nodes深拷贝到proc->heap
     // 先通过deep_dump计算大小并序列化，再用deep_load到进程堆
-    size_t dump_size = am_heap_deep_dump(mod->ast->alloc, mod->ast->nodes, NULL, 0);
+    size_t dump_size = am_heap_deep_dump(mod->ast->alloc, mod->ast->alloc, mod->ast->nodes, NULL, 0);
     if (dump_size == SIZE_MAX) {
         am_free(vm_alloc, proc->ilcode);
         am_free(vm_alloc, proc);
@@ -161,7 +161,7 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
     }
     memset(buffer, 0, dump_size);
 
-    size_t written = am_heap_deep_dump(mod->ast->alloc, mod->ast->nodes, buffer, 0);
+    size_t written = am_heap_deep_dump(mod->ast->alloc, mod->ast->alloc, mod->ast->nodes, buffer, 0);
     if (written != dump_size) {
         am_free(vm_alloc, buffer);
         am_free(vm_alloc, proc->ilcode);
@@ -169,7 +169,7 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
         return NULL;
     }
 
-    proc->heap = am_heap_deep_load(heap_alloc, buffer, 0);
+    proc->heap = am_heap_deep_load(vm_alloc, heap_alloc, buffer, 0);
     am_free(vm_alloc, buffer);
     if (!proc->heap) {
         am_free(vm_alloc, proc->ilcode);
@@ -178,7 +178,7 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
     }
 
     // 将拷贝进来的AST节点全部标记为静态对象，避免被GC回收
-    am_heap_iter(heap_alloc, proc->heap, set_all_heap_objects_static, NULL);
+    am_heap_iter(vm_alloc, heap_alloc, proc->heap, set_all_heap_objects_static, NULL);
 
     // 拷贝符号表
     proc->var_vocab = am_vocab_copy(proc->vm_alloc, mod->ast->var_vocab);
@@ -188,7 +188,7 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
     proc->opstack_capacity = (size_t)(mod->opstack_depth > 0 ? mod->opstack_depth : 1024);
     proc->opstack = (am_value_t *)am_calloc(vm_alloc, proc->opstack_capacity * sizeof(am_value_t));
     if (!proc->opstack) {
-        am_heap_destroy(heap_alloc, proc->heap);
+        am_heap_destroy(vm_alloc, heap_alloc, proc->heap);
         am_free(vm_alloc, proc->ilcode);
         am_free(vm_alloc, proc);
         return NULL;
@@ -200,7 +200,7 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
     proc->fstack = (am_value_t *)am_calloc(vm_alloc, proc->fstack_capacity * sizeof(am_value_t));
     if (!proc->fstack) {
         am_free(vm_alloc, proc->opstack);
-        am_heap_destroy(heap_alloc, proc->heap);
+        am_heap_destroy(vm_alloc, heap_alloc, proc->heap);
         am_free(vm_alloc, proc->ilcode);
         am_free(vm_alloc, proc);
         return NULL;
@@ -231,7 +231,7 @@ int32_t am_process_destroy(am_process_t *proc) {
         proc->fstack_top = NULL;
     }
     if (proc->heap) {
-        am_heap_destroy(proc->heap_alloc, proc->heap);
+        am_heap_destroy(proc->vm_alloc, proc->heap_alloc, proc->heap);
         proc->heap = NULL;
     }
 
@@ -315,21 +315,21 @@ am_handle_t am_process_make_closure(am_process_t *proc, am_iaddr_t iaddr, am_han
     if (!proc || !proc->heap || !proc->heap_alloc) return AM_HANDLE_NULL;
 
     // 首先在proc->heap中申请一个新的handle
-    am_handle_t hd = am_heap_alloc_handle(proc->heap_alloc, proc->heap);
+    am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
     if (hd == AM_HANDLE_NULL) return AM_HANDLE_NULL;
 
     // 新建闭包对象
     am_obj_closure_t *closure_obj = am_closure_create(proc->heap_alloc, iaddr, parent, 16);
     if (!closure_obj) {
-        am_heap_free_handle(proc->heap_alloc, proc->heap, hd);
+        am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         return AM_HANDLE_NULL;
     }
 
     // 将闭包对象的指针绑定到hd上
     am_value_t closure_value = am_make_value_of_ptr((am_object_t *)closure_obj);
-    if (am_heap_set(proc->heap_alloc, proc->heap, hd, closure_value) != 0) {
+    if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, hd, closure_value) != 0) {
         am_closure_destroy(proc->heap_alloc, closure_obj);
-        am_heap_free_handle(proc->heap_alloc, proc->heap, hd);
+        am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         return AM_HANDLE_NULL;
     }
 
@@ -341,7 +341,7 @@ am_handle_t am_process_make_closure(am_process_t *proc, am_iaddr_t iaddr, am_han
 am_obj_closure_t *am_process_get_closure(am_process_t *proc, am_handle_t hd) {
     if (!proc || !proc->heap) return NULL;
 
-    am_value_t v = am_heap_get(proc->heap_alloc, proc->heap, hd);
+    am_value_t v = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
     if (!am_value_is_ptr(v)) return NULL;
 
     am_object_t *obj = am_value_to_ptr(v);
@@ -457,16 +457,16 @@ am_handle_t am_process_capture_continuation(am_process_t *proc, am_iaddr_t cont_
     if (!cont) return AM_HANDLE_NULL;
 
     // 在堆中分配handle并绑定续体对象
-    am_handle_t hd = am_heap_alloc_handle(proc->heap_alloc, proc->heap);
+    am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
     if (hd == AM_HANDLE_NULL) {
         am_continuation_destroy(proc->heap_alloc, cont);
         return AM_HANDLE_NULL;
     }
 
     am_value_t cont_value = am_make_value_of_ptr((am_object_t *)cont);
-    if (am_heap_set(proc->heap_alloc, proc->heap, hd, cont_value) != 0) {
+    if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, hd, cont_value) != 0) {
         am_continuation_destroy(proc->heap_alloc, cont);
-        am_heap_free_handle(proc->heap_alloc, proc->heap, hd);
+        am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         return AM_HANDLE_NULL;
     }
 
@@ -478,7 +478,7 @@ am_handle_t am_process_capture_continuation(am_process_t *proc, am_iaddr_t cont_
 am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd) {
     if (!proc || !proc->heap) return SIZE_MAX;
 
-    am_value_t v = am_heap_get(proc->heap_alloc, proc->heap, hd);
+    am_value_t v = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
     if (!am_value_is_ptr(v)) return SIZE_MAX;
 
     am_object_t *obj = am_value_to_ptr(v);
@@ -666,7 +666,7 @@ static int32_t am_process_append_value_to_strbuf(am_process_strbuf_t *sb, am_pro
         if (h == AM_HANDLE_NULL) {
             return am_process_strbuf_append_string(sb, L"#<null-handle>");
         }
-        am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, h);
+        am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, h);
         if (!am_value_is_ptr(obj_val)) {
             return am_process_strbuf_append_string(sb, L"#<handle>");
         }
@@ -745,7 +745,7 @@ static int32_t am_process_append_value_to_strbuf(am_process_strbuf_t *sb, am_pro
 wchar_t *am_process_list_to_string(am_process_t *proc, am_handle_t hd, size_t *length) {
     if (!proc || !proc->heap || hd == AM_HANDLE_NULL) return NULL;
 
-    am_value_t value = am_heap_get(proc->heap_alloc, proc->heap, hd);
+    am_value_t value = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
     if (!am_value_is_ptr(value)) return NULL;
 
     am_object_t *obj = am_value_to_ptr(value);
@@ -804,7 +804,7 @@ int32_t am_process_gc_root(am_process_t *proc, am_list_t **gcroots) {
     int32_t ret = 0;
     for (size_t i = 0; i < heap_count; i++) {
         am_handle_t hd = am_value_to_handle(keys[i]);
-        am_value_t value = am_heap_get(proc->heap_alloc, proc->heap, hd);
+        am_value_t value = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         if (!am_value_is_ptr(value)) continue;
 
         am_object_t *obj = am_value_to_ptr(value);
@@ -856,9 +856,9 @@ int32_t am_process_gc_mark(am_process_t *proc, am_value_t v) {
     if (hd == AM_HANDLE_NULL) return 0;
 
     // handle必须存在于当前进程的堆中
-    if (am_heap_has_handle(proc->heap_alloc, proc->heap, hd) != 0) return 0;
+    if (am_heap_has_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd) != 0) return 0;
 
-    am_value_t obj_value = am_heap_get(proc->heap_alloc, proc->heap, hd);
+    am_value_t obj_value = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
     if (!am_value_is_ptr(obj_value)) return -1;
 
     am_object_t *obj = am_value_to_ptr(obj_value);
@@ -920,7 +920,7 @@ int32_t am_process_gc_sweep(am_process_t *proc) {
 
     for (size_t i = 0; i < heap_count; i++) {
         am_handle_t hd = am_value_to_handle(keys[i]);
-        am_value_t value = am_heap_get(proc->heap_alloc, proc->heap, hd);
+        am_value_t value = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         if (!am_value_is_ptr(value)) continue;
 
         am_object_t *obj = am_value_to_ptr(value);
@@ -939,7 +939,7 @@ int32_t am_process_gc_sweep(am_process_t *proc) {
 
             if (am_object_check_alive(obj) != 0) {
                 // 未被标记为存活：删除handle，同时穿透释放其映射的obj
-                am_heap_free_handle(proc->heap_alloc, proc->heap, hd);
+                am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
                 gcount++;
             }
             else {

@@ -59,7 +59,7 @@ static int32_t copy_current_closure_bindings_as_free_vars(am_process_t *proc, am
             if (!new_closure) return -1;
         }
         if (new_closure != am_process_get_closure(proc, new_closure_hd)) {
-            am_heap_set(proc->heap_alloc, proc->heap, new_closure_hd,
+            am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, new_closure_hd,
                         am_make_value_of_ptr((am_object_t *)new_closure));
         }
     }
@@ -74,7 +74,7 @@ static void value_to_wchar_buf(am_process_t *proc, am_value_t v, wchar_t *buf, s
 
     if (am_value_is_handle(v)) {
         am_handle_t hd = am_value_to_handle(v);
-        am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, hd);
+        am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         if (am_value_is_ptr(obj_val)) {
             am_object_t *obj = am_value_to_ptr(obj_val);
             if (obj->type == AM_OBJECT_TYPE_WSTRING) {
@@ -147,8 +147,8 @@ static bool runtime_value_equal(am_process_t *proc, am_value_t a, am_value_t b) 
     if (am_value_is_handle(a) && am_value_is_handle(b)) {
         am_handle_t ha = am_value_to_handle(a);
         am_handle_t hb = am_value_to_handle(b);
-        am_value_t va = am_heap_get(proc->heap_alloc, proc->heap, ha);
-        am_value_t vb = am_heap_get(proc->heap_alloc, proc->heap, hb);
+        am_value_t va = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, ha);
+        am_value_t vb = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hb);
         if (!am_value_is_ptr(va) || !am_value_is_ptr(vb)) return false;
 
         am_object_t *oa = am_value_to_ptr(va);
@@ -197,7 +197,7 @@ static int32_t op_store(am_runtime_t *rt, am_process_t *proc, am_value_t operand
     am_obj_closure_t *new_current = am_closure_init_bound_var(proc->heap_alloc, current, varid, value);
     if (!new_current) return -1;
     if (new_current != current) {
-        am_heap_set(proc->heap_alloc, proc->heap, proc->current_closure_handle,
+        am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, proc->current_closure_handle,
                     am_make_value_of_ptr((am_object_t *)new_current));
     }
 
@@ -295,7 +295,7 @@ static int32_t op_set(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
         am_obj_closure_t *new_current = am_closure_set_free_var(proc->heap_alloc, current, varid, right);
         if (!new_current) return -1;
         if (new_current != current) {
-            am_heap_set(proc->heap_alloc, proc->heap, current_h,
+            am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, current_h,
                         am_make_value_of_ptr((am_object_t *)new_current));
             current = new_current;
         }
@@ -310,7 +310,7 @@ static int32_t op_set(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
             am_obj_closure_t *new_closure = am_closure_set_bound_var(proc->heap_alloc, closure, varid, right);
             if (!new_closure) return -1;
             if (new_closure != closure) {
-                am_heap_set(proc->heap_alloc, proc->heap, h,
+                am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, h,
                             am_make_value_of_ptr((am_object_t *)new_closure));
             }
             break;
@@ -390,7 +390,7 @@ static int32_t op_call_async(am_runtime_t *rt, am_process_t *proc, am_value_t op
     // handle：闭包或 continuation
     if (am_value_is_handle(target)) {
         am_handle_t hd = am_value_to_handle(target);
-        am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, hd);
+        am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         if (!am_value_is_ptr(obj_val)) return -1;
         am_object_t *obj = am_value_to_ptr(obj_val);
 
@@ -478,7 +478,7 @@ static int32_t op_capturecc(am_runtime_t *rt, am_process_t *proc, am_value_t ope
         proc->heap_alloc, current, varid, am_make_value_of_handle(cont_hd));
     if (!new_current) return -1;
     if (new_current != current) {
-        am_heap_set(proc->heap_alloc, proc->heap, proc->current_closure_handle,
+        am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, proc->current_closure_handle,
                     am_make_value_of_ptr((am_object_t *)new_current));
     }
 
@@ -537,7 +537,7 @@ static int32_t op_car(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
     if (!am_value_is_handle(list_val)) return -1;
 
     am_handle_t list_hd = am_value_to_handle(list_val);
-    am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, list_hd);
+    am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd);
     if (!am_value_is_ptr(obj_val)) return -1;
     am_object_t *obj = am_value_to_ptr(obj_val);
     if (obj->type != AM_OBJECT_TYPE_LIST) return -1;
@@ -559,7 +559,7 @@ static int32_t op_cdr(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
     if (!am_value_is_handle(list_val)) return -1;
 
     am_handle_t list_hd = am_value_to_handle(list_val);
-    am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, list_hd);
+    am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd);
     if (!am_value_is_ptr(obj_val)) return -1;
     am_object_t *obj = am_value_to_ptr(obj_val);
     if (obj->type != AM_OBJECT_TYPE_LIST) return -1;
@@ -575,12 +575,12 @@ static int32_t op_cdr(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
         if (!new_lst) return -1;
     }
 
-    am_handle_t new_hd = am_heap_alloc_handle(proc->heap_alloc, proc->heap);
+    am_handle_t new_hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
     if (new_hd == AM_HANDLE_NULL) {
         am_list_destroy(proc->heap_alloc, new_lst);
         return -1;
     }
-    am_heap_set(proc->heap_alloc, proc->heap, new_hd,
+    am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, new_hd,
                 am_make_value_of_ptr((am_object_t *)new_lst));
     am_process_push_operand(proc, am_make_value_of_handle(new_hd));
     am_process_step(proc);
@@ -597,7 +597,7 @@ static int32_t op_cons(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
     if (!am_value_is_handle(list_val)) return -1;
 
     am_handle_t list_hd = am_value_to_handle(list_val);
-    am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, list_hd);
+    am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd);
     if (!am_value_is_ptr(obj_val)) return -1;
     am_object_t *obj = am_value_to_ptr(obj_val);
     if (obj->type != AM_OBJECT_TYPE_LIST) return -1;
@@ -613,12 +613,12 @@ static int32_t op_cons(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
         if (!new_lst) return -1;
     }
 
-    am_handle_t new_hd = am_heap_alloc_handle(proc->heap_alloc, proc->heap);
+    am_handle_t new_hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
     if (new_hd == AM_HANDLE_NULL) {
         am_list_destroy(proc->heap_alloc, new_lst);
         return -1;
     }
-    am_heap_set(proc->heap_alloc, proc->heap, new_hd,
+    am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, new_hd,
                 am_make_value_of_ptr((am_object_t *)new_lst));
     am_process_push_operand(proc, am_make_value_of_handle(new_hd));
     am_process_step(proc);
@@ -635,7 +635,7 @@ static int32_t op_get_item(am_runtime_t *rt, am_process_t *proc, am_value_t oper
     if (!am_value_is_handle(list_val) || !am_value_is_number(index_val)) return -1;
 
     am_handle_t list_hd = am_value_to_handle(list_val);
-    am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, list_hd);
+    am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd);
     if (!am_value_is_ptr(obj_val)) return -1;
     am_object_t *obj = am_value_to_ptr(obj_val);
     if (obj->type != AM_OBJECT_TYPE_LIST) return -1;
@@ -663,7 +663,7 @@ static int32_t op_set_item(am_runtime_t *rt, am_process_t *proc, am_value_t oper
     if (!am_value_is_handle(list_val) || !am_value_is_number(index_val)) return -1;
 
     am_handle_t list_hd = am_value_to_handle(list_val);
-    am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, list_hd);
+    am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd);
     if (!am_value_is_ptr(obj_val)) return -1;
     am_object_t *obj = am_value_to_ptr(obj_val);
     if (obj->type != AM_OBJECT_TYPE_LIST) return -1;
@@ -687,7 +687,7 @@ static int32_t op_list_push(am_runtime_t *rt, am_process_t *proc, am_value_t ope
     if (!am_value_is_handle(list_val)) return -1;
 
     am_handle_t list_hd = am_value_to_handle(list_val);
-    am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, list_hd);
+    am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd);
     if (!am_value_is_ptr(obj_val)) return -1;
     am_object_t *obj = am_value_to_ptr(obj_val);
     if (obj->type != AM_OBJECT_TYPE_LIST) return -1;
@@ -696,7 +696,7 @@ static int32_t op_list_push(am_runtime_t *rt, am_process_t *proc, am_value_t ope
     am_list_t *new_lst = am_list_push(proc->heap_alloc, lst, value);
     if (!new_lst) return -1;
     if (new_lst != lst) {
-        am_heap_set(proc->heap_alloc, proc->heap, list_hd,
+        am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd,
                     am_make_value_of_ptr((am_object_t *)new_lst));
     }
     am_process_step(proc);
@@ -712,7 +712,7 @@ static int32_t op_list_pop(am_runtime_t *rt, am_process_t *proc, am_value_t oper
     if (!am_value_is_handle(list_val)) return -1;
 
     am_handle_t list_hd = am_value_to_handle(list_val);
-    am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, list_hd);
+    am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd);
     if (!am_value_is_ptr(obj_val)) return -1;
     am_object_t *obj = am_value_to_ptr(obj_val);
     if (obj->type != AM_OBJECT_TYPE_LIST) return -1;
@@ -733,7 +733,7 @@ static int32_t op_length(am_runtime_t *rt, am_process_t *proc, am_value_t operan
     if (!am_value_is_handle(list_val)) return -1;
 
     am_handle_t list_hd = am_value_to_handle(list_val);
-    am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, list_hd);
+    am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd);
     if (!am_value_is_ptr(obj_val)) return -1;
     am_object_t *obj = am_value_to_ptr(obj_val);
     if (obj->type != AM_OBJECT_TYPE_LIST) return -1;
@@ -775,13 +775,13 @@ static int32_t op_concat(am_runtime_t *rt, am_process_t *proc, am_value_t operan
         }
     }
 
-    am_handle_t new_hd = am_heap_alloc_handle(proc->heap_alloc, proc->heap);
+    am_handle_t new_hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
     if (new_hd == AM_HANDLE_NULL) {
         am_free(proc->vm_alloc, children);
         am_list_destroy(proc->heap_alloc, new_lst);
         return -1;
     }
-    am_heap_set(proc->heap_alloc, proc->heap, new_hd,
+    am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, new_hd,
                 am_make_value_of_ptr((am_object_t *)new_lst));
 
     // 设置子列表的 parent 字段
@@ -789,7 +789,7 @@ static int32_t op_concat(am_runtime_t *rt, am_process_t *proc, am_value_t operan
         am_value_t child = new_lst->children[i];
         if (am_value_is_handle(child)) {
             am_handle_t child_hd = am_value_to_handle(child);
-            am_value_t child_obj_val = am_heap_get(proc->heap_alloc, proc->heap, child_hd);
+            am_value_t child_obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, child_hd);
             if (am_value_is_ptr(child_obj_val)) {
                 am_object_t *child_obj = am_value_to_ptr(child_obj_val);
                 if (child_obj->type == AM_OBJECT_TYPE_LIST) {
@@ -814,7 +814,7 @@ static int32_t op_duplicate(am_runtime_t *rt, am_process_t *proc, am_value_t ope
     if (!am_value_is_handle(val)) return -1;
 
     am_handle_t hd = am_value_to_handle(val);
-    am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, hd);
+    am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
     if (!am_value_is_ptr(obj_val)) return -1;
     am_object_t *obj = am_value_to_ptr(obj_val);
 
@@ -822,12 +822,12 @@ static int32_t op_duplicate(am_runtime_t *rt, am_process_t *proc, am_value_t ope
         am_list_t *lst = (am_list_t *)obj;
         am_list_t *copy = am_list_copy(proc->heap_alloc, lst);
         if (!copy) return -1;
-        am_handle_t new_hd = am_heap_alloc_handle(proc->heap_alloc, proc->heap);
+        am_handle_t new_hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
         if (new_hd == AM_HANDLE_NULL) {
             am_list_destroy(proc->heap_alloc, copy);
             return -1;
         }
-        am_heap_set(proc->heap_alloc, proc->heap, new_hd,
+        am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, new_hd,
                     am_make_value_of_ptr((am_object_t *)copy));
         am_process_push_operand(proc, am_make_value_of_handle(new_hd));
     }
@@ -835,12 +835,12 @@ static int32_t op_duplicate(am_runtime_t *rt, am_process_t *proc, am_value_t ope
         am_wstring_t *ws = (am_wstring_t *)obj;
         am_wstring_t *copy = am_wstring_copy(proc->heap_alloc, ws);
         if (!copy) return -1;
-        am_handle_t new_hd = am_heap_alloc_handle(proc->heap_alloc, proc->heap);
+        am_handle_t new_hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
         if (new_hd == AM_HANDLE_NULL) {
             am_wstring_destroy(proc->heap_alloc, copy);
             return -1;
         }
-        am_heap_set(proc->heap_alloc, proc->heap, new_hd,
+        am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, new_hd,
                     am_make_value_of_ptr((am_object_t *)copy));
         am_process_push_operand(proc, am_make_value_of_handle(new_hd));
     }
@@ -1079,7 +1079,7 @@ static int32_t op_isnull(am_runtime_t *rt, am_process_t *proc, am_value_t operan
     }
     else if (am_value_is_handle(v)) {
         am_handle_t hd = am_value_to_handle(v);
-        am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, hd);
+        am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         if (am_value_is_ptr(obj_val)) {
             am_object_t *obj = am_value_to_ptr(obj_val);
             if (obj->type == AM_OBJECT_TYPE_LIST && ((am_list_t *)obj)->length == 0) {
@@ -1120,7 +1120,7 @@ static int32_t op_islist(am_runtime_t *rt, am_process_t *proc, am_value_t operan
     bool result = false;
     if (am_value_is_handle(v)) {
         am_handle_t hd = am_value_to_handle(v);
-        am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, hd);
+        am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         if (am_value_is_ptr(obj_val)) {
             am_object_t *obj = am_value_to_ptr(obj_val);
             if (obj->type == AM_OBJECT_TYPE_LIST) {
@@ -1197,15 +1197,15 @@ static int32_t op_typeof(am_runtime_t *rt, am_process_t *proc, am_value_t operan
 
     am_wstring_t *ws = am_wstring_create(proc->heap_alloc, (wchar_t *)type_name, wcslen(type_name));
     if (!ws) return -1;
-    am_handle_t hd = am_heap_alloc_handle(proc->heap_alloc, proc->heap);
+    am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
     if (hd == AM_HANDLE_NULL) {
         am_wstring_destroy(proc->heap_alloc, ws);
         return -1;
     }
-    if (am_heap_set(proc->heap_alloc, proc->heap, hd,
+    if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, hd,
                     am_make_value_of_ptr((am_object_t *)ws)) != 0) {
         am_wstring_destroy(proc->heap_alloc, ws);
-        am_heap_free_handle(proc->heap_alloc, proc->heap, hd);
+        am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         return -1;
     }
     am_process_push_operand(proc, am_make_value_of_handle(hd));
@@ -1235,7 +1235,7 @@ static int32_t op_display(am_runtime_t *rt, am_process_t *proc, am_value_t opera
     // 列表对象使用专门的字符串化函数
     if (am_value_is_handle(content)) {
         am_handle_t hd = am_value_to_handle(content);
-        am_value_t obj_val = am_heap_get(proc->heap_alloc, proc->heap, hd);
+        am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
         if (am_value_is_ptr(obj_val)) {
             am_object_t *obj = am_value_to_ptr(obj_val);
             if (obj->type == AM_OBJECT_TYPE_LIST) {

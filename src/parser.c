@@ -345,7 +345,7 @@ static int32_t append_child_to_top(parser_ctx_t *ctx) {
     }
 
     if (new_lst != lst) {
-        if (am_heap_set(ctx->ast->alloc, ctx->ast->nodes, parent_handle,
+        if (am_heap_set(ctx->ast->alloc, ctx->ast->alloc, ctx->ast->nodes, parent_handle,
                         am_make_value_of_ptr((am_object_t *)new_lst)) != 0) {
             parser_set_error(ctx, L"failed to update parent node");
             return -1;
@@ -380,7 +380,7 @@ static int32_t add_parameter_to_top_lambda(parser_ctx_t *ctx, am_value_t param) 
     }
 
     if (new_lst != lst) {
-        if (am_heap_set(ctx->ast->alloc, ctx->ast->nodes, lambda_handle,
+        if (am_heap_set(ctx->ast->alloc, ctx->ast->alloc, ctx->ast->nodes, lambda_handle,
                         am_make_value_of_ptr((am_object_t *)new_lst)) != 0) {
             parser_set_error(ctx, L"failed to update lambda node");
             return -1;
@@ -415,7 +415,7 @@ static int32_t add_body_to_top_lambda(parser_ctx_t *ctx, am_value_t body) {
     }
 
     if (new_lst != lst) {
-        if (am_heap_set(ctx->ast->alloc, ctx->ast->nodes, lambda_handle,
+        if (am_heap_set(ctx->ast->alloc, ctx->ast->alloc, ctx->ast->nodes, lambda_handle,
                         am_make_value_of_ptr((am_object_t *)new_lst)) != 0) {
             parser_set_error(ctx, L"failed to update lambda node");
             return -1;
@@ -1127,7 +1127,7 @@ static void preprocess_iter_cb(am_handle_t handle, am_value_t value, void *user_
 static void preprocess_analysis(parser_ctx_t *ctx) {
     if (!ctx || !ctx->ast) return;
     preprocess_iter_data_t data = { ctx };
-    am_heap_iter(ctx->ast->alloc, ctx->ast->nodes, preprocess_iter_cb, &data);
+    am_heap_iter(ctx->ast->alloc, ctx->ast->alloc, ctx->ast->nodes, preprocess_iter_cb, &data);
 }
 
 
@@ -1242,13 +1242,13 @@ static int32_t arn_create_scopes(parser_ctx_t *ctx, arn_lambda_collect_t *lambda
         am_scope_t *scope = am_scope_create(ast->alloc, parent_scope, parent_lambda, lambda_handle, 16);
         if (!scope) return -1;
 
-        am_handle_t scope_handle = am_heap_alloc_handle(ast->alloc, ast->nodes);
+        am_handle_t scope_handle = am_heap_alloc_handle(ast->alloc, ast->alloc, ast->nodes);
         if (scope_handle == AM_HANDLE_NULL) {
             am_scope_destroy(ast->alloc, scope);
             return -1;
         }
 
-        if (am_heap_set(ast->alloc, ast->nodes, scope_handle,
+        if (am_heap_set(ast->alloc, ast->alloc, ast->nodes, scope_handle,
                         am_make_value_of_ptr((am_object_t *)scope)) != 0) {
             am_scope_destroy(ast->alloc, scope);
             return -1;
@@ -1294,7 +1294,7 @@ static int32_t arn_add_lambda_params_to_scope(parser_ctx_t *ctx, am_handle_t lam
         if (!new_scope) return -1;
 
         if (new_scope != scope) {
-            if (am_heap_set(ast->alloc, ast->nodes, scope_handle,
+            if (am_heap_set(ast->alloc, ast->alloc, ast->nodes, scope_handle,
                             am_make_value_of_ptr((am_object_t *)new_scope)) != 0) {
                 return -1;
             }
@@ -1374,7 +1374,7 @@ static int32_t arn_add_defines_to_scope(parser_ctx_t *ctx, arn_define_collect_t 
         if (!new_scope) return -1;
 
         if (new_scope != scope) {
-            if (am_heap_set(ast->alloc, ast->nodes, scope_handle,
+            if (am_heap_set(ast->alloc, ast->alloc, ast->nodes, scope_handle,
                             am_make_value_of_ptr((am_object_t *)new_scope)) != 0) {
                 return -1;
             }
@@ -1525,7 +1525,7 @@ static void alpha_rename_analysis(parser_ctx_t *ctx) {
     arn_define_collect_t defines = { ctx, NULL, 0, 0 };
 
     // Pass 1-1: 收集所有 lambda handle
-    am_heap_iter(ast->alloc, ast->nodes, arn_collect_lambda_cb, &lambdas);
+    am_heap_iter(ast->alloc, ast->alloc, ast->nodes, arn_collect_lambda_cb, &lambdas);
     if (ctx->error) goto arn_cleanup;
 
     // Pass 1-2: 为每个 lambda 创建 scope
@@ -1543,7 +1543,7 @@ static void alpha_rename_analysis(parser_ctx_t *ctx) {
     }
 
     // Pass 1-4: 收集 define
-    am_heap_iter(ast->alloc, ast->nodes, arn_collect_defines_cb, &defines);
+    am_heap_iter(ast->alloc, ast->alloc, ast->nodes, arn_collect_defines_cb, &defines);
     if (ctx->error) goto arn_cleanup;
 
     // Pass 1-5: 注册 define 变量
@@ -1554,7 +1554,7 @@ static void alpha_rename_analysis(parser_ctx_t *ctx) {
 
     // Pass 2: 执行变量换名
     arn_rename_iter_t rename_data = { ctx };
-    am_heap_iter(ast->alloc, ast->nodes, arn_rename_iter_cb, &rename_data);
+    am_heap_iter(ast->alloc, ast->alloc, ast->nodes, arn_rename_iter_cb, &rename_data);
 
 arn_cleanup:
     arn_free_lambda_collect(&lambdas);
@@ -1602,11 +1602,11 @@ static void cleanup_scope_objects(parser_ctx_t *ctx) {
     if (!ctx || !ctx->ast) return;
 
     arn_scope_cleanup_data_t data = { ctx, NULL, 0, 0 };
-    am_heap_iter(ctx->ast->alloc, ctx->ast->nodes, arn_collect_scope_handles_cb, &data);
+    am_heap_iter(ctx->ast->alloc, ctx->ast->alloc, ctx->ast->nodes, arn_collect_scope_handles_cb, &data);
 
     if (!ctx->error) {
         for (size_t i = 0; i < data.count; i++) {
-            am_heap_free_handle(ctx->ast->alloc, ctx->ast->nodes, data.scope_handles[i]);
+            am_heap_free_handle(ctx->ast->alloc, ctx->ast->alloc, ctx->ast->nodes, data.scope_handles[i]);
         }
     }
     free(data.scope_handles);
@@ -1736,7 +1736,7 @@ static void alias_rename_iter_cb(am_handle_t handle, am_value_t value, void *use
 static void alias_rename_analysis(parser_ctx_t *ctx) {
     if (!ctx || !ctx->ast) return;
     alias_rename_iter_data_t data = { ctx, NULL, 0, 0 };
-    am_heap_iter(ctx->ast->alloc, ctx->ast->nodes, alias_rename_iter_cb, &data);
+    am_heap_iter(ctx->ast->alloc, ctx->ast->alloc, ctx->ast->nodes, alias_rename_iter_cb, &data);
 
     if (!ctx->error) {
         for (size_t i = 0; i < data.old_aliases_length; i++) {
