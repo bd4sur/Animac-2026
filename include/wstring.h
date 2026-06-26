@@ -32,6 +32,10 @@ int32_t am_wstring_destroy(am_allocator_t *alloc, am_wstring_t *obj);
 // 功能说明：拷贝wstring对象。成功则返回新副本对象的指针，失败则返回NULL。
 am_wstring_t *am_wstring_copy(am_allocator_t *alloc, am_wstring_t *obj);
 
+// 功能说明：计算对象所占用的实际字节数（考虑结构体填充和对齐问题）
+// 成功返回字节数，失败返回SIZE_MAX
+size_t am_wstring_size(am_allocator_t *alloc, am_wstring_t *obj);
+
 // 功能说明：将字符串对象序列化成二进制序列，并转储到buffer[offset]
 // 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
 // 注意：若buffer设为NULL，或者offset设为SIZE_MAX，则仅计算转储后的二进制序列的字节数，不实际写入buffer。

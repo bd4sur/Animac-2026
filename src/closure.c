@@ -111,6 +111,23 @@ am_obj_closure_t *am_closure_copy(am_allocator_t *alloc, am_obj_closure_t *closu
 }
 
 // ===============================================================================
+// 对象大小
+// ===============================================================================
+
+// 功能说明：计算对象所占用的实际字节数（考虑结构体填充和对齐问题）
+// 成功返回字节数，失败返回SIZE_MAX
+size_t am_closure_size(am_allocator_t *alloc, am_obj_closure_t *obj) {
+    (void)alloc;
+    if (!obj) return SIZE_MAX;
+
+    if (obj->capacity > (SIZE_MAX - sizeof(am_obj_closure_t)) / sizeof(am_binding_t)) {
+        return SIZE_MAX;
+    }
+    return sizeof(am_obj_closure_t) + obj->capacity * sizeof(am_binding_t);
+}
+
+
+// ===============================================================================
 // 对象二进制转储 TODO
 // ===============================================================================
 

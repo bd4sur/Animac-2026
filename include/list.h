@@ -51,6 +51,10 @@ int32_t am_list_destroy(am_allocator_t *alloc, am_list_t *lst);
 
 am_list_t *am_list_copy(am_allocator_t *alloc, am_list_t *lst);
 
+// 功能说明：计算对象所占用的实际字节数（考虑结构体填充和对齐问题）
+// 成功返回字节数，失败返回SIZE_MAX
+size_t am_list_size(am_allocator_t *alloc, am_list_t *obj);
+
 void am_list_iter(am_allocator_t *alloc, am_list_t *lst, am_list_iter_callback_t cb, void *user_data);
 
 // 功能说明：将列表对象序列化成二进制序列，并转储到buffer[offset]

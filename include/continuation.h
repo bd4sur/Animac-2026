@@ -41,6 +41,10 @@ int32_t am_continuation_destroy(am_allocator_t *alloc, am_continuation_t *obj);
 // 拷贝
 am_continuation_t *am_continuation_copy(am_allocator_t *alloc, am_continuation_t *obj);
 
+// 功能说明：计算对象所占用的实际字节数（考虑结构体填充和对齐问题）
+// 成功返回字节数，失败返回SIZE_MAX
+size_t am_continuation_size(am_allocator_t *alloc, am_continuation_t *obj);
+
 // 获取opstack数组，用于GC遍历和续体恢复。成功返回新数组指针（通过alloc分配，由调用者负责释放），失败返回NULL。
 am_value_t *am_continuation_get_opstack(am_allocator_t *alloc, am_continuation_t *obj, size_t *length);
 

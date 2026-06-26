@@ -512,6 +512,7 @@ void am_debug_ast_print(FILE *out, am_ast_t *ast) {
         return;
     }
     size_t visited_count = 0;
+    (void)visited_count;
 
     fwprintf(out, L"AST {\n");
     debug_ast_print_indent(out, 1);

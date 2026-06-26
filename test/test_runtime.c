@@ -19,7 +19,7 @@
 // 基础设施：基于内存池的简单测试分配器（bump allocator）
 // ===============================================================================
 
-#define TEST_POOL_SIZE (32 * 1024 * 1024)
+#define TEST_POOL_SIZE (1024 * 1024 * 1024)
 
 typedef struct test_allocator_state_t {
     uint8_t *base;
@@ -239,7 +239,28 @@ static void test_runtime_load_from_file(void) {
     printf("=== AST ===\n");
     am_debug_ast_print_to_stdout(linked);
 
-    am_module_t *mod = am_compile(linked);
+
+    am_heap_t *nodes_copy = am_heap_copy(&test_vm_allocator, linked->nodes);
+    assert(nodes_copy != NULL);
+
+    size_t dump_size = am_heap_deep_dump(&test_vm_allocator, nodes_copy, NULL, 0);
+    assert(dump_size != SIZE_MAX);
+
+    uint8_t *dump_buffer = (uint8_t *)malloc(dump_size);
+    assert(dump_buffer);
+    memset(dump_buffer, 0, dump_size);
+
+    size_t written = am_heap_deep_dump(&test_vm_allocator, nodes_copy, dump_buffer, 0);
+    assert(written == dump_size);
+
+    am_heap_t *loaded_nodes = am_heap_deep_load(&test_vm_allocator, dump_buffer, 0);
+    assert(loaded_nodes != NULL);
+
+    am_ast_t loaded_linked_ast = *linked;
+    loaded_linked_ast.nodes = loaded_nodes;
+
+
+    am_module_t *mod = am_compile(&loaded_linked_ast);
     assert(mod != NULL);
 
     printf("=== IL Code ===\n");
@@ -251,6 +272,7 @@ static void test_runtime_load_from_file(void) {
     rt->callback_on_error = on_error;
 
     am_pid_t pid1 = am_load_module(rt, mod);
+    (void)pid1;
     // am_pid_t pid2 = am_load_module(rt, mod);
 
     printf("=== VM output ===\n");

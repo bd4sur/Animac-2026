@@ -83,6 +83,23 @@ am_continuation_t *am_continuation_copy(am_allocator_t *alloc, am_continuation_t
 
 
 // ===============================================================================
+// 对象大小
+// ===============================================================================
+
+// 功能说明：计算对象所占用的实际字节数（考虑结构体填充和对齐问题）
+// 成功返回字节数，失败返回SIZE_MAX
+size_t am_continuation_size(am_allocator_t *alloc, am_continuation_t *obj) {
+    (void)alloc;
+    if (!obj) return SIZE_MAX;
+
+    if (obj->length > (SIZE_MAX - sizeof(am_continuation_t)) / sizeof(am_value_t)) {
+        return SIZE_MAX;
+    }
+    return sizeof(am_continuation_t) + obj->length * sizeof(am_value_t);
+}
+
+
+// ===============================================================================
 // 查询
 // ===============================================================================
 

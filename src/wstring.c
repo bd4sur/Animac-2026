@@ -53,6 +53,23 @@ am_wstring_t *am_wstring_copy(am_allocator_t *alloc, am_wstring_t *obj) {
 }
 
 
+// ===============================================================================
+// 对象大小
+// ===============================================================================
+
+// 功能说明：计算对象所占用的实际字节数（考虑结构体填充和对齐问题）
+// 成功返回字节数，失败返回SIZE_MAX
+size_t am_wstring_size(am_allocator_t *alloc, am_wstring_t *obj) {
+    (void)alloc;
+    if (!obj) return SIZE_MAX;
+
+    if (obj->length > (SIZE_MAX - sizeof(am_wstring_t)) / sizeof(am_value_t)) {
+        return SIZE_MAX;
+    }
+    return sizeof(am_wstring_t) + obj->length * sizeof(am_value_t);
+}
+
+
 // 转储格式：
 //   [sizeof(am_object_t) bytes] 对象基类头（含type=AM_OBJECT_TYPE_WSTRING）
 //   [sizeof(size_t) bytes] 字符串长度（字符个数）

@@ -306,7 +306,13 @@ size_t am_heap_deep_dump(am_allocator_t *alloc, am_heap_t *heap, uint8_t *buffer
         if (buffer != NULL && offset != SIZE_MAX) {
             // 对象偏移量以deep_dump区域起点为基准，便于整体自描述与重定位
             am_value_t offset_value = am_make_value_of_ptr((am_object_t *)(uintptr_t)(obj_offset - offset));
-            am_map_set(alloc, temp_heap.table, entries[i].key, offset_value);
+            am_map_t *new_table = am_map_set(alloc, temp_heap.table, entries[i].key, offset_value);
+            if (!new_table) {
+                am_map_destroy(alloc, temp_heap.table);
+                free(entries);
+                return SIZE_MAX;
+            }
+            temp_heap.table = new_table;
         }
 
         obj_offset += obj_size;
