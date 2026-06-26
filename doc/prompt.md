@@ -2046,6 +2046,14 @@ size_t am_wstring_size(am_allocator_t *alloc, am_wstring_t *obj);
 
 开始编码前，请先阅读 @doc/AGENTS.md 。
 
+请你修改 @src/parser.c ，在 am_parse 的 alpha_rename_analysis 之后，增加一个环节：遍历整个ast->nodes，清除掉上一步在nodes中遗留的type为AM_OBJECT_TYPE_SCOPE的scope对象。
+
+无需新增测试或者修改现有测试，只需要编译项目并确保 test_runtime 运行正常即可。你可以使用WSL进行编译构建和测试。
+
+---------------------
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
 请你阅读下面的“内存管理概述”，了解项目当前尚未完全实现的内存管理实现思路，然后完成需求。
 
 # 内存管理概述
@@ -2070,9 +2078,6 @@ size_t am_wstring_size(am_allocator_t *alloc, am_wstring_t *obj);
 # 测试
 
 该需求波及面非常大，几乎涉及所有模块。请谨慎修改。请你优先保证 @test/test_runtime.c 的正确性，因为这是全流程的测试。一般情况下，你不需要修改现有的测试用例，但你可以根据需要创建新的测试用例。你可以使用WSL进行编译构建和测试。
-
-
----------------------
 
 
 ---------------------

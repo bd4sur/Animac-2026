@@ -1563,6 +1563,57 @@ arn_cleanup:
 
 
 // ===============================================================================
+// 清理 ARN 阶段遗留的 scope 对象
+// ===============================================================================
+
+typedef struct {
+    parser_ctx_t *ctx;
+    am_handle_t *scope_handles;
+    size_t count;
+    size_t capacity;
+} arn_scope_cleanup_data_t;
+
+
+static void arn_collect_scope_handles_cb(am_handle_t handle, am_value_t value, void *user_data) {
+    arn_scope_cleanup_data_t *data = (arn_scope_cleanup_data_t *)user_data;
+    parser_ctx_t *ctx = data->ctx;
+
+    if (ctx->error) return;
+    if (!am_value_is_ptr(value)) return;
+
+    am_object_t *obj = am_value_to_ptr(value);
+    if (obj->type != AM_OBJECT_TYPE_SCOPE) return;
+
+    if (data->count >= data->capacity) {
+        size_t new_cap = data->capacity ? data->capacity * 2 : 16;
+        am_handle_t *new_arr = (am_handle_t *)realloc(data->scope_handles, new_cap * sizeof(am_handle_t));
+        if (!new_arr) {
+            parser_set_error(ctx, L"out of memory collecting scope handles");
+            return;
+        }
+        data->scope_handles = new_arr;
+        data->capacity = new_cap;
+    }
+    data->scope_handles[data->count++] = handle;
+}
+
+
+static void cleanup_scope_objects(parser_ctx_t *ctx) {
+    if (!ctx || !ctx->ast) return;
+
+    arn_scope_cleanup_data_t data = { ctx, NULL, 0, 0 };
+    am_heap_iter(ctx->ast->alloc, ctx->ast->nodes, arn_collect_scope_handles_cb, &data);
+
+    if (!ctx->error) {
+        for (size_t i = 0; i < data.count; i++) {
+            am_heap_free_handle(ctx->ast->alloc, ctx->ast->nodes, data.scope_handles[i]);
+        }
+    }
+    free(data.scope_handles);
+}
+
+
+// ===============================================================================
 // 引用模块别名（alias）和外部引用（ext_ref）更名
 // ===============================================================================
 
@@ -2502,6 +2553,19 @@ am_ast_t *am_parse(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path)
 
     // Alpha-renaming（两阶段变量换名）
     alpha_rename_analysis(&ctx);
+    if (ctx.error) {
+        fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
+        free(ctx.node_stack);
+        free(ctx.state_stack);
+        free(ctx.lambda_stack);
+        free(ctx.special_app_stack);
+        am_ast_destroy(ast);
+        am_free(alloc, tokens);
+        return NULL;
+    }
+
+    // 清理 ARN 阶段遗留的 scope 对象
+    cleanup_scope_objects(&ctx);
     if (ctx.error) {
         fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
         free(ctx.node_stack);
