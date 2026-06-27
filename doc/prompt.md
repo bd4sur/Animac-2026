@@ -2082,6 +2082,16 @@ size_t am_wstring_size(am_allocator_t *alloc, am_wstring_t *obj);
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+在Scheme解释器中，process是对module的运行时实例化，module主要由AST和ILCode构成，因此process需要保留AST中的必要信息（但不是全部信息）。
+
+当前实现中，在 @src/process.c 中的 am_process_load_from_module 函数中，实现了从module构造一个process的过程，其中涉及各复杂数据结构字段的拷贝和转储/加载。但仍有两个AST的必要字段没有被拷贝到process中： var_type 和 natives 。
+
+我的需求是：请你修改 @src/process.c 中的 am_process_load_from_module 函数，将 mod->ast 的 var_type 和 natives 两个字段，拷贝到 process 新增的 var_type 和 natives 两个字段。同时，在析构函数中，也增加对于这两个字段的析构逻辑。这两个字段都是复杂的容器。你需要阅读 @src/list.c 和 @src/map.c 的相关实现。
+
+无需编写新的测试，也不要修改已有的测试。保证 test_runtime 正确即可，因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
+
 
 ---------------------
 

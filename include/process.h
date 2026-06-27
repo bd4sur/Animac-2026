@@ -62,6 +62,8 @@ typedef struct am_process_t {
 
     am_vocab_t *var_vocab;    // 变量词表
     am_vocab_t *symbol_vocab; // 符号词表
+    am_list_t *var_type;      // 变量类型表（内容同AST，用于运行时判断变量类型，尤其是native_ref）
+    am_map_t *natives;        // 本地库记录（内容同AST，用于判断模块使用了哪些本地库）
 
     am_handle_t current_closure_handle; // 指向当前闭包的把柄
 
