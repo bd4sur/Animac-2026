@@ -250,7 +250,7 @@ static void test_compiler_recursive(void) {
     }
 
     // 执行外部引用解析
-    int32_t resolution_result = am_linker_import_ref_resolution(linked);
+    int32_t resolution_result = am_linker_import_ref_resolution(linked, (wchar_t *)base_dir);
     if (resolution_result != 0) {
         fprintf(stderr, "Import ref resolution failed\n");
         am_ast_destroy(linked);

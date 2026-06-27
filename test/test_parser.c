@@ -1397,15 +1397,15 @@ static void test_parse_opstack_depth_analysis(void) {
         am_ast_destroy(ast);
     }
 
-    // begin：中间结果会被 pop，最大深度为 1
-    // {
-    //     wchar_t *code = L"((lambda () (begin 1 2 3)))";
-    //     am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
-    //     assert(ast != NULL);
-    //     size_t depth = am_parser_opstack_depth_analysis(ast);
-    //     assert(depth == 1);
-    //     am_ast_destroy(ast);
-    // }
+    // begin：临时策略下所有子表达式结果不退栈，(begin 1 2 3) 深度为 3
+    {
+        wchar_t *code = L"((lambda () (begin 1 2 3)))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 3);
+        am_ast_destroy(ast);
+    }
 
     // if：predicate 和分支各自只产生 1 个值
     {
@@ -1454,6 +1454,134 @@ static void test_parse_opstack_depth_analysis(void) {
         assert(ast != NULL);
         size_t depth = am_parser_opstack_depth_analysis(ast);
         assert(depth == 5);
+        am_ast_destroy(ast);
+    }
+
+    // begin 中包含一般表达式：(+ 1 2) 与 (+ 3 4) 结果均不退栈，深度为 3
+    {
+        wchar_t *code = L"((lambda () (begin (+ 1 2) (+ 3 4))))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 3);
+        am_ast_destroy(ast);
+    }
+
+    // begin 中 define/set! 的 effect 为 0，不增加当前深度
+    {
+        wchar_t *code = L"((lambda () (begin (define x 1) (+ x 2))))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 2);
+        am_ast_destroy(ast);
+    }
+
+    // begin 嵌套在 application 中：内层 begin 结果不退栈，外层再压参数
+    {
+        wchar_t *code = L"((lambda () (+ (begin 1 2) 3)))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 3);
+        am_ast_destroy(ast);
+    }
+
+    // begin 嵌套 begin
+    {
+        wchar_t *code = L"((lambda () (begin (begin 1 2) 3)))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 3);
+        am_ast_destroy(ast);
+    }
+
+    // lambda 多体（与 begin 同策略，相邻体之间结果不退栈）
+    {
+        wchar_t *code = L"((lambda () (display 1) (display 2) (display 3)))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 3);
+        am_ast_destroy(ast);
+    }
+
+    // lambda 形参与多体混合：参数 store 后体从 0 开始累加
+    {
+        wchar_t *code = L"((lambda (x) (set! x 1) (+ x 2)))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 2);
+        am_ast_destroy(ast);
+    }
+
+    // while 体同策略：predicate 深度 1，体中两个 display 累加到 2
+    {
+        wchar_t *code = L"((lambda () (while #t (display 1) (display 2))))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 2);
+        am_ast_destroy(ast);
+    }
+
+    // cond：各子句 predicate/branch 单独产生 1 个值，最大深度为 1
+    {
+        wchar_t *code = L"((lambda () (cond (#t 1) (#f 2) (else 3))))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 1);
+        am_ast_destroy(ast);
+    }
+
+    // and / or：各子表达式单独产生 1 个值，最大深度为 1
+    {
+        wchar_t *code = L"((lambda () (and #t #f #t)))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 1);
+        am_ast_destroy(ast);
+    }
+    {
+        wchar_t *code = L"((lambda () (or #f #t #f)))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 1);
+        am_ast_destroy(ast);
+    }
+
+    // quote：产生 1 个值
+    {
+        wchar_t *code = L"((lambda () (quote x)))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 1);
+        am_ast_destroy(ast);
+    }
+
+    // set!：右值求值最大深度 1，store 后净效果为 0
+    {
+        wchar_t *code = L"((lambda (x) (set! x 1)))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 1);
+        am_ast_destroy(ast);
+    }
+
+    // 连续 define 后接表达式
+    {
+        wchar_t *code = L"((lambda () (define x 1) (define y 2) (+ x y)))";
+        am_ast_t *ast = am_parse(&test_allocator, code, L"/test.scm");
+        assert(ast != NULL);
+        size_t depth = am_parser_opstack_depth_analysis(ast);
+        assert(depth == 2);
         am_ast_destroy(ast);
     }
 

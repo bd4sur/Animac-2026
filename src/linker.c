@@ -257,6 +257,7 @@ static int32_t import_analysis(am_linker_ctx_t *ctx, wchar_t *importee_path, siz
             }
 
             wchar_t *abs_dep_path = linker_resolve_path(ctx->base_dir, dep_path);
+            printf("Importee absolute path = %ls\n", abs_dep_path);
             free(dep_path);
             if (!abs_dep_path) {
                 free(dep_keys);
@@ -406,6 +407,7 @@ size_t *am_topo_sort(size_t DAG[][2], size_t edge_num) {
 
 typedef struct {
     am_ast_t *ast;
+    wchar_t *base_dir;
     int32_t   error;
 } import_ref_resolution_ctx_t;
 
@@ -494,8 +496,16 @@ static void import_ref_resolution_iter_cb(am_handle_t handle, am_value_t value, 
             return;
         }
 
-        wchar_t *importee_id = am_absolute_path_to_module_id(ast->alloc, importee_path);
+        // 转换为绝对路径
+        wchar_t *abs_importee_path = linker_resolve_path(ctx->base_dir, importee_path);
+        if (!abs_importee_path) {
+            ctx->error = -1;
+            return;
+        }
+
+        wchar_t *importee_id = am_absolute_path_to_module_id(ast->alloc, abs_importee_path);
         free(importee_path);
+        free(abs_importee_path);
         if (!importee_id) {
             ctx->error = -1;
             return;
@@ -546,7 +556,7 @@ static void import_ref_resolution_iter_cb(am_handle_t handle, am_value_t value, 
 // 对合并后的AST执行外部引用解析，也就是将AST中所有的 var_type=AM_VAR_TYPE_IMPORT_REF 类型的变量，
 // 替换为 dependencies 对应模块中的变量全限定名。
 // 成功返回 0，失败返回 -1。
-int32_t am_linker_import_ref_resolution(am_ast_t *merged_ast) {
+int32_t am_linker_import_ref_resolution(am_ast_t *merged_ast, wchar_t *base_dir) {
 
     if (!merged_ast || !merged_ast->alloc || !merged_ast->nodes ||
         !merged_ast->var_vocab || !merged_ast->var_type || !merged_ast->var_top ||
@@ -554,7 +564,7 @@ int32_t am_linker_import_ref_resolution(am_ast_t *merged_ast) {
         return -1;
     }
 
-    import_ref_resolution_ctx_t iter_ctx = { merged_ast, 0 };
+    import_ref_resolution_ctx_t iter_ctx = { merged_ast, base_dir, 0 };
     am_heap_iter(merged_ast->alloc, merged_ast->alloc, merged_ast->nodes,
                  import_ref_resolution_iter_cb, &iter_ctx);
 
@@ -619,60 +629,57 @@ am_ast_t *am_link(am_ast_t *main_ast, wchar_t *base_dir) {
         return NULL;
     }
 
+    am_ast_t *global_ast = NULL;
+
     // 只有一个模块时无需拓扑排序与合并
     if (ctx->module_counter == 1) {
-        if (am_parser_tail_call_analysis(main_ast) != 0) {
-            linker_ctx_destroy(ctx);
-            return NULL;
-        }
-        if (linker_mark_all_nodes_static(main_ast) != 0) {
-            linker_ctx_destroy(ctx);
-            return NULL;
-        }
-        linker_ctx_destroy(ctx);
-        return main_ast;
+        global_ast = main_ast;
     }
-
-    // 对 DAG 做拓扑排序，同时检查是否成环
-    size_t *sorted = am_topo_sort(ctx->DAG, ctx->edge_num);
-    if (sorted == (size_t *)SIZE_MAX) {
-        linker_ctx_destroy(ctx);
-        return NULL;
-    }
-
-    // 以排序后的第一个模块为全局 importer，逐个吃掉 importee
-    am_ast_t *global_ast = ctx->ALLAST[sorted[0]];
-    for (size_t i = 1; i < ctx->module_counter; i++) {
-        size_t importee_index = sorted[i];
-        if (am_ast_merge(global_ast, ctx->ALLAST[importee_index], 0) != 0) {
-            free(sorted);
+    else {
+        // 对 DAG 做拓扑排序，同时检查是否成环
+        size_t *sorted = am_topo_sort(ctx->DAG, ctx->edge_num);
+        if (sorted == (size_t *)SIZE_MAX) {
             linker_ctx_destroy(ctx);
             return NULL;
         }
+        // 以排序后的第一个模块为全局 importer，逐个吃掉 importee
+        global_ast = ctx->ALLAST[sorted[0]];
+        for (size_t i = 1; i < ctx->module_counter; i++) {
+            size_t importee_index = sorted[i];
+            if (am_ast_merge(global_ast, ctx->ALLAST[importee_index], 0) != 0) {
+                free(sorted);
+                linker_ctx_destroy(ctx);
+                return NULL;
+            }
+        }
+        free(sorted);
     }
 
     // 模块合并会改变 AST 结构，需要重新进行整体的尾位置分析
     if (am_parser_tail_call_analysis(global_ast) != 0) {
-        free(sorted);
+        linker_ctx_destroy(ctx);
+        return NULL;
+    }
+
+    // 静态分析最大opstack深度
+    global_ast->opstack_depth = am_parser_opstack_depth_analysis(global_ast);
+    if (global_ast->opstack_depth == SIZE_MAX) {
         linker_ctx_destroy(ctx);
         return NULL;
     }
 
     // 对合并后的AST执行外部引用解析
-    if (am_linker_import_ref_resolution(global_ast) != 0) {
-        free(sorted);
+    if (am_linker_import_ref_resolution(global_ast, base_dir) != 0) {
         linker_ctx_destroy(ctx);
         return NULL;
     }
 
     // AST 解析得到的所有对象都是静态（永生）对象
     if (linker_mark_all_nodes_static(global_ast) != 0) {
-        free(sorted);
         linker_ctx_destroy(ctx);
         return NULL;
     }
 
-    free(sorted);
     linker_ctx_destroy(ctx);
     return global_ast;
 }

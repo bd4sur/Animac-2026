@@ -24,7 +24,7 @@ typedef struct am_module_t {
     am_object_t base; // 基类头：am_module_t也视为对象语言的数据对象
 
     uint64_t header; // 保留：元数据头
-    int32_t opstack_depth; // 编译期分析出来的opstack最大深度
+    size_t opstack_depth; // 编译期分析出来的opstack最大深度
     am_ast_t *ast;
     am_instruction_t *ilcode;
     am_iaddr_t ilcode_length; // ilcode数组长度（指令条数）

@@ -693,7 +693,7 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
 ```
 // 对合并后的AST执行外部引用解析，也就是将AST中所有的var_type=AM_VAR_TYPE_IMPORT_REF类型的变量，替换为dependencies对应模块中的变量全限定名
 // 成功返回0，失败返回-1。
-int32_t am_linker_import_ref_resolution(am_ast_t *merged_ast);
+int32_t am_linker_import_ref_resolution(am_ast_t *merged_ast, wchar_t *base_dir);
 ```
 
 外部引用解析算法：
@@ -2095,6 +2095,11 @@ size_t am_wstring_size(am_allocator_t *alloc, am_wstring_t *obj);
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+请你全面阅读解释器现有代码，检查 @src/parser.c 中的 am_parser_opstack_depth_analysis 实现是否正确。我需要特别强调说明的是：begin的处理比较复杂，但是现在我姑且采取一种简单策略，即begin的所有子表达式的结果都不退栈（也就是编译时不会加入pop指令）。你需要基于这个临时策略，检查现有opstack_depth估计算法是否正确。如果你认为不正确，可直接修改代码。
+
+修改完成后，我要求你在 @test/test_parser.c 现有测试的基础上，更加全面地测试 am_parser_opstack_depth_analysis 。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

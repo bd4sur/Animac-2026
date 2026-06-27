@@ -974,7 +974,7 @@ am_module_t *am_compile(am_ast_t *ast) {
     }
 
     mod->base.type = AM_OBJECT_TYPE_MODULE;
-    mod->opstack_depth = 1024;
+    mod->opstack_depth = ast->opstack_depth;
     mod->ast = ast;
     mod->ilcode = ctx->ilcode;
     mod->ilcode_length = ctx->icount;

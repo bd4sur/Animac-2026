@@ -65,6 +65,8 @@ typedef struct am_ast_t {
     am_list_t *var_top;          // 顶级变量varid列表（即顶层作用域define的变量）（对应TS的topVariables）
     am_map_t *dependencies;      // 依赖模块记录：Map<varid, handle>（对应TS的dependencies）根据(import mod_alias "path/to/mod.scm")记录
     am_map_t *natives;           // 本地库记录：Map<varid, handle>（对应TS的natives）根据(native Math)记录，其中handle可暂时设置为AM_VALUE_HANDLE_NULL备用
+
+    size_t opstack_depth;        // 静态分析得到的最大opstack栈深度（在link后最后分析）
 } am_ast_t;
 
 

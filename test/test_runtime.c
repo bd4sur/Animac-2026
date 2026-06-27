@@ -236,8 +236,8 @@ static void test_runtime_load_from_file(void) {
     am_ast_t *linked = am_link(ast, (wchar_t *)base_dir);
     assert(linked != NULL);
 
-    printf("=== AST ===\n");
-    am_debug_ast_print_to_stdout(linked);
+    // printf("=== AST ===\n");
+    // am_debug_ast_print_to_stdout(linked);
 
 
     am_heap_t *nodes_copy = am_heap_copy(&test_vm_allocator, &test_vm_allocator, linked->nodes);
@@ -262,9 +262,10 @@ static void test_runtime_load_from_file(void) {
 
     am_module_t *mod = am_compile(&loaded_linked_ast);
     assert(mod != NULL);
+    printf("OPSTACK depth = %zu\n", mod->opstack_depth);
 
-    printf("=== IL Code ===\n");
-    am_debug_print_ilcode(mod->ast, mod->ilcode, mod->ilcode_length);
+    // printf("=== IL Code ===\n");
+    // am_debug_print_ilcode(mod->ast, mod->ilcode, mod->ilcode_length);
 
     am_runtime_t *rt = am_runtime_create(&test_vm_allocator, &test_heap_allocator, (wchar_t *)base_dir);
     assert(rt != NULL);

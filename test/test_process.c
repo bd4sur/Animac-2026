@@ -129,7 +129,7 @@ static void test_process_basic(void) {
     assert(linked == ast);
 
     // 执行外部引用解析
-    int32_t resolution_result = am_linker_import_ref_resolution(linked);
+    int32_t resolution_result = am_linker_import_ref_resolution(linked, (wchar_t *)L"/tmp");
     assert(resolution_result == 0);
 
     printf("=== resolved AST ===\n");
