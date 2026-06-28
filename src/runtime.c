@@ -706,7 +706,23 @@ static int32_t op_get_item(am_runtime_t *rt, am_process_t *proc, am_value_t oper
     if (obj->type != AM_OBJECT_TYPE_LIST) return -1;
 
     am_list_t *lst = (am_list_t *)obj;
-    am_int_t idx = am_value_is_int(index_val) ? am_value_to_int(index_val) : (am_int_t)am_value_to_uint(index_val);
+    int32_t idx_type = am_value_type(index_val);
+    am_int_t idx = 0;
+    if (idx_type == AM_VALUE_TYPE_FLOAT) {
+        idx = (am_int_t)roundf(am_value_to_float(index_val));
+    }
+    else if (idx_type == AM_VALUE_TYPE_UINT) {
+        idx = (am_int_t)(am_value_to_uint(index_val));
+    }
+    else if (idx_type == AM_VALUE_TYPE_INT) {
+        idx = am_value_to_int(index_val);
+    }
+    else {
+        am_process_push_operand(proc, AM_VALUE_UNDEFINED);
+        am_process_step(proc);
+        return 0;
+    }
+
     if (idx < 0 || (size_t)idx >= lst->length) {
         am_process_push_operand(proc, AM_VALUE_UNDEFINED);
     }
@@ -734,7 +750,20 @@ static int32_t op_set_item(am_runtime_t *rt, am_process_t *proc, am_value_t oper
     if (obj->type != AM_OBJECT_TYPE_LIST) return -1;
 
     am_list_t *lst = (am_list_t *)obj;
-    am_int_t idx = am_value_is_int(index_val) ? am_value_to_int(index_val) : (am_int_t)am_value_to_uint(index_val);
+    int32_t idx_type = am_value_type(index_val);
+    am_int_t idx = 0;
+    if (idx_type == AM_VALUE_TYPE_FLOAT) {
+        idx = (am_int_t)roundf(am_value_to_float(index_val));
+    }
+    else if (idx_type == AM_VALUE_TYPE_UINT) {
+        idx = (am_int_t)(am_value_to_uint(index_val));
+    }
+    else if (idx_type == AM_VALUE_TYPE_INT) {
+        idx = am_value_to_int(index_val);
+    }
+    else {
+        return -1;
+    }
     if (idx < 0 || (size_t)idx >= lst->length) return -1;
 
     am_list_set(proc->heap_alloc, lst, (size_t)idx, value);

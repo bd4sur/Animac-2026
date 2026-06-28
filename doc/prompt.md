@@ -2149,6 +2149,16 @@ int32_t am_runtime_check_native_ref(am_runtime_t *rt, am_process_t *proc, am_val
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+请你重新阅读仓库代码，理解本地宿主库调用分派机制，在 @src/native_String.c 和 @include/native_String.h 中，参照既有TypeScript参考实现 @typescript/lib/String.js ， 参照既有Math库（ @src/native_Math.c 和 @include/native_Math.h ）和System库（ @src/native_System.c 和 @include/native_System.h ）的实现套路，参照 @src/runtime.c 中字符串相关op_*指令的实现方式：实现String本地宿主库。要求如下：
+
+- 请实现  @typescript/lib/String.js 中实现的所有函数。
+- 仅限使用C标准库函数。
+- 所有的数值都视为float（细致的类型区分是后面的待办事项）。
+- 注意错误处理、函数的arity、以及对于特殊边界情况的处理（可以复用标准库提供的机制，注意利用Animac既有的undefined、null等特殊值。如果是NaN，则暂且返回null。）
+
+无需编写新的测试。保证 test_runtime 正确即可（你可能需要在 @test/test_runtime.c 中注册新实现的String库），因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
