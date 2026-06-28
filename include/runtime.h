@@ -93,6 +93,17 @@ int32_t am_runtime_destroy(am_runtime_t *rt);
 
 
 ///////////////////////////////////////////
+// Native 库注册
+///////////////////////////////////////////
+
+// 前向声明：完整定义见 native.h
+typedef struct am_native_lib_entry_t am_native_lib_entry_t;
+
+// 向运行时注册一个native库。成功返回0，失败返回-1。
+int32_t am_runtime_register_native_lib(am_runtime_t *rt, const am_native_lib_entry_t *lib);
+
+
+///////////////////////////////////////////
 // 入口函数（兼容参考用法）
 ///////////////////////////////////////////
 

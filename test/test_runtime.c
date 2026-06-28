@@ -14,6 +14,8 @@
 #include "debug.h"
 #include "ast.h"
 
+#include "native_System.h"
+#include "native_Math.h"
 
 // ===============================================================================
 // 基础设施：基于内存池的简单测试分配器（bump allocator）
@@ -269,6 +271,11 @@ static void test_runtime_load_from_file(void) {
 
     am_runtime_t *rt = am_runtime_create(&test_vm_allocator, &test_heap_allocator, (wchar_t *)base_dir);
     assert(rt != NULL);
+
+    // 注册内置 native 库
+    am_runtime_register_native_lib(rt, &am_native_System_lib);
+    am_runtime_register_native_lib(rt, &am_native_Math_lib);
+
     rt->callback_on_halt = on_halt;
     rt->callback_on_error = on_error;
 

@@ -1,26 +1,27 @@
 #include "native.h"
-#include "native_System.h"
-#include "native_Math.h"
 
 #include <wchar.h>
 
 
-// 已注册的 native 库表。
-// 新增库时，只需在其对应的头文件中暴露库表项，并在此数组中加入引用。
-static const am_native_lib_entry_t *am_native_libs[] = {
-    &am_native_System_lib,
-    &am_native_Math_lib,
-};
-static const size_t am_native_lib_count =
-    sizeof(am_native_libs) / sizeof(am_native_libs[0]);
+static const am_native_lib_entry_t *g_native_libs[AM_NATIVE_MAX_LIBS];
+static size_t g_native_lib_count = 0;
+
+
+// 注册一个native库到全局native库表中。成功返回0，失败返回-1。
+int32_t am_native_register_lib(const am_native_lib_entry_t *lib) {
+    if (!lib || !lib->name || !lib->funcs || lib->func_count == 0) return -1;
+    if (g_native_lib_count >= AM_NATIVE_MAX_LIBS) return -1;
+    g_native_libs[g_native_lib_count++] = lib;
+    return 0;
+}
 
 
 // 运行时查表：根据库名和函数名定位native函数实现。
 am_native_func_t am_native_find_func(const wchar_t *lib_name, const wchar_t *func_name) {
     if (!lib_name || !func_name) return NULL;
 
-    for (size_t i = 0; i < am_native_lib_count; i++) {
-        const am_native_lib_entry_t *lib = am_native_libs[i];
+    for (size_t i = 0; i < g_native_lib_count; i++) {
+        const am_native_lib_entry_t *lib = g_native_libs[i];
         if (!lib) continue;
         if (wcscmp(lib->name, lib_name) != 0) continue;
 

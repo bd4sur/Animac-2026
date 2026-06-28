@@ -1381,6 +1381,13 @@ static int32_t op_halt(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
 // 生命周期
 // ===============================================================================
 
+// 向运行时注册一个native库。成功返回0，失败返回-1。
+int32_t am_runtime_register_native_lib(am_runtime_t *rt, const am_native_lib_entry_t *lib) {
+    if (!rt) return -1;
+    return am_native_register_lib(lib);
+}
+
+
 am_runtime_t *am_runtime_create(am_allocator_t *vm_alloc, am_allocator_t *heap_alloc, const wchar_t *base_dir) {
     if (!vm_alloc || !heap_alloc) return NULL;
 
