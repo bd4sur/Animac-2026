@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -51,6 +52,33 @@ typedef struct am_runtime_t am_runtime_t;
 
 
 ///////////////////////////////////////////
+// 异步定时器基础设施
+///////////////////////////////////////////
+
+// 时间戳类型：毫秒
+typedef uint64_t am_timestamp_t;
+
+// 定时器条目（不透明类型，具体定义见 runtime.c）
+typedef struct am_timer_t am_timer_t;
+
+// 注册一个定时器。delay_ms 为首次触发的延迟，repeat 表示是否周期触发，
+// interval_ms 为周期触发的间隔。成功返回大于 0 的定时器编号，失败返回 0。
+size_t am_runtime_set_timer(am_runtime_t *rt, am_pid_t pid, am_handle_t callback,
+                            am_timestamp_t delay_ms, bool repeat, am_timestamp_t interval_ms);
+
+// 根据编号取消一个定时器。成功返回 true，未找到返回 false。
+bool am_runtime_clear_timer(am_runtime_t *rt, size_t timer_id);
+
+// 获取当前时间戳（毫秒）。
+am_timestamp_t am_runtime_now_ms(void);
+
+// 以异步方式调用一个闭包：压入栈帧并跳转到闭包入口，返回地址为 return_target。
+// 用于定时器回调等场景。成功返回 0，失败返回 -1。
+int32_t am_runtime_call_async(am_runtime_t *rt, am_process_t *proc, am_handle_t callback,
+                              am_iaddr_t return_target);
+
+
+///////////////////////////////////////////
 // 运行时环境
 // 说明：运行时是虚拟机调度的核心，管理进程池、进程队列、FIFO 和回调。
 ///////////////////////////////////////////
@@ -77,6 +105,9 @@ typedef struct am_runtime_t {
 
     size_t tick_counter;     // Tick 计数器
     time_t gc_timestamp;     // GC 时间戳
+
+    am_timer_t *timer_list;  // 定时器链表头
+    size_t timer_next_id;    // 下一个定时器编号
 } am_runtime_t;
 
 

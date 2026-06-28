@@ -1,6 +1,6 @@
 CC      := gcc
 CFLAGS  := -Wall -Wextra -Wno-unused-function -Iinclude
-LDFLAGS := -lm
+LDFLAGS := -lm -lrt
 
 all: main test_closure test_map test_ast test_parser test_linker test_wstring test_list test_vocab test_compiler test_continuation test_process test_runtime test_runtime_new_opcodes test_size
 

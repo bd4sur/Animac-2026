@@ -2162,6 +2162,18 @@ int32_t am_runtime_check_native_ref(am_runtime_t *rt, am_process_t *proc, am_val
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+请你阅读全部仓库代码（含C语言和TypeScript代码），理解本地宿主库调用分派机制，在 @src/native_System.c 和 @include/native_System.h 中，参照既有TypeScript参考实现 @typescript/lib/System.js ， 参照既有Math库（ @src/native_Math.c 和 @include/native_Math.h ）等其他native库的实现套路，参照 @src/runtime.c 中字符串相关op_*指令的实现方式，实现System本地宿主库。要求如下：
+
+- 这个需求相对复杂，涉及从JavaScript的异步回调写法向C语言的同步写法迁移。你需要阅读现有C语言实现和TypeScript实现，理解虚拟机指令执行和任务调度的原理，尤其要理解现有C语言实现中是如何实现进程调度、时间片轮转和事件循环。
+- 请实现  @typescript/lib/System.js 中的 exec（改成同步执行，无需异步） 、 set_timeout 、 set_interval 、 clear_timeout 、 clear_interval 、 timestamp 这几个函数。
+- 仅限使用C标准库函数和POSIX/Unix/Linux的API，无需支持Windows。
+- set_timeout 、 set_interval 均为异步函数，其行为类似JavaScript中的setTimeout和setInterval。所谓的异步函数，指的是调用该函数注册定时回调后，继续执行后面的代码，直至定时回调因时间到而唤醒。回调结束后，应回到回调触发的位置。注意处理进程状态发生变化的情况，例如进程执行完毕处于停止状态后，如果时间到，则回调函数也应被唤起执行。这实质上就是利用现有的事件循环机制实现了某种定时中断。请你仔细阅读TypeScript实现，理解其利用JavaScript本身的setTimeout/setInterval注册回调函数是如何与VM的进程调度机制相配合的。由于C语言中没有现成的setTimeout/setInterval，你需要利用 @src/runtime.c 中构造的事件循环，通过某种机制去模拟这种异步的延时/定时回调。
+- 所有的数值都视为float（细致的类型区分是后面的待办事项）。
+- 注意错误处理、函数的arity、以及对于特殊边界情况的处理（可以复用标准库提供的机制，注意利用Animac既有的undefined、null等特殊值。如果是NaN，则暂且返回null。）
+
+无需编写新的测试。保证 test_runtime 正确即可，因为这是全流程的测试。注意 test_runtime 中读取的测试代码中，提供了一个所谓的“睡眠排序”用例。它通过注册多个延迟从短到长的定时回调，以一种幽默的方式实现对数组的排序。正常状况下，数组应当被从小到大排序。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

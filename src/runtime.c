@@ -5,6 +5,7 @@
 #include <wchar.h>
 #include <time.h>
 #include <math.h>
+#include <stdbool.h>
 
 #include "runtime.h"
 #include "native.h"
@@ -214,7 +215,9 @@ static int32_t op_load(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
     am_varid_t varid = am_value_to_varid(operand);
     am_value_t value = am_process_dereference(proc, varid);
     if (value == (am_value_t)UINTPTR_MAX) {
-        fprintf(stderr, "[Runtime] load: 变量未定义\n");
+        wchar_t *name = am_vocab_get(proc->vm_alloc, proc->var_vocab, &varid);
+        fprintf(stderr, "[Runtime] load: 变量未定义 varid=%zu name=%ls\n",
+                (size_t)varid, name ? name : L"?");
         return -1;
     }
 
@@ -1407,6 +1410,21 @@ static int32_t op_halt(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
 
 
 // ===============================================================================
+// 异步定时器基础设施（类型定义）
+// ===============================================================================
+
+struct am_timer_t {
+    size_t        id;          // 定时器编号（全局自增，从1开始）
+    am_pid_t      pid;         // 关联进程ID
+    am_handle_t   callback;    // 回调闭包把柄
+    am_timestamp_t expire_ms;  // 到期时间戳（毫秒）
+    bool          repeat;      // 是否周期触发
+    am_timestamp_t interval_ms;// 周期触发间隔（毫秒）
+    am_timer_t    *next;       // 链表下一个节点
+};
+
+
+// ===============================================================================
 // 生命周期
 // ===============================================================================
 
@@ -1460,6 +1478,9 @@ am_runtime_t *am_runtime_create(am_allocator_t *vm_alloc, am_allocator_t *heap_a
     rt->tick_counter = 0;
     rt->gc_timestamp = time(NULL);
 
+    rt->timer_list = NULL;
+    rt->timer_next_id = 1;
+
     return rt;
 }
 
@@ -1494,8 +1515,146 @@ int32_t am_runtime_destroy(am_runtime_t *rt) {
         rt->working_dir = NULL;
     }
 
+    am_timer_t *timer = rt->timer_list;
+    while (timer) {
+        am_timer_t *next = timer->next;
+        am_free(rt->vm_alloc, timer);
+        timer = next;
+    }
+    rt->timer_list = NULL;
+
     am_free(rt->vm_alloc, rt);
     return 0;
+}
+
+
+// ===============================================================================
+// 异步定时器基础设施（操作实现）
+// ===============================================================================
+
+// 获取当前时间戳（毫秒）。优先使用 POSIX clock_gettime，失败则回退到 time()。
+am_timestamp_t am_runtime_now_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+        return (am_timestamp_t)ts.tv_sec * 1000 + (am_timestamp_t)ts.tv_nsec / 1000000;
+    }
+    return (am_timestamp_t)time(NULL) * 1000;
+}
+
+
+// 短时睡眠（毫秒）。
+static void runtime_sleep_ms(am_timestamp_t ms) {
+    struct timespec ts;
+    ts.tv_sec = (time_t)(ms / 1000);
+    ts.tv_nsec = (long)((ms % 1000) * 1000000);
+    nanosleep(&ts, NULL);
+}
+
+
+// 以异步方式调用一个闭包：压入栈帧并跳转到闭包入口，返回地址为 return_target。
+int32_t am_runtime_call_async(am_runtime_t *rt, am_process_t *proc, am_handle_t callback,
+                              am_iaddr_t return_target) {
+    (void)rt;
+    if (!proc) return -1;
+
+    am_obj_closure_t *closure = am_process_get_closure(proc, callback);
+    if (!closure) return -1;
+
+    am_value_t current_closure_val = am_make_value_of_handle(proc->current_closure_handle);
+    am_value_t return_target_val = am_make_value_of_iaddr(return_target);
+    if (am_process_push_stack_frame(proc, current_closure_val, return_target_val) != 0) {
+        return -1;
+    }
+
+    am_process_set_current_closure(proc, callback);
+    am_process_goto(proc, closure->iaddr);
+    return 0;
+}
+
+
+// 注册一个定时器。成功返回大于0的定时器编号，失败返回0。
+size_t am_runtime_set_timer(am_runtime_t *rt, am_pid_t pid, am_handle_t callback,
+                            am_timestamp_t delay_ms, bool repeat, am_timestamp_t interval_ms) {
+    if (!rt) return 0;
+
+    am_timer_t *timer = (am_timer_t *)am_malloc(rt->vm_alloc, sizeof(am_timer_t));
+    if (!timer) return 0;
+
+    if (rt->timer_next_id == 0) rt->timer_next_id = 1;
+    timer->id = rt->timer_next_id++;
+    timer->pid = pid;
+    timer->callback = callback;
+    timer->expire_ms = am_runtime_now_ms() + delay_ms;
+    timer->repeat = repeat;
+    timer->interval_ms = interval_ms;
+    timer->next = rt->timer_list;
+    rt->timer_list = timer;
+
+    return timer->id;
+}
+
+
+// 根据编号取消一个定时器。成功返回 true，未找到返回 false。
+bool am_runtime_clear_timer(am_runtime_t *rt, size_t timer_id) {
+    if (!rt || timer_id == 0) return false;
+
+    am_timer_t **cur = &rt->timer_list;
+    while (*cur) {
+        if ((*cur)->id == timer_id) {
+            am_timer_t *to_free = *cur;
+            *cur = (*cur)->next;
+            am_free(rt->vm_alloc, to_free);
+            return true;
+        }
+        cur = &(*cur)->next;
+    }
+    return false;
+}
+
+
+// 触发所有已到期的定时器。
+static void runtime_fire_expired_timers(am_runtime_t *rt) {
+    if (!rt || !rt->timer_list) return;
+
+    am_timestamp_t now = am_runtime_now_ms();
+    am_timer_t **cur = &rt->timer_list;
+    while (*cur) {
+        am_timer_t *timer = *cur;
+        if (timer->expire_ms > now) {
+            cur = &timer->next;
+            continue;
+        }
+
+        am_process_t *proc = am_runtime_get_process(rt, timer->pid);
+        if (proc) {
+            am_iaddr_t return_target;
+            if (proc->state == AM_PROCESS_STATE_STOPPED) {
+                // 进程已停止：回调结束后回到 halt 指令（地址1），并重新入队
+                return_target = 1;
+                am_value_t pid_val = am_make_value_of_uint((am_uint_t)timer->pid);
+                am_list_t *new_queue = am_list_push(rt->vm_alloc, rt->process_queue, pid_val);
+                if (new_queue) rt->process_queue = new_queue;
+            }
+            else {
+                // 进程仍在运行：回调结束后回到当前 PC
+                return_target = proc->PC;
+            }
+
+            am_runtime_call_async(rt, proc, timer->callback, return_target);
+            proc->state = AM_PROCESS_STATE_RUNNING;
+        }
+
+        if (timer->repeat && proc) {
+            // 周期定时器：更新下次到期时间并保留
+            timer->expire_ms = now + timer->interval_ms;
+            cur = &timer->next;
+        }
+        else {
+            // 一次性定时器：移除并释放
+            *cur = timer->next;
+            am_free(rt->vm_alloc, timer);
+        }
+    }
 }
 
 
@@ -1704,6 +1863,17 @@ int32_t am_runtime_event_handler(am_runtime_t *rt) {
     // }
 #endif
 
+    runtime_fire_expired_timers(rt);
+
+    // 若触发定时器后有进程入队，继续保持 RUNNING 状态
+    if (rt->process_queue && rt->process_queue->length > 0) {
+        vm_state = AM_VM_STATE_RUNNING;
+    }
+    // 即使暂无进程，只要还有未到期定时器，也应保持事件循环运转
+    if (vm_state == AM_VM_STATE_IDLE && rt->timer_list) {
+        vm_state = AM_VM_STATE_RUNNING;
+    }
+
     if (rt->callback_on_event) rt->callback_on_event(rt);
     return vm_state;
 }
@@ -1717,6 +1887,18 @@ void am_runtime_start(am_runtime_t *rt) {
         if (vm_state == AM_VM_STATE_IDLE) {
             if (rt->callback_on_halt) rt->callback_on_halt(rt);
             break;
+        }
+
+        // 若当前无就绪进程但仍有未到期定时器，则睡眠到最近定时器到期
+        if (rt->process_queue && rt->process_queue->length == 0 && rt->timer_list) {
+            am_timestamp_t now = am_runtime_now_ms();
+            am_timestamp_t next = 0;
+            for (am_timer_t *t = rt->timer_list; t; t = t->next) {
+                if (next == 0 || t->expire_ms < next) next = t->expire_ms;
+            }
+            if (next > now) {
+                runtime_sleep_ms(next - now);
+            }
         }
     }
 }

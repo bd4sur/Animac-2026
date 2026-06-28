@@ -951,6 +951,12 @@ int32_t am_process_gc_sweep(am_process_t *proc) {
         // 静态对象永不清理
         if (am_object_check_static(obj) == 0) continue;
 
+        // keepalive 对象（如异步回调闭包）应跳过清理
+        if (am_object_check_keepalive(obj) == 0) {
+            am_object_set_alive(obj, -1);
+            continue;
+        }
+
         int32_t obj_type = obj->type;
         if (obj_type == AM_OBJECT_TYPE_LIST ||
             obj_type == AM_OBJECT_TYPE_WSTRING ||
@@ -993,6 +999,26 @@ int32_t am_process_gc(am_process_t *proc) {
         ret = -1;
         goto cleanup;
     }
+
+    // 将堆中所有 keepalive 对象也加入 GC 根，确保异步回调闭包及其引用的
+    // 父闭包链、捕获变量等不会被 GC 回收。
+    size_t heap_count = am_map_length(proc->heap_alloc, proc->heap->table);
+    am_value_t *keys = am_map_keys(proc->heap_alloc, proc->heap->table);
+    if (!keys && heap_count > 0) {
+        ret = -1;
+        goto cleanup;
+    }
+    for (size_t i = 0; i < heap_count; i++) {
+        am_handle_t hd = am_value_to_handle(keys[i]);
+        am_value_t value = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
+        if (!am_value_is_ptr(value)) continue;
+        am_object_t *obj = am_value_to_ptr(value);
+        if (obj && am_object_check_keepalive(obj) == 0) {
+            am_list_t *new_roots = am_list_push(proc->vm_alloc, gcroots, am_make_value_of_handle(hd));
+            if (new_roots) gcroots = new_roots;
+        }
+    }
+    free(keys);
 
     // 从GC根对象开始递归标记存活对象
     for (size_t i = 0; i < gcroots->length; i++) {
