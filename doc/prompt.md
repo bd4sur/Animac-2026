@@ -2143,6 +2143,9 @@ int32_t am_runtime_check_native_ref(am_runtime_t *rt, am_process_t *proc, am_val
 
 ---------------------
 
+重构需求：现有的Math本地库函数，am_native_Math_*，都在 @src/native.c 中实现，这很混乱。我要求你将所有的 am_native_Math_* 声明移到 @include/native_Math.h ，将所有的 am_native_Math_* 实现（含两个辅助函数 native_pop_number 和 native_push_result ）移到 @src/native_Math.c 中。am_native_System_* 不要动。另外，将 am_nlib_Math_funcs 注册表的内容放到 native_Math 中。重构后， @src/native.c 和 @include/native.h 只实现与本地库函数分派相关的逻辑，具体实现都在 native_XXX.c/h 中。
+
+无需编写新的测试，也不要修改已有的测试。保证 test_runtime 正确即可，因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
