@@ -37,17 +37,6 @@ typedef struct {
 am_native_func_t am_native_find_func(const wchar_t *lib_name, const wchar_t *func_name);
 
 
-////////////////////////////////////////////////////////////////////////////
-//  Native Library : System
-////////////////////////////////////////////////////////////////////////////
-
-// 由 src/native.c 定义
-extern const am_native_lib_entry_t am_native_System_lib;
-
-// Native函数命名规范：am_native_<LibID>_<funcName>，对应LibID.funcName。
-int32_t am_native_System_test(am_runtime_t *rt, am_process_t *proc);
-
-
 
 #ifdef __cplusplus
 }

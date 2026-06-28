@@ -40,10 +40,10 @@ test_continuation: test/test_continuation.c src/continuation.c src/object.c
 test_process: test/test_process.c src/process.c src/continuation.c src/closure.c src/compiler.c src/linker.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_runtime: test/test_runtime.c src/runtime.c src/native.c src/native_Math.c src/process.c src/continuation.c src/closure.c src/compiler.c src/linker.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
+test_runtime: test/test_runtime.c src/runtime.c src/native.c src/native_System.c src/native_Math.c src/process.c src/continuation.c src/closure.c src/compiler.c src/linker.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_runtime_new_opcodes: test/test_runtime_new_opcodes.c src/runtime.c src/native.c src/native_Math.c src/process.c src/continuation.c src/closure.c src/compiler.c src/linker.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
+test_runtime_new_opcodes: test/test_runtime_new_opcodes.c src/runtime.c src/native.c src/native_System.c src/native_Math.c src/process.c src/continuation.c src/closure.c src/compiler.c src/linker.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 test_size: test/test_size.c src/closure.c src/continuation.c src/list.c src/map.c src/wstring.c src/object.c
