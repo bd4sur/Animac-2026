@@ -2103,12 +2103,43 @@ size_t am_wstring_size(am_allocator_t *alloc, am_wstring_t *obj);
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+需求：在 @src/runtime.c 中，实现一个用于运行时检查call指令参数（am_value_t v）是否是varid且在proc->var_type中是 AM_VAR_TYPE_NATIVE_REF (定义在 @include/process.h 中)。函数签名如下：
+
+```
+// 功能描述：检查call指令参数是否是本地宿主库的调用
+// 是返回0，不是返回-1
+int32_t am_runtime_check_native_ref(am_runtime_t *rt, am_process_t *proc, am_value_t v);
+```
+
+无需测试。
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+请你实现本地宿主库（native）调用机制，基于现有的不完整的实现框架。
+
+本地宿主库调用机制的设计思路是：
+
+- VM执行到call指令（ @src/runtime.c 的 op_call_async ），若operand是native_ref变量，则调用 op_callnative 。
+- op_callnative 尚未实现，你需要补全。思路是根据operand取出varid进而从proc->var_vocab取出其字符串，然后将其从中间的点号分成prefix（native_id）和suffix（identifier）两部分。
+- 在 @src/native.c 中实现某种运行时查表机制，通过prefix和suffix，分别定位native库和库中对应的C语言实现函数。两者要解耦成两张表，以便后续实现调用动态库等机制，但现在只需要关联到 @src/native.c 中已经存在的函数即可。
+- @src/native.c 已经给出了一个样例函数 am_native_System_test ，也就是说，你需要实现通过 System.test 这个variable，查找到 am_native_System_test 这个函数，并将其作为一个扩展的VM指令（类似于op_*这样的函数）执行。
+
+无需编写新的测试，也不要修改已有的测试。保证 test_runtime 正确即可，因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
+现在请你重新阅读仓库最新代码，基于已有的本地宿主库调用分派机制，实现Native数学库。要求如下：
+
+- 需要你实现的函数列表，位于 @src/native.c 的 am_nlib_Math_funcs 中。这些函数的签名也在 @include/native.h 中声明。
+- 你可以参照 @typescript/lib/Math.js 中的实现，编写C语言版本的代码。仅限使用C标准库函数。
+- 所有的数值都视为float（细致的类型区分是后面的待办事项）。
+- 注意错误处理、函数的arity、以及对于特殊边界情况的处理（可以复用标准库提供的机制，注意利用Animac既有的undefined、null等特殊值。如果是NaN，则暂且返回null。）
+
+无需编写新的测试，也不要修改已有的测试。保证 test_runtime 正确即可，因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

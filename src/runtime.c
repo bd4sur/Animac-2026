@@ -7,6 +7,7 @@
 #include <math.h>
 
 #include "runtime.h"
+#include "native.h"
 #include "closure.h"
 #include "continuation.h"
 #include "list.h"
@@ -342,18 +343,39 @@ static int32_t check_builtin_varid(am_process_t *proc, am_varid_t varid) {
     return -1;
 }
 
+static int32_t op_callnative(am_runtime_t *rt, am_process_t *proc, am_value_t operand);
+
+// 功能描述：检查call指令参数（已解析为varid）是否是本地宿主库的调用
+// 是返回0，不是返回-1
+int32_t am_runtime_check_native_ref(am_runtime_t *rt, am_process_t *proc, am_varid_t varid) {
+    (void)rt;
+    if (!proc || !proc->var_type) return -1;
+
+    if ((size_t)varid >= proc->var_type->length) return -1;
+
+    am_value_t type_val = am_list_get(proc->vm_alloc, proc->var_type, (size_t)varid);
+    if (!am_value_is_uint(type_val)) return -1;
+
+    return (am_value_to_uint(type_val) == (am_uint_t)AM_VAR_TYPE_NATIVE_REF) ? 0 : -1;
+}
+
 // call / tailcall 的共享实现。return_target 为 SIZE_MAX 表示尾调用不压栈帧。
 static int32_t op_call_async(am_runtime_t *rt, am_process_t *proc, am_value_t operand, am_iaddr_t return_target) {
     (void)rt;
 
     am_value_t target;
     if (am_value_is_varid(operand)) {
-        // TODO: 判断 native 调用
         am_varid_t varid = am_value_to_varid(operand);
-        target = am_process_dereference(proc, varid);
-        if (target == (am_value_t)UINTPTR_MAX) {
-            fprintf(stderr, "[Runtime] call: 变量未定义\n");
-            return -1;
+        // 判断 native 调用
+        if (am_runtime_check_native_ref(rt, proc, varid) == 0) {
+            return op_callnative(rt, proc, operand);
+        }
+        else {
+            target = am_process_dereference(proc, varid);
+            if (target == (am_value_t)UINTPTR_MAX) {
+                fprintf(stderr, "[Runtime] call: 变量未定义\n");
+                return -1;
+            }
         }
     }
     else {
@@ -442,6 +464,49 @@ static int32_t op_call(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
 
 static int32_t op_tailcall(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     return op_call_async(rt, proc, operand, SIZE_MAX);
+}
+
+
+static int32_t op_callnative(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt;
+    if (!proc || !proc->var_vocab) return -1;
+    if (!am_value_is_varid(operand)) return -1;
+
+    am_varid_t varid = am_value_to_varid(operand);
+    size_t idx = (size_t)varid;
+    wchar_t *name = am_vocab_get(proc->vm_alloc, proc->var_vocab, &idx);
+    if (!name) return -1;
+
+    // 变量名应为 "LibID.funcName" 形式，且只能有一个点号
+    wchar_t *dot = wcschr(name, L'.');
+    if (!dot || dot == name || dot[1] == L'\0') {
+        fprintf(stderr, "[Runtime] callnative: 非法native变量名\n");
+        return -1;
+    }
+    if (wcschr(dot + 1, L'.')) {
+        fprintf(stderr, "[Runtime] callnative: native变量名包含多个点号\n");
+        return -1;
+    }
+
+    size_t len = wcslen(name);
+    wchar_t *buf = (wchar_t *)am_malloc(proc->vm_alloc, (len + 1) * sizeof(wchar_t));
+    if (!buf) return -1;
+    wcscpy(buf, name);
+
+    wchar_t *prefix = buf;
+    wchar_t *suffix = buf + (dot - name);
+    *suffix = L'\0';
+    suffix++;
+
+    am_native_func_t func = am_native_find_func(prefix, suffix);
+    if (!func) {
+        fprintf(stderr, "[Runtime] callnative: 未找到native函数 %ls.%ls\n", prefix, suffix);
+        am_free(proc->vm_alloc, buf);
+        return -1;
+    }
+    am_free(proc->vm_alloc, buf);
+
+    return func(rt, proc);
 }
 
 
@@ -1309,16 +1374,6 @@ static int32_t op_halt(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
     (void)operand;
     am_process_set_state(proc, AM_PROCESS_STATE_STOPPED);
     return 0;
-}
-
-
-static int32_t op_callnative(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
-    (void)rt;
-    (void)proc;
-    (void)operand;
-    // TODO: native 调用尚未实现
-    fprintf(stderr, "[Runtime] callnative 指令尚未实现\n");
-    return -1;
 }
 
 
