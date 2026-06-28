@@ -211,7 +211,7 @@ static void test_runtime_load_from_file(void) {
     test_halt_called = 0;
     test_error_called = 0;
 
-    const wchar_t *path = L"/home/bd4sur/animac/mob.scm";
+    const wchar_t *path = L"/home/bd4sur/animac/test.scm";
     const wchar_t *base_dir = L"/home/bd4sur/animac";
 
     wchar_t *file_content = read_file_as_wstring(path);

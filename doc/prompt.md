@@ -2177,6 +2177,11 @@ int32_t am_runtime_check_native_ref(am_runtime_t *rt, am_process_t *proc, am_val
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+在 @src/runtime.c 的 am_runtime_output 函数中，接收的是wchar_t字符串。在这个字符串中，可能出现wchar_t构成的“\n”、“\r”、“\t”、“\b”、“\\”、“\"”等转义字符序列。然而由于字符串是宽字符串，所以实际上编译器并不把它们解释成对应的控制字符。现在我要求你在 am_runtime_output 中，在printf和输出到fifo之前，先对输入的str进行一次扫描替换，将所有的L"\n"之类的转义字符序列，替换成真正的ASCII控制字符。同时，需要处理“\\”、“\"”这两个特殊情况。
+
+无需编写新的测试。保证 test_runtime 正确即可（你可能需要在 @test/test_runtime.c 中注册新实现的String库），因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

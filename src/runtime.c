@@ -1913,11 +1913,56 @@ void am_start(am_runtime_t *rt) {
 // 控制台输入输出
 // ===============================================================================
 
+// 将宽字符串中的 "\\n"、"\\r"、"\\t"、"\\b"、"\\\\"、"\\\"" 等字符序列
+// 替换为对应的 ASCII 控制字符。返回新分配的宽字符串，调用者负责释放。
+static wchar_t *runtime_unescape_output_string(am_allocator_t *alloc, const wchar_t *str, size_t *out_len) {
+    if (!alloc || !str) return NULL;
+
+    size_t len = wcslen(str);
+    wchar_t *result = (wchar_t *)am_malloc(alloc, (len + 1) * sizeof(wchar_t));
+    if (!result) return NULL;
+
+    size_t j = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (str[i] == L'\\' && i + 1 < len) {
+            bool replaced = true;
+            wchar_t replacement = L'\\';
+            switch (str[i + 1]) {
+                case L'n': replacement = L'\n'; break;
+                case L'r': replacement = L'\r'; break;
+                case L't': replacement = L'\t'; break;
+                case L'b': replacement = L'\b'; break;
+                case L'\\': replacement = L'\\'; break;
+                case L'"': replacement = L'"'; break;
+                default: replaced = false; break;
+            }
+            if (replaced) {
+                result[j++] = replacement;
+                i++;
+                continue;
+            }
+        }
+        result[j++] = str[i];
+    }
+    result[j] = L'\0';
+    if (out_len) *out_len = j;
+    return result;
+}
+
+
 void am_runtime_output(am_runtime_t *rt, const wchar_t *str) {
     if (!rt || !str) return;
-    printf("%ls", str);
+
+    size_t output_len = wcslen(str);
+    wchar_t *unescaped = runtime_unescape_output_string(rt->vm_alloc, str, &output_len);
+    const wchar_t *output_str = unescaped ? unescaped : str;
+
+    printf("%ls", output_str);
     fflush(stdout);
-    am_wstring_t *ws = am_wstring_create(rt->vm_alloc, (wchar_t *)str, wcslen(str));
+
+    am_wstring_t *ws = am_wstring_create(rt->vm_alloc, (wchar_t *)output_str, output_len);
+    if (unescaped) am_free(rt->vm_alloc, unescaped);
+
     if (ws && rt->output_fifo) {
         am_list_t *new_fifo = am_list_push(rt->vm_alloc, rt->output_fifo,
                                            am_make_value_of_ptr((am_object_t *)ws));
