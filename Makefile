@@ -4,7 +4,7 @@ LDFLAGS := -lm -lrt
 
 all: main test_closure test_map test_ast test_parser test_linker test_wstring test_list test_vocab test_compiler test_continuation test_process test_runtime test_runtime_new_opcodes test_size
 
-main: main.c src/lexer.c src/highlight.c src/utils.c
+main: main.c src/runtime.c src/native.c src/native_System.c src/native_Math.c src/native_String.c src/process.c src/continuation.c src/closure.c src/compiler.c src/linker.c src/parser.c src/opcode.c src/ast.c src/wstring.c src/list.c src/vocab.c src/heap.c src/scope.c src/map.c src/object.c src/utils.c src/lexer.c src/highlight.c src/debug.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 test_closure: test/test_closure.c src/closure.c src/object.c

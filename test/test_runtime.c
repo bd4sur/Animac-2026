@@ -13,10 +13,32 @@
 #include "runtime.h"
 #include "debug.h"
 #include "ast.h"
+#include "highlight.h"
 
 #include "native_System.h"
 #include "native_Math.h"
 #include "native_String.h"
+
+// 打印 token 类型名称
+const wchar_t* type_name(int32_t type) {
+    switch(type) {
+        case AM_TOKEN_TYPE_DELIMITER: return L"SEP";
+        case AM_TOKEN_TYPE_LB: return L"LB";
+        case AM_TOKEN_TYPE_RB: return L"RB";
+        case AM_TOKEN_TYPE_KEYWORD: return L"KEYWORD";
+        case AM_TOKEN_TYPE_BOOLEAN: return L"BOOLEAN";
+        case AM_TOKEN_TYPE_UNDEFINED: return L"UNDEFINED";
+        case AM_TOKEN_TYPE_NULL: return L"NULL";
+        case AM_TOKEN_TYPE_NUMBER: return L"NUMBER";
+        case AM_TOKEN_TYPE_SYMBOL: return L"SYMBOL";
+        case AM_TOKEN_TYPE_IDENTIFIER: return L"IDENTIFIER";
+        case AM_TOKEN_TYPE_STRING: return L"STRING";
+        case AM_TOKEN_TYPE_QUOTE: return L"QUOTE";
+        case AM_TOKEN_TYPE_QUASIQUOTE: return L"QUASIQUOTE";
+        case AM_TOKEN_TYPE_UNQUOTE: return L"UNQUOTE";
+        default: return L"UNEXPECTED";
+    }
+}
 
 // ===============================================================================
 // 基础设施：基于内存池的简单测试分配器（bump allocator）
@@ -115,49 +137,6 @@ static void on_error(am_runtime_t *rt) {
     test_error_called = 1;
 }
 
-static am_runtime_t *compile_and_run(const wchar_t *code, int expect_error) {
-    test_allocator_reset(&test_vm_allocator_state);
-    test_allocator_reset(&test_heap_allocator_state);
-    test_halt_called = 0;
-    test_error_called = 0;
-
-    am_ast_t *ast = am_parse(&test_vm_allocator, (wchar_t *)code, L"/tmp/test.scm");
-    assert(ast != NULL);
-
-    am_parser_tail_call_analysis(ast);
-
-    am_ast_t *linked = am_link(ast, L"/tmp");
-    assert(linked != NULL);
-    assert(linked == ast);
-
-    am_module_t *mod = am_compile(linked);
-    assert(mod != NULL);
-
-    am_runtime_t *rt = am_runtime_create(&test_vm_allocator, &test_heap_allocator, L"/tmp");
-    assert(rt != NULL);
-    rt->callback_on_halt = on_halt;
-    rt->callback_on_error = on_error;
-
-    am_pid_t pid = am_load_module(rt, mod);
-    assert(pid == 0);
-
-    am_start(rt);
-
-    if (expect_error) {
-        assert(test_error_called == 1);
-    }
-    else {
-        assert(test_halt_called == 1);
-        assert(test_error_called == 0);
-    }
-
-    // 释放模块和 AST，调用者负责释放 runtime
-    free(mod->ilcode);
-    am_free(linked->alloc, mod);
-    am_ast_destroy(linked);
-
-    return rt;
-}
 
 
 // ===============================================================================
@@ -211,8 +190,8 @@ static void test_runtime_load_from_file(void) {
     test_halt_called = 0;
     test_error_called = 0;
 
-    const wchar_t *path = L"/home/bd4sur/animac/test.scm";
-    const wchar_t *base_dir = L"/home/bd4sur/animac";
+    const wchar_t *path = L"/mnt/d/Desktop/GitRepos/Animac-2026/test/test.scm";
+    const wchar_t *base_dir = L"/mnt/d/Desktop/GitRepos/Animac-2026/test";
 
     wchar_t *file_content = read_file_as_wstring(path);
     assert(file_content != NULL);
@@ -235,6 +214,16 @@ static void test_runtime_load_from_file(void) {
 
     am_ast_t *ast = am_parse(&test_vm_allocator, code, (wchar_t *)path);
     assert(ast != NULL);
+
+    // for (int32_t i = 0; i < ast->token_count; i++) {
+    //     printf("[%4d] %12ls @%5zu+%3zu  %ls\n", 
+    //         i, type_name(ast->tokens[i].type), 
+    //         ast->tokens[i].index, ast->tokens[i].length,
+    //         token_text(&(ast->tokens)[i], code));
+    // }
+
+    // printf("\033[1m=== 语法高亮输出 ===\033[0m\n");
+    // am_print_highlighted(code, ast->tokens, ast->token_count);
 
     am_ast_t *linked = am_link(ast, (wchar_t *)base_dir);
     assert(linked != NULL);

@@ -38,6 +38,10 @@ int32_t am_native_System_timestamp(am_runtime_t *rt, am_process_t *proc);
 // (System.test x:any) : String
 int32_t am_native_System_test(am_runtime_t *rt, am_process_t *proc);
 
+// (System.fork) : Number
+// 深度复制当前进程，创建子进程并加入调度队列。亲进程返回子进程 pid，子进程返回 0。
+int32_t am_native_System_fork(am_runtime_t *rt, am_process_t *proc);
+
 
 
 #ifdef __cplusplus

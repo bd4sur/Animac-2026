@@ -167,6 +167,358 @@ static void native_keepalive_closure(am_process_t *proc, am_handle_t hd) {
 
 
 // ===============================================================================
+// System.fork 内部辅助函数
+// ===============================================================================
+
+// 堆对象深拷贝的映射表条目
+typedef struct {
+    am_handle_t old_handle;
+    am_handle_t new_handle;
+    am_object_t *old_obj;
+    am_object_t *new_obj;
+} am_fork_heap_mapping_t;
+
+
+typedef struct {
+    am_allocator_t *vm_alloc;
+    am_allocator_t *heap_alloc;
+    am_heap_t *src_heap;
+    am_heap_t *dst_heap;
+    am_fork_heap_mapping_t *entries;
+    size_t count;
+    size_t capacity;
+} am_fork_heap_ctx_t;
+
+
+static int32_t am_fork_heap_ctx_init(am_fork_heap_ctx_t *ctx,
+                                     am_allocator_t *vm_alloc,
+                                     am_allocator_t *heap_alloc,
+                                     am_heap_t *src_heap,
+                                     am_heap_t *dst_heap) {
+    if (!ctx || !vm_alloc || !heap_alloc || !src_heap || !dst_heap) return -1;
+    ctx->vm_alloc = vm_alloc;
+    ctx->heap_alloc = heap_alloc;
+    ctx->src_heap = src_heap;
+    ctx->dst_heap = dst_heap;
+    ctx->entries = NULL;
+    ctx->count = 0;
+    ctx->capacity = 0;
+    return 0;
+}
+
+
+static void am_fork_heap_ctx_destroy(am_fork_heap_ctx_t *ctx) {
+    if (!ctx) return;
+    if (ctx->entries && ctx->vm_alloc) {
+        am_free(ctx->vm_alloc, ctx->entries);
+    }
+    ctx->entries = NULL;
+    ctx->count = 0;
+    ctx->capacity = 0;
+}
+
+
+static am_handle_t am_fork_heap_map_handle(am_fork_heap_ctx_t *ctx, am_handle_t old_handle) {
+    if (old_handle == AM_HANDLE_NULL) return AM_HANDLE_NULL;
+    for (size_t i = 0; i < ctx->count; i++) {
+        if (ctx->entries[i].old_handle == old_handle) {
+            return ctx->entries[i].new_handle;
+        }
+    }
+    return AM_HANDLE_NULL;
+}
+
+
+static am_value_t am_fork_heap_map_value(am_fork_heap_ctx_t *ctx, am_value_t old_value) {
+    if (am_value_is_handle(old_value)) {
+        am_handle_t new_handle = am_fork_heap_map_handle(ctx, am_value_to_handle(old_value));
+        return am_make_value_of_handle(new_handle);
+    }
+    return old_value;
+}
+
+
+static void am_fork_heap_free_object(am_allocator_t *heap_alloc, am_object_t *obj) {
+    if (!heap_alloc || !obj) return;
+    switch (obj->type) {
+        case AM_OBJECT_TYPE_LIST:         am_list_destroy(heap_alloc, (am_list_t *)obj); break;
+        case AM_OBJECT_TYPE_MAP:          am_map_destroy(heap_alloc, (am_map_t *)obj); break;
+        case AM_OBJECT_TYPE_WSTRING:      am_wstring_destroy(heap_alloc, (am_wstring_t *)obj); break;
+        case AM_OBJECT_TYPE_CLOSURE:      am_closure_destroy(heap_alloc, (am_obj_closure_t *)obj); break;
+        case AM_OBJECT_TYPE_CONTINUATION: am_continuation_destroy(heap_alloc, (am_continuation_t *)obj); break;
+        default:                          am_free(heap_alloc, obj); break;
+    }
+}
+
+
+static am_object_t *am_fork_heap_copy_object(am_fork_heap_ctx_t *ctx, am_object_t *old_obj) {
+    if (!old_obj) return NULL;
+    switch (old_obj->type) {
+        case AM_OBJECT_TYPE_LIST:
+            return (am_object_t *)am_list_copy(ctx->heap_alloc, (am_list_t *)old_obj);
+        case AM_OBJECT_TYPE_MAP:
+            // map 在第二遍重新插入，第一遍先分配空 map
+            return (am_object_t *)am_map_create(ctx->heap_alloc, ((am_map_t *)old_obj)->capacity);
+        case AM_OBJECT_TYPE_WSTRING:
+            return (am_object_t *)am_wstring_copy(ctx->heap_alloc, (am_wstring_t *)old_obj);
+        case AM_OBJECT_TYPE_CLOSURE:
+            return (am_object_t *)am_closure_copy(ctx->heap_alloc, (am_obj_closure_t *)old_obj);
+        case AM_OBJECT_TYPE_CONTINUATION:
+            return (am_object_t *)am_continuation_copy(ctx->heap_alloc, (am_continuation_t *)old_obj);
+        default:
+            // 不支持的对象类型，深拷贝失败
+            return NULL;
+    }
+}
+
+
+static int32_t am_fork_heap_remap_object(am_fork_heap_ctx_t *ctx, size_t entry_index) {
+    am_object_t *new_obj = ctx->entries[entry_index].new_obj;
+    am_object_t *old_obj = ctx->entries[entry_index].old_obj;
+    if (!new_obj || !old_obj) return 0;
+
+    switch (new_obj->type) {
+        case AM_OBJECT_TYPE_LIST: {
+            am_list_t *lst = (am_list_t *)new_obj;
+            for (size_t i = 0; i < lst->length; i++) {
+                lst->children[i] = am_fork_heap_map_value(ctx, lst->children[i]);
+            }
+            lst->parent = am_fork_heap_map_handle(ctx, lst->parent);
+            break;
+        }
+        case AM_OBJECT_TYPE_MAP: {
+            am_map_t *src_m = (am_map_t *)old_obj;
+            am_map_t *dst_m = (am_map_t *)new_obj;
+            for (size_t i = 0; i < src_m->capacity; i++) {
+                am_value_t k = src_m->slots[i].key;
+                if (k == AM_MAP_KEY_EMPTY || k == AM_MAP_KEY_TOMBSTONE) continue;
+                am_value_t new_k = am_fork_heap_map_value(ctx, k);
+                am_value_t new_v = am_fork_heap_map_value(ctx, src_m->slots[i].value);
+                am_map_t *new_m = am_map_set(ctx->heap_alloc, dst_m, new_k, new_v);
+                if (!new_m) return -1;
+                if (new_m != dst_m) {
+                    am_handle_t hd = ctx->entries[entry_index].new_handle;
+                    if (am_heap_set(ctx->vm_alloc, ctx->heap_alloc, ctx->dst_heap, hd,
+                                    am_make_value_of_ptr((am_object_t *)new_m)) != 0) {
+                        return -1;
+                    }
+                    dst_m = new_m;
+                    ctx->entries[entry_index].new_obj = (am_object_t *)new_m;
+                }
+            }
+            break;
+        }
+        case AM_OBJECT_TYPE_CLOSURE: {
+            am_obj_closure_t *closure = (am_obj_closure_t *)new_obj;
+            closure->parent = am_fork_heap_map_handle(ctx, closure->parent);
+            for (size_t i = 0; i < closure->length; i++) {
+                closure->bindings[i].value = am_fork_heap_map_value(ctx, closure->bindings[i].value);
+            }
+            break;
+        }
+        case AM_OBJECT_TYPE_CONTINUATION: {
+            am_continuation_t *cont = (am_continuation_t *)new_obj;
+            cont->current_closure_handle = am_fork_heap_map_handle(ctx, cont->current_closure_handle);
+            for (size_t i = 0; i < cont->length; i++) {
+                cont->stacks[i] = am_fork_heap_map_value(ctx, cont->stacks[i]);
+            }
+            break;
+        }
+        case AM_OBJECT_TYPE_WSTRING:
+            // 字符串不含把柄引用，无需重映射
+            break;
+        default:
+            // 不应到达：拷贝阶段已过滤不支持的类型
+            return -1;
+    }
+    return 0;
+}
+
+
+static int32_t am_fork_heap_deep_copy(am_fork_heap_ctx_t *ctx) {
+    if (!ctx || !ctx->src_heap || !ctx->src_heap->table) return -1;
+
+    size_t src_count = am_map_length(ctx->vm_alloc, ctx->src_heap->table);
+    am_value_t *keys = am_map_keys(ctx->vm_alloc, ctx->src_heap->table);
+    if (!keys && src_count > 0) return -1;
+
+    // 第一遍：为源堆中每个 handle 分配新 handle，并深拷贝对象（map 先分配空壳）
+    for (size_t i = 0; i < src_count; i++) {
+        am_handle_t old_handle = am_value_to_handle(keys[i]);
+        am_value_t old_value = am_heap_get(ctx->vm_alloc, ctx->heap_alloc, ctx->src_heap, old_handle);
+        am_object_t *old_obj = am_value_is_ptr(old_value) ? am_value_to_ptr(old_value) : NULL;
+
+        am_handle_t new_handle = am_heap_alloc_handle(ctx->vm_alloc, ctx->heap_alloc, ctx->dst_heap);
+        if (new_handle == AM_HANDLE_NULL) {
+            free(keys);
+            return -1;
+        }
+
+        am_object_t *new_obj = NULL;
+        am_value_t new_value = old_value;
+        if (old_obj) {
+            new_obj = am_fork_heap_copy_object(ctx, old_obj);
+            if (!new_obj) {
+                free(keys);
+                return -1;
+            }
+            new_value = am_make_value_of_ptr(new_obj);
+        }
+
+        if (am_heap_set(ctx->vm_alloc, ctx->heap_alloc, ctx->dst_heap, new_handle, new_value) != 0) {
+            if (new_obj) am_fork_heap_free_object(ctx->heap_alloc, new_obj);
+            free(keys);
+            return -1;
+        }
+
+        if (ctx->count >= ctx->capacity) {
+            size_t new_capacity = ctx->capacity ? ctx->capacity * 2 : 16;
+            am_fork_heap_mapping_t *new_entries = (am_fork_heap_mapping_t *)am_realloc(
+                ctx->vm_alloc, ctx->entries, new_capacity * sizeof(am_fork_heap_mapping_t));
+            if (!new_entries) {
+                free(keys);
+                return -1;
+            }
+            ctx->entries = new_entries;
+            ctx->capacity = new_capacity;
+        }
+
+        ctx->entries[ctx->count].old_handle = old_handle;
+        ctx->entries[ctx->count].new_handle = new_handle;
+        ctx->entries[ctx->count].old_obj = old_obj;
+        ctx->entries[ctx->count].new_obj = new_obj;
+        ctx->count++;
+    }
+    free(keys);
+
+    // 第二遍：重映射各对象内部的把柄引用
+    for (size_t i = 0; i < ctx->count; i++) {
+        if (am_fork_heap_remap_object(ctx, i) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+
+static am_process_t *am_fork_process_copy(am_runtime_t *rt, am_process_t *parent) {
+    (void)rt;
+    if (!parent || !parent->vm_alloc || !parent->heap_alloc) return NULL;
+
+    am_allocator_t *vm_alloc = parent->vm_alloc;
+    am_allocator_t *heap_alloc = parent->heap_alloc;
+
+    am_process_t *child = (am_process_t *)am_calloc(vm_alloc, sizeof(am_process_t));
+    if (!child) return NULL;
+
+    child->base = parent->base;
+    child->vm_alloc = vm_alloc;
+    child->heap_alloc = heap_alloc;
+    child->pid = 0;
+    child->parent_pid = parent->pid;
+    child->state = AM_PROCESS_STATE_READY;
+    child->PC = parent->PC;
+    child->ilcode_length = parent->ilcode_length;
+    child->current_closure_handle = parent->current_closure_handle;
+
+    child->ilcode = (am_instruction_t *)am_malloc(vm_alloc, parent->ilcode_length * sizeof(am_instruction_t));
+    if (!child->ilcode) goto fail;
+    memcpy(child->ilcode, parent->ilcode, parent->ilcode_length * sizeof(am_instruction_t));
+
+    child->var_vocab = am_vocab_copy(vm_alloc, parent->var_vocab);
+    child->symbol_vocab = am_vocab_copy(vm_alloc, parent->symbol_vocab);
+    child->var_type = am_list_copy(vm_alloc, parent->var_type);
+    child->natives = am_map_copy(vm_alloc, parent->natives);
+    if (!child->var_vocab || !child->symbol_vocab || !child->var_type || !child->natives) goto fail;
+
+    child->opstack_capacity = parent->opstack_capacity;
+    child->opstack = (am_value_t *)am_calloc(vm_alloc, child->opstack_capacity * sizeof(am_value_t));
+    if (!child->opstack) goto fail;
+    size_t opstack_len = am_process_length_of_opstack(parent);
+    if (opstack_len != SIZE_MAX) {
+        memcpy(child->opstack, parent->opstack, opstack_len * sizeof(am_value_t));
+        child->opstack_top = child->opstack + opstack_len;
+    } else {
+        child->opstack_top = child->opstack;
+    }
+
+    child->fstack_capacity = parent->fstack_capacity;
+    child->fstack = (am_value_t *)am_calloc(vm_alloc, child->fstack_capacity * sizeof(am_value_t));
+    if (!child->fstack) goto fail;
+    size_t fstack_len = am_process_length_of_fstack(parent);
+    if (fstack_len != SIZE_MAX) {
+        memcpy(child->fstack, parent->fstack, fstack_len * sizeof(am_value_t));
+        child->fstack_top = child->fstack + fstack_len;
+    } else {
+        child->fstack_top = child->fstack;
+    }
+
+    size_t heap_capacity = parent->heap ? parent->heap->capacity : 16;
+    child->heap = am_heap_create(vm_alloc, heap_alloc, heap_capacity);
+    if (!child->heap) goto fail;
+
+    am_fork_heap_ctx_t ctx;
+    if (am_fork_heap_ctx_init(&ctx, vm_alloc, heap_alloc, parent->heap, child->heap) != 0) goto fail;
+
+    int32_t copy_ok = am_fork_heap_deep_copy(&ctx);
+    if (copy_ok == 0) {
+        child->current_closure_handle = am_fork_heap_map_handle(&ctx, child->current_closure_handle);
+
+        // 重映射 IL 指令中的字面 handle（如字符串字面量）
+        for (size_t i = 0; i < child->ilcode_length; i++) {
+            am_value_t operand = child->ilcode[i].operand;
+            if (am_value_is_handle(operand)) {
+                child->ilcode[i].operand = am_make_value_of_handle(
+                    am_fork_heap_map_handle(&ctx, am_value_to_handle(operand)));
+            }
+        }
+
+        size_t op_len = (size_t)(child->opstack_top - child->opstack);
+        for (size_t i = 0; i < op_len; i++) {
+            child->opstack[i] = am_fork_heap_map_value(&ctx, child->opstack[i]);
+        }
+
+        size_t f_len = (size_t)(child->fstack_top - child->fstack);
+        for (size_t i = 0; i < f_len; i++) {
+            child->fstack[i] = am_fork_heap_map_value(&ctx, child->fstack[i]);
+        }
+    }
+    am_fork_heap_ctx_destroy(&ctx);
+
+    if (copy_ok != 0) goto fail;
+
+    return child;
+
+fail:
+    if (child) {
+        am_process_destroy(child);
+    }
+    return NULL;
+}
+
+
+static am_pid_t am_fork_runtime_add_process(am_runtime_t *rt, am_process_t *proc) {
+    if (!rt || !proc) return (am_pid_t)-1;
+
+    am_pid_t pid = rt->process_poll_counter;
+    if (pid >= rt->process_pool_capacity) {
+        size_t new_cap = rt->process_pool_capacity * 2;
+        am_process_t **new_pool = (am_process_t **)am_realloc(
+            rt->vm_alloc, rt->process_pool, new_cap * sizeof(am_process_t *));
+        if (!new_pool) return (am_pid_t)-1;
+        rt->process_pool = new_pool;
+        rt->process_pool_capacity = new_cap;
+    }
+
+    proc->pid = pid;
+    rt->process_pool[pid] = proc;
+    rt->process_poll_counter++;
+    return pid;
+}
+
+
+// ===============================================================================
 // Native 函数实现
 // ===============================================================================
 
@@ -327,6 +679,55 @@ int32_t am_native_System_timestamp(am_runtime_t *rt, am_process_t *proc) {
 }
 
 
+// (System.fork) : Number
+// 深度复制当前进程，保留除 pid 和 parent_pid 外的全部状态。
+// 亲进程返回子进程 pid，子进程返回 0。
+int32_t am_native_System_fork(am_runtime_t *rt, am_process_t *proc) {
+    if (!rt || !proc) return -1;
+
+    // 亲进程 PC 前进到 fork 调用后的下一条指令
+    am_process_step(proc);
+
+    // 深拷贝子进程
+    am_process_t *child = am_fork_process_copy(rt, proc);
+    if (!child) return -1;
+
+    // 子进程操作数栈压入 0
+    if (am_process_push_operand(child, am_make_value_of_int(0)) != 0) {
+        am_process_destroy(child);
+        return -1;
+    }
+    // 将子进程加入运行时
+    am_pid_t child_pid = am_fork_runtime_add_process(rt, child);
+    if (child_pid == (am_pid_t)-1) {
+        am_process_destroy(child);
+        return -1;
+    }
+    // 亲进程操作数栈压入子进程 pid
+    if (am_process_push_operand(proc, am_make_value_of_int((am_int_t)child_pid)) != 0) {
+        return -1;
+    }
+
+    // 释放亲进程 CPU，将亲进程和子进程都加入调度队列
+    am_process_set_state(proc, AM_PROCESS_STATE_READY);
+    am_list_t *new_queue = am_list_push(rt->vm_alloc, rt->process_queue,
+                                        am_make_value_of_uint((am_uint_t)proc->pid));
+    if (!new_queue) {
+        return -1;
+    }
+    rt->process_queue = new_queue;
+
+    new_queue = am_list_push(rt->vm_alloc, rt->process_queue,
+                             am_make_value_of_uint((am_uint_t)child_pid));
+    if (!new_queue) {
+        return -1;
+    }
+    rt->process_queue = new_queue;
+
+    return 0;
+}
+
+
 // (System.test x:any) : String
 // 保留的测试函数，用于兼容现有测试用例 mob.scm。
 int32_t am_native_System_test(am_runtime_t *rt, am_process_t *proc) {
@@ -345,6 +746,7 @@ static const am_native_func_entry_t am_native_System_funcs[] = {
     { L"clear_timeout",am_native_System_clear_timeout },
     { L"clear_interval",am_native_System_clear_interval },
     { L"timestamp",    am_native_System_timestamp },
+    { L"fork",         am_native_System_fork },
     { L"test",         am_native_System_test },
 };
 

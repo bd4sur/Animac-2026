@@ -1,5 +1,7 @@
 TODO 所有代码文件加am_前缀
 
+TODO Symbol的eq必须用字符串去比较。symbol不能根据id比较，symbol的唯一性应该是宇宙级的，而不是进程级的。symbol必须根据字面内容进行比较。
+
 TODO uint/int/float数值类型的自动转换→装箱
 
 TODO 遗留问题：进程初始化时为什么要新建一个顶级闭包？为了防止闭包链上溯时访问失败？

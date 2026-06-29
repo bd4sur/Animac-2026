@@ -953,22 +953,22 @@ static size_t parse_identifier(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Id
                 }
                 value = am_make_value_of_symbol(sym_id);
             }
-            else if (state == AM_PARSER_STATE_UNQUOTE) {
-                // 作为变量处理
-                wchar_t *text = token_text_dup(tok, ctx->ast->code);
-                if (!text) {
-                    parser_set_error(ctx, L"out of memory");
-                    return index;
-                }
-                am_varid_t varid = ensure_varid(ctx, text);
-                free(text);
-                if (varid == SIZE_MAX) {
-                    parser_set_error(ctx, L"failed to create varid");
-                    return index;
-                }
-                value = am_make_value_of_varid(varid);
-            }
-            else {
+            // else if (state == AM_PARSER_STATE_UNQUOTE) {
+            //     // 作为变量处理
+            //     wchar_t *text = token_text_dup(tok, ctx->ast->code);
+            //     if (!text) {
+            //         parser_set_error(ctx, L"out of memory");
+            //         return index;
+            //     }
+            //     am_varid_t varid = ensure_varid(ctx, text);
+            //     free(text);
+            //     if (varid == SIZE_MAX) {
+            //         parser_set_error(ctx, L"failed to create varid");
+            //         return index;
+            //     }
+            //     value = am_make_value_of_varid(varid);
+            // }
+            else { // 含state == AM_PARSER_STATE_UNQUOTE
                 // 普通状态：关键字作为 symbol，变量作为 varid
                 if (tok->type == AM_TOKEN_TYPE_KEYWORD) {
                     value = am_make_value_of_symbol((am_symbol_t)tok->id);

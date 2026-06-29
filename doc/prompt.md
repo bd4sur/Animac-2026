@@ -2185,6 +2185,46 @@ int32_t am_runtime_check_native_ref(am_runtime_t *rt, am_process_t *proc, am_val
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+请你阅读全部仓库代码（含C语言和TypeScript代码），理解C语言实现的进程调度和事件循环机制，理解本地宿主库调用分派机制，在 @src/native_System.c 和 @include/native_System.h 中，实现System.fork本地宿主函数。
+
+重要提示：不要使用或者修改 @src/runtime.c 中已有的但尚未实现的`op_fork`函数！也不要利用任何fork指令！不要使用或者修改 @src/runtime.c 中已有的但尚未实现的`op_fork`函数！也不要利用任何fork指令！完全在 @src/native_System.c 和 @include/native_System.h 中实现 am_native_System_fork 函数！
+
+System.fork的语义是：深度复制当前进程，保留其全部状态（除PID和parent_pid），并加入VM的进程调度队列。其行为和功能与Linux系统调用fork类似。
+
+System.fork无参数，有一个number类型的返回值。返回值在亲进程和子进程中不同，详见下文，失败返回-1。
+
+System.fork的具体过程：
+
+- 亲进程调用System.fork时，首先step以修改PC为PC+1。
+- 复制子进程数据结构（通过vm_alloc分配器），包括heap本身，同时深度复制heap的value所指向的数据对象（通过heap_alloc分配器），并将新heap中的指针指向复制后的数据对象。
+- 子进程opstack顶部push一个0，作为子进程fork的返回值。
+- 子进程对象加入进程队列，获得子进程pid，并将子进程pid入栈亲进程的opstack。
+- fork执行完毕，释放cpu。在后面的时间片中，子进程被调度启动。
+
+Fork的典型用法：
+
+```
+(define pid (System.fork))
+(if (== pid 0) {
+  (子进程逻辑)
+} {
+  (亲进程逻辑)
+})
+```
+
+无需编写新的测试。保证 test_runtime 正确即可，因为这是全流程的测试。注意 test_runtime 中读取的测试代码中，提供了一个测试用例。
+
+```
+(native System)
+(define pid (System.fork))
+(if (== 0 pid) (display "child") (display "parent"))
+```
+
+其预期效果为同时输出“child”和“parent”。
+
+你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

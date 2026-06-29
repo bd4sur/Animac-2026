@@ -376,7 +376,10 @@ static int32_t op_call_async(am_runtime_t *rt, am_process_t *proc, am_value_t op
         else {
             target = am_process_dereference(proc, varid);
             if (target == (am_value_t)UINTPTR_MAX) {
-                fprintf(stderr, "[Runtime] call: 变量未定义\n");
+                // fprintf(stderr, "[Runtime] call: 变量未定义 varid=%zu name=%ls\n", varid);
+                wchar_t *name = am_vocab_get(proc->vm_alloc, proc->var_vocab, &varid);
+                fprintf(stderr, "[Runtime] call: 变量未定义 varid=%zu name=%ls\n",
+                        (size_t)varid, name ? name : L"?");
                 return -1;
             }
         }
