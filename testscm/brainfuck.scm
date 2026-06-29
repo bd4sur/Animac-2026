@@ -50,8 +50,7 @@
                     (if (> iter (+ (+ cp_init (String.length code_str)) 1))
                         '()
                         {
-                            (define y ((env_constructer dp_init cp_init code_str) (+ iter 1)))
-                            (cons (String.charCodeAt (- iter (+ 2 cp_init)) code_str) y)
+                            (cons (String.charCodeAt (- iter (+ 2 cp_init)) code_str) ((env_constructer dp_init cp_init code_str) (+ iter 1)))
                         })))))))
 
 ; 环境初始化

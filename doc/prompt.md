@@ -2228,6 +2228,91 @@ Fork的典型用法：
 
 ---------------------
 
+请先阅读 @doc/AGENTS.md 。
+
+检查 @src/compiler.c 中，compile_complex_application 的实现（η变换）与TypeScript参考实现（ @typescript/src/Compiler.ts ）是否完全一致，并排查解析 @testscm/brainfuck.scm 中以下复杂调用时出错的原因：
+
+```
+(cons (String.charCodeAt (- iter (+ 2 cp_init)) code_str) ((env_constructer dp_init cp_init code_str) (+ iter 1)))
+```
+
+复现方法如下：
+
+```
+make all
+./main /mnt/d/Desktop/GitRepos/Animac-2026/testscm/brainfuck.scm
+```
+
+我怀疑这个问题与η变换编译的实现有误有关。TypeScript参考实现确认是正确的。如果定位了问题，可直接修改代码。不允许执行任何删除文件类操作。你可以使用WSL进行编译构建和测试。
+
+已完成排查和修复。
+
+## 1. `compile_complex_application` 与 TypeScript 参考实现的对比结论
+
+`src/compiler.c` 中的 `compile_complex_application` 与 `typescript/src/Compiler.ts` 里的 `CompileComplexApplication` **核心 η 变换结构完全一致**：
+
+- 都生成 `goto apply_begin` 跳过临时 lambda 体；
+- 临时 lambda 体都是逆序 `store` 所有形式参数，再正序 `load` 参数 1..n-1，最后 `tailcall` 参数 0；
+- 外层都是先编译所有子表达式（包括首项这个 Application），再 `call` 临时 lambda。
+
+存在的差异都是周边细节，不会导致 brainfuck 这个调用出错：
+
+| 差异点 | TypeScript | C | 是否影响本问题 |
+|---|---|---|---|
+| 临时函数返回标签 | 显式生成一个未引用的 `@TEMP_LAMBDA_RETURN_TARGET_...` | 未生成 | 否 |
+| 参数中的 `break`/`continue` | 特殊处理为 `goto` | 直接 `push` | 否 |
+| Native 引用作为值传递 | `load` | `push` | 否 |
+| Quasiquote 内部 Lambda | `loadclosure` | `push` | 否 |
+| `begin` 特殊形式 | 未实现 | 已实现 | 否 |
+| 标签/临时变量命名 | 字符串哈希 | 单调整数 + label | 否 |
+
+## 2. 真正导致运行错误的原因
+
+运行时错误 **并非 η 变换逻辑错误**，而是 **操作数栈（operand stack）溢出**。
+
+在 `(cons ... ((env_constructer ...) (+ iter 1)))` 这类嵌套复杂调用中，外层 `cons` 的第一个参数会留在操作数栈上；接着通过 η 变换的临时 lambda 尾调用进入内层 lambda 时，这些值会“继承”到被调用者的栈中。当前静态分析的 `opstack_depth` 没有足够保守地覆盖这种跨尾调用的栈继承场景，导致 `am_process_push_operand` 在栈满时返回失败。而调用方大多没有检查返回值，于是后续从栈上 `store` 参数时取到了错误的数据，最终表现为 `String.length` 收到非字符串、变量绑定错乱等运行异常。
+
+## 3. 修复内容
+
+修改了 `src/process.c` 中的 `am_process_push_operand`：当操作数栈满时，自动按 `capacity * 2` 扩容，而不是静默失败。
+
+```c
+int32_t am_process_push_operand(am_process_t *proc, am_value_t v) {
+    if (!proc || !proc->opstack || !proc->opstack_top) return -1;
+    size_t used = (size_t)(proc->opstack_top - proc->opstack);
+    if (used >= proc->opstack_capacity) {
+        size_t new_capacity = proc->opstack_capacity * 2;
+        if (new_capacity < 16) new_capacity = 16;
+        am_value_t *new_opstack = (am_value_t *)am_realloc(proc->vm_alloc, proc->opstack,
+                                                             new_capacity * sizeof(am_value_t));
+        if (!new_opstack) return -1;
+        proc->opstack_top = new_opstack + used;
+        proc->opstack = new_opstack;
+        proc->opstack_capacity = new_capacity;
+    }
+    *proc->opstack_top++ = v;
+    return 0;
+}
+```
+
+## 4. 验证结果
+
+- `make all` 构建通过。
+- 最小复现 `./main testscm/bf_min.scm` 已可正确输出 `(0 2 0 0 65 32)`。
+- 原用例 `./main testscm/brainfuck.scm` 已可正确输出：
+
+```
+预期输出：Hello World!
+Hello World!
+...
+iteration steps = 986
+All runtime tests passed.
+```
+
+- `test_runtime_new_opcodes`、`test_list`、`test_map`、`test_size` 等测试通过。
+- 另外几个测试（`test_ast`、`test_linker`、`test_process`、`test_runtime`）在本环境中有与本次修改无关的既有失败（断言/文件路径问题），未做改动。
+
+> 注：为定位问题我创建了 `testscm/bf_min.scm` 作为最小复现文件。按您要求未执行任何删除操作，故保留该文件。
 
 ---------------------
 
