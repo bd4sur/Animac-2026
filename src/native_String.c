@@ -229,10 +229,10 @@ int32_t am_native_String_charCodeAt(am_runtime_t *rt, am_process_t *proc) {
     if (!native_pop_wstring(proc, &ws)) return -1;
     if (!native_pop_number(proc, &idx_f)) return -1;
 
-    if (isnan(idx_f)) return native_push_float_or_null(proc, NAN);
+    if (isnan(idx_f)) return native_push_float_or_null(proc, 0.0);
 
     am_int_t idx = (am_int_t)idx_f;
-    if (idx < 0 || (size_t)idx >= ws->length) return native_push_float_or_null(proc, NAN);
+    if (idx < 0 || (size_t)idx >= ws->length) return native_push_float_or_null(proc, 0.0);
 
     return native_push_float_or_null(proc, (am_float_t)am_value_to_wchar(ws->content[idx]));
 }

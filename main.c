@@ -191,10 +191,13 @@ static void test_runtime_load_from_file(char *path) {
     test_halt_called = 0;
     test_error_called = 0;
 
+    char *base_dir = am_path_dirname((char*)path);
+
     wchar_t *path_w = (wchar_t *)am_malloc(&test_vm_allocator, 256 * sizeof(wchar_t));
-    const wchar_t *base_dir = L"/mnt/d/Desktop/GitRepos/Animac-2026/test";
+    wchar_t *base_dir_w = (wchar_t *)am_malloc(&test_vm_allocator, 256 * sizeof(wchar_t));
 
     _mbstowcs(path_w, path, 256);
+    _mbstowcs(base_dir_w, base_dir, 256);
 
     wchar_t *file_content = read_file_as_wstring(path_w);
     assert(file_content != NULL);
@@ -215,7 +218,7 @@ static void test_runtime_load_from_file(char *path) {
     code[pos] = L'\0';
     free(file_content);
 
-    am_ast_t *ast = am_parse(&test_vm_allocator, code, (wchar_t *)path);
+    am_ast_t *ast = am_parse(&test_vm_allocator, code, path_w);
     assert(ast != NULL);
 
     // for (int32_t i = 0; i < ast->token_count; i++) {
@@ -228,7 +231,7 @@ static void test_runtime_load_from_file(char *path) {
     // printf("\033[1m=== 语法高亮输出 ===\033[0m\n");
     // am_print_highlighted(code, ast->tokens, ast->token_count);
 
-    am_ast_t *linked = am_link(ast, (wchar_t *)base_dir);
+    am_ast_t *linked = am_link(ast, base_dir_w);
     assert(linked != NULL);
 
     // printf("=== AST ===\n");
@@ -282,6 +285,8 @@ static void test_runtime_load_from_file(char *path) {
     printf("\n=== VM halted ===\n");
 
     am_runtime_destroy(rt);
+    free(dump_buffer);
+    free(base_dir);
     free(mod->ilcode);
     am_free(linked->alloc, mod);
     am_ast_destroy(linked);

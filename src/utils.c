@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "utils.h"
 
@@ -160,4 +161,22 @@ wchar_t* read_file_to_wchar(char* filename) {
     free(buffer);
 
     return wstr; // 调用者负责 free()
+}
+
+// 从 Linux 格式的文件路径中提取文件所在目录的绝对路径
+// 即最后一个 '/' 之前的内容，不包含末尾的 '/'
+// 返回值：动态分配的字符串，调用者需 free()；失败或路径不含 '/' 时返回 NULL
+char* am_path_dirname(const char *path) {
+    if (!path) return NULL;
+
+    const char *last_slash = strrchr(path, '/');
+    if (!last_slash) return NULL;
+
+    size_t len = (size_t)(last_slash - path);
+    char *dir = (char *)malloc(len + 1);
+    if (!dir) return NULL;
+
+    memcpy(dir, path, len);
+    dir[len] = '\0';
+    return dir;
 }

@@ -30,6 +30,11 @@ uint32_t _mbstowcs(wchar_t *dest, const char *src, uint32_t length);
  */
 wchar_t* read_file_to_wchar(char* filename);
 
+// 从 Linux 格式的文件路径中提取文件所在目录的绝对路径
+// 即最后一个 '/' 之前的内容，不包含末尾的 '/'
+// 返回值：动态分配的字符串，调用者需 free()；失败或路径不含 '/' 时返回 NULL
+char* am_path_dirname(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

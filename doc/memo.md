@@ -8,9 +8,21 @@ TODO 遗留问题：进程初始化时为什么要新建一个顶级闭包？为
 
 TODO 模块的转储（dump）和加载（load）
 
-TODO capturecc指令的参数改成iaddr，其返回的把柄直接入栈
+TODO REPL和输入：通过callback打印，不要直接在display里打印
 
-TODO TS：tailcall实现，复用CallAsync函数
+TODO 架构决策：fork时全量复制，还是COW？前者运行时性能好，对现有代码改动小。后者比较酷炫，但平均性能差、改动大。
+暂不实现，仅记录思路，远期作为实验性功能探索：为进程heap增加COW机制：
+- 首先把process的heap写过程封装起来，加入以下逻辑：
+- 进程proc调用该函数，尝试写入proc->heap[handle]
+- 首先读取proc->heap[handle]的readonly和mapcount字段，若readonly=true且mapcount>0，则执行以下COW流程：
+  - 将current_proc->heap[handle]的旧值（指针）所指向的对象，复制一份，并获得副本的指针（通过heap_alloc分配器）。
+  - 随后用副本的指针替换掉current_proc->heap[handle]的旧值，并重置其readonly=false和mapcount=0。
+
+TODO 队列（FIFO）
+- (System.write xxx) ;; 向某个VM队列中推入TPV
+- (System.read xxx)  ;; 从某个VM队列中读取值
+
+TODO capturecc指令的参数改成iaddr，其返回的把柄直接入栈
 
 TODO eq? eqv? equal? +typeof
 
