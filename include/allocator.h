@@ -50,6 +50,46 @@ static inline void am_free(am_allocator_t *alloc, void *ptr) {
 // void am_free_impl(void *state, void *ptr) { free(ptr); }
 // const am_allocator_vtable_t malloc_vtable = { am_malloc_impl, am_free_impl, NULL };
 
+///////////////////////////////////////////
+// 共享内存池与双分配器管理
+///////////////////////////////////////////
+
+#ifndef AM_ALLOCATOR_POOL_SIZE
+#define AM_ALLOCATOR_POOL_SIZE ((size_t)(2048ULL * 1024 * 1024))
+#endif
+
+// 每经历 AM_HEAP_COMPACT_INTERVAL 次 GC 后触发一次标记-压缩。
+// 设为 0 表示不在 GC 时自动触发压缩（可手动调用 am_allocator_heap_compact）。
+#ifndef AM_HEAP_COMPACT_INTERVAL
+#define AM_HEAP_COMPACT_INTERVAL (2)
+#endif
+
+// 不透明内存池类型
+typedef struct am_allocator_pool_t am_allocator_pool_t;
+
+// 创建/销毁统一内存池。成功返回池指针，失败返回 NULL。
+am_allocator_pool_t *am_allocator_pool_create(size_t total_size);
+void am_allocator_pool_destroy(am_allocator_pool_t *pool);
+
+// 获取池中 VM 工作区与堆区分配器。
+am_allocator_t *am_allocator_pool_get_vm(am_allocator_pool_t *pool);
+am_allocator_t *am_allocator_pool_get_heap(am_allocator_pool_t *pool);
+
+// 重置 VM 工作区/堆区。重置会丢弃当前已分配内容，回到初始状态。
+void am_allocator_pool_reset_vm(am_allocator_pool_t *pool);
+void am_allocator_pool_reset_heap(am_allocator_pool_t *pool);
+
+// 查询池大小与已使用字节数。
+size_t am_allocator_pool_total_size(const am_allocator_pool_t *pool);
+size_t am_allocator_pool_vm_used(const am_allocator_pool_t *pool);
+size_t am_allocator_pool_heap_used(const am_allocator_pool_t *pool);
+
+// 对堆区执行标记-压缩：移动 heap 中所有被 handle 引用的对象到堆区前端，
+// 更新 heap 表中的指针，并在尾部重建一个空闲块。必须在 GC 安全点调用。
+struct am_heap_t;
+typedef struct am_heap_t am_heap_t;
+int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap);
+
 #ifdef __cplusplus
 }
 #endif

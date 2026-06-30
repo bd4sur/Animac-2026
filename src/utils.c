@@ -52,7 +52,9 @@ uint32_t _mbstowcs(wchar_t *dest, const char *src, uint32_t length) {
     wchar_t *out = dest;
 
     while (p < end) {
-        uint8_t byte = *p++;
+        uint8_t byte = *p;
+        if (byte == '\0') break;
+        p++;
 
         if ((byte & 0x80) == 0) {
             // 1-byte: ASCII

@@ -988,7 +988,7 @@ int32_t am_process_gc_sweep(am_process_t *proc) {
 
     free(keys);
 
-    // printf("[GC] 已清理 %zu / %zu 个对象\n", gcount, count);
+    printf("[GC] 已清理 %zu / %zu 个对象\n", gcount, count);
 
     // TODO 暂不实现allocator管理的底层物理内存的整理
 
@@ -1043,6 +1043,16 @@ int32_t am_process_gc(am_process_t *proc) {
     if (am_process_gc_sweep(proc) != 0) {
         ret = -1;
     }
+
+    proc->gc_count++;
+#if AM_HEAP_COMPACT_INTERVAL > 0
+    if (proc->gc_count % AM_HEAP_COMPACT_INTERVAL == 0) {
+        /* 标记-压缩：整理堆区物理内存，必须在 GC 安全点执行 */
+        if (am_allocator_heap_compact(proc->heap_alloc, proc->heap) != 0) {
+            ret = -1;
+        }
+    }
+#endif
 
 cleanup:
     am_list_destroy(proc->vm_alloc, gcroots);

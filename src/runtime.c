@@ -1852,9 +1852,9 @@ int32_t am_runtime_event_handler(am_runtime_t *rt) {
     }
 
 #if AM_ENABLE_GC
-    // time_t now = time(NULL);
-    // if (now - rt->gc_timestamp >= AM_GC_INTERVAL) {
-    //     rt->gc_timestamp = now;
+    time_t now = time(NULL);
+    if (now - rt->gc_timestamp >= AM_GC_INTERVAL) {
+        rt->gc_timestamp = now;
         for (size_t i = 0; i < rt->process_queue->length; i++) {
             am_value_t pid_val = am_list_get(rt->vm_alloc, rt->process_queue, i);
             if (!am_value_is_uint(pid_val)) continue;
@@ -1863,7 +1863,7 @@ int32_t am_runtime_event_handler(am_runtime_t *rt) {
                 am_process_gc(rt->process_pool[pid]);
             }
         }
-    // }
+    }
 #endif
 
     runtime_fire_expired_timers(rt);

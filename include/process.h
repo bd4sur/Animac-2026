@@ -67,6 +67,8 @@ typedef struct am_process_t {
 
     am_handle_t current_closure_handle; // 指向当前闭包的把柄
 
+    size_t gc_count; // GC 触发次数，用于控制标记-压缩频率
+
     // 操作数栈（其容量为opstack_depth）
     am_value_t *opstack;
     am_value_t *opstack_top; // opstack栈顶指针

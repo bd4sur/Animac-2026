@@ -38,7 +38,7 @@ typedef struct am_runtime_t am_runtime_t;
 #endif
 
 #ifndef AM_GC_INTERVAL
-#define AM_GC_INTERVAL (5) // 秒
+#define AM_GC_INTERVAL (1) // 秒
 #endif
 
 
