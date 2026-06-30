@@ -31,6 +31,24 @@ typedef struct am_module_t {
 } am_module_t;
 
 
+// 将 am_module_t 序列化为二进制数据。
+// container_alloc 用于分配模块/AST 结构本身；obj_alloc 用于分配 AST 子对象。
+// buffer == NULL 或 offset == SIZE_MAX 时仅计算所需字节数。
+// 成功返回新增字节数，失败返回 SIZE_MAX。
+size_t am_module_dump(am_allocator_t *container_alloc,
+                      am_allocator_t *obj_alloc,
+                      am_module_t *mod,
+                      uint8_t *buffer,
+                      size_t offset);
+
+// 从二进制数据恢复 am_module_t。参数含义与 am_module_dump 对应。
+// 成功返回模块指针，失败返回 NULL。
+am_module_t *am_module_load(am_allocator_t *container_alloc,
+                            am_allocator_t *obj_alloc,
+                            uint8_t *buffer,
+                            size_t offset);
+
+
 #ifdef __cplusplus
 }
 #endif

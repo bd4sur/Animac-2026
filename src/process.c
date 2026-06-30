@@ -988,7 +988,7 @@ int32_t am_process_gc_sweep(am_process_t *proc) {
 
     free(keys);
 
-    printf("[GC] 已清理 %zu / %zu 个对象\n", gcount, count);
+    // printf("[GC] 已清理 %zu / %zu 个对象\n", gcount, count);
 
     // TODO 暂不实现allocator管理的底层物理内存的整理
 

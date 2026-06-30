@@ -2356,9 +2356,19 @@ All runtime tests passed.
 
 ---------------------
 
+参照 @src/heap.c 中的 am_heap_deep_dump / am_heap_deep_load 的接口格式，在 @src/module.c 和 @include/module.h 中，实现 module 数据结构的dump和load函数，以实现二进制持久化。
+
+不要修改 @main.c ，但可以参照 @main.c 另写一个完整测试，以测试 dump/load 的正确性。你可以用 @test/test.scm 作为测试输入。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
+修改 @main.c ，实现以下需求：
+
+1、基于 am_module_dump ，在 am_compile 后，将编译出的模块持久化到系统内存（模拟转储为外部文件）。
+
+2、mod转储完成后，彻底清空vm_alloc管理的VM工作区内存，为后面的runtime腾出工作空间。
+
+3、am_load_module 之前，再通过 am_module_load ，加载转储后的模块。
 
 ---------------------
 

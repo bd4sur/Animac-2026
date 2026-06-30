@@ -12,7 +12,6 @@
 (import Interpreter "interpreter.scm")
 (import List "list.scm")
 (import MoB "man_or_boy.scm")
-(import MLP "mlp.scm")
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -26,7 +25,7 @@
 (Interpreter.run)
 (List.run)
 (MoB.run)
-(MLP.run)
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -150,7 +149,13 @@
 
 
 
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(Coroutine.run)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 
 
 (define pid (System.fork))
@@ -161,4 +166,5 @@
 })
 
 
-(Coroutine.run)
+(((lambda (x) (begin (display "@") x)) (call/cc (lambda (k) k)))
+ ((lambda (x) (begin (display "*") x)) (call/cc (lambda (k) k))))

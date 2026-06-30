@@ -55,21 +55,17 @@ static inline void am_free(am_allocator_t *alloc, void *ptr) {
 
 
 #ifndef AM_ALLOCATOR_PRINT_COMPACT_REPORT
-#define AM_ALLOCATOR_PRINT_COMPACT_REPORT (0)
+#define AM_ALLOCATOR_PRINT_COMPACT_REPORT (1)
 #endif
 
 ///////////////////////////////////////////
 // 共享内存池与双分配器管理
 ///////////////////////////////////////////
 
-#ifndef AM_ALLOCATOR_POOL_SIZE
-#define AM_ALLOCATOR_POOL_SIZE ((size_t)(1200ULL * 1024 * 1024))
-#endif
-
 // 每经历 AM_HEAP_COMPACT_INTERVAL 次 GC 后触发一次标记-压缩。
 // 设为 0 表示不在 GC 时自动触发压缩（可手动调用 am_allocator_heap_compact）。
 #ifndef AM_HEAP_COMPACT_INTERVAL
-#define AM_HEAP_COMPACT_INTERVAL (2)
+#define AM_HEAP_COMPACT_INTERVAL (10)
 #endif
 
 // 动态边界调整相关阈值与限制。

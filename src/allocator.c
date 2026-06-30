@@ -324,8 +324,6 @@ static void pool_init_vm(am_allocator_pool_t *pool) {
 }
 
 am_allocator_pool_t *am_allocator_pool_create(size_t total_size) {
-    if (total_size < 2 * 1024 * 1024) total_size = 2 * 1024 * 1024;
-
     am_allocator_pool_t *pool = (am_allocator_pool_t *)malloc(sizeof(am_allocator_pool_t));
     if (!pool) {
         fprintf(stderr, "[allocator] 内存池控制块分配失败: sizeof=%zu\n", sizeof(am_allocator_pool_t));
@@ -497,6 +495,12 @@ int32_t am_allocator_pool_adjust_boundary(am_allocator_pool_t *pool, double rati
     }
 }
 
+static void compact_print_boundary_adjust_report(const am_allocator_pool_t *pool,
+                                                 size_t old_boundary,
+                                                 size_t old_heap_used,
+                                                 size_t old_vm_used,
+                                                 const char *direction);
+
 int32_t am_allocator_pool_auto_adjust(am_allocator_pool_t *pool) {
     if (!pool) return -1;
 
@@ -512,10 +516,19 @@ int32_t am_allocator_pool_auto_adjust(am_allocator_pool_t *pool) {
     double vm_ratio = (double)vm_used / (double)vm_cap;
     double current_ratio = (double)heap_cap / (double)total;
 
+    size_t old_boundary = pool->boundary;
+    size_t old_heap_used = heap_used;
+    size_t old_vm_used = vm_used;
+
     // VM 压力大且 heap 有富余：把边界让给 VM（减小 heap 比例）
     if (vm_ratio > AM_POOL_VM_EXPAND_THRESHOLD && heap_ratio < AM_POOL_HEAP_SLACK_THRESHOLD) {
         double target = current_ratio - AM_POOL_BOUNDARY_ADJ_STEP;
-        return am_allocator_pool_adjust_boundary(pool, target);
+        int32_t ret = am_allocator_pool_adjust_boundary(pool, target);
+        if (ret == 0 && pool->boundary != old_boundary) {
+            compact_print_boundary_adjust_report(pool, old_boundary, old_heap_used, old_vm_used,
+                                                 "VM 扩张（heap 比例减小）");
+        }
+        return ret;
     }
 
     // heap 压力大且 VM 为空：把边界让给 heap（增大 heap 比例）
@@ -523,7 +536,12 @@ int32_t am_allocator_pool_auto_adjust(am_allocator_pool_t *pool) {
         vm_ratio < AM_POOL_VM_SLACK_THRESHOLD &&
         pool->vm_state.top == pool->vm_state.base) {
         double target = current_ratio + AM_POOL_BOUNDARY_ADJ_STEP;
-        return am_allocator_pool_adjust_boundary(pool, target);
+        int32_t ret = am_allocator_pool_adjust_boundary(pool, target);
+        if (ret == 0 && pool->boundary != old_boundary) {
+            compact_print_boundary_adjust_report(pool, old_boundary, old_heap_used, old_vm_used,
+                                                 "heap 扩张（heap 比例增大）");
+        }
+        return ret;
     }
 
     return 0;
@@ -585,15 +603,59 @@ static void compact_print_free_blocks(const am_freelist_state_t *s, const char *
     }
 }
 
-/* 打印统一内存池的总体统计 */
-static void compact_print_pool_stats(const am_allocator_pool_t *pool) {
-    fprintf(stderr, "内存池总大小: %zu bytes\n", pool->total_size);
+/* 打印 VM 工作区信息 */
+static void compact_print_vm_section(const am_allocator_pool_t *pool) {
     size_t vm_cap = (size_t)(pool->vm_state.end - pool->vm_state.base);
     size_t vm_used = (size_t)(pool->vm_state.top - pool->vm_state.base);
-    fprintf(stderr, "VM 工作区: 起始=%p 容量=%zu 已用=%zu\n",
-            (void *)pool->vm_state.base, vm_cap, vm_used);
-    fprintf(stderr, "用户堆区: 起始=%p 容量=%zu\n",
-            (void *)pool->heap_state.base, pool->boundary);
+    fprintf(stderr, "---------- VM 工作区 ----------\n");
+    fprintf(stderr, "  起始地址=%p\n", (void *)pool->vm_state.base);
+    fprintf(stderr, "  结束地址=%p\n", (void *)pool->vm_state.end);
+    fprintf(stderr, "  容量=%zu bytes\n", vm_cap);
+    fprintf(stderr, "  已用=%zu bytes\n", vm_used);
+    fprintf(stderr, "  空闲=%zu bytes\n", vm_cap - vm_used);
+    if (vm_cap > 0) {
+        fprintf(stderr, "  使用率=%.2f%%\n", 100.0 * (double)vm_used / (double)vm_cap);
+    }
+}
+
+/* 打印边界位置信息 */
+static void compact_print_boundary_section(const am_allocator_pool_t *pool) {
+    uint8_t *boundary_addr = pool->base + pool->boundary;
+    double heap_ratio = (double)pool->boundary / (double)pool->total_size;
+    fprintf(stderr, "---------- 边界 ----------\n");
+    fprintf(stderr, "  边界地址=%p\n", (void *)boundary_addr);
+    fprintf(stderr, "  heap 占比=%.2f%%\n", heap_ratio * 100.0);
+    fprintf(stderr, "  VM 占比=%.2f%%\n", (1.0 - heap_ratio) * 100.0);
+}
+
+/* 打印用户堆区压缩信息 */
+static void compact_print_heap_section(const am_freelist_state_t *s,
+                                       size_t used_before,
+                                       const compact_free_info_t *before_free,
+                                       size_t before_free_count,
+                                       size_t live_count) {
+    fprintf(stderr, "---------- 用户堆区 ----------\n");
+    fprintf(stderr, "  起始地址=%p\n", (void *)s->base);
+    fprintf(stderr, "  结束地址=%p\n", (void *)(s->base + s->capacity));
+    fprintf(stderr, "  容量=%zu bytes\n", s->capacity);
+    fprintf(stderr, "  压缩前: 已用=%zu 空闲=%zu\n",
+            used_before, s->capacity - used_before);
+    fprintf(stderr, "  压缩前空闲块:\n");
+    if (before_free_count == 0) {
+        fprintf(stderr, "    (无空闲块)\n");
+    } else {
+        for (size_t i = 0; i < before_free_count; i++) {
+            fprintf(stderr, "    起始=%p 结束=%p 大小=%zu\n",
+                    (void *)before_free[i].start,
+                    (void *)(before_free[i].start + before_free[i].size),
+                    before_free[i].size);
+        }
+    }
+
+    fprintf(stderr, "  压缩后: 已用=%zu 空闲=%zu\n",
+            s->used_bytes, s->capacity - s->used_bytes);
+    compact_print_free_blocks(s, "  压缩后空闲块:");
+    fprintf(stderr, "  存活对象: %zu 个, 共 %zu bytes\n", live_count, s->used_bytes);
 }
 
 /* 打印一次完整的压缩报告。调用时压缩已完成，before_* 参数记录压缩前状态。 */
@@ -602,30 +664,68 @@ static void compact_print_report(const am_freelist_state_t *s,
                                  const compact_free_info_t *before_free,
                                  size_t before_free_count,
                                  size_t live_count) {
-    fprintf(stderr, "\n========== 堆区压缩报告 ==========\n");
+#if !AM_ALLOCATOR_PRINT_COMPACT_REPORT
+    (void)s;
+    (void)used_before;
+    (void)before_free;
+    (void)before_free_count;
+    (void)live_count;
+    return;
+#endif
+
+    fprintf(stderr, "\n========== 内存池压缩报告 ==========\n");
     if (g_current_pool) {
-        compact_print_pool_stats(g_current_pool);
+        compact_print_vm_section(g_current_pool);
+        compact_print_boundary_section(g_current_pool);
+        compact_print_heap_section(s, used_before, before_free, before_free_count, live_count);
     } else {
         fprintf(stderr, "内存池信息: (未知)\n");
     }
+    fprintf(stderr, "====================================\n\n");
+}
 
-    fprintf(stderr, "压缩前: 已用=%zu 空闲=%zu\n", used_before, s->capacity - used_before);
-    fprintf(stderr, "压缩前空闲块:\n");
-    if (before_free_count == 0) {
-        fprintf(stderr, "  (无空闲块)\n");
-    } else {
-        for (size_t i = 0; i < before_free_count; i++) {
-            fprintf(stderr, "  起始=%p 结束=%p 大小=%zu\n",
-                    (void *)before_free[i].start,
-                    (void *)(before_free[i].start + before_free[i].size),
-                    before_free[i].size);
-        }
-    }
+/* 打印边界调整报告。调用时调整已完成。 */
+static void compact_print_boundary_adjust_report(const am_allocator_pool_t *pool,
+                                                 size_t old_boundary,
+                                                 size_t old_heap_used,
+                                                 size_t old_vm_used,
+                                                 const char *direction) {
+#if !AM_ALLOCATOR_PRINT_COMPACT_REPORT
+    (void)pool;
+    (void)old_boundary;
+    (void)old_heap_used;
+    (void)old_vm_used;
+    (void)direction;
+    return;
+#endif
 
-    fprintf(stderr, "压缩后: 已用=%zu 空闲=%zu\n", s->used_bytes, s->capacity - s->used_bytes);
-    compact_print_free_blocks(s, "压缩后空闲块:");
-    fprintf(stderr, "存活对象: %zu 个, 共 %zu bytes\n", live_count, s->used_bytes);
-    fprintf(stderr, "==================================\n\n");
+    if (!pool) return;
+
+    fprintf(stderr, "\n========== 内存池边界调整报告 ==========\n");
+
+    fprintf(stderr, "---------- 调整前 ----------\n");
+    size_t old_vm_cap = pool->total_size - old_boundary;
+    fprintf(stderr, "  VM 工作区: 起始=%p 容量=%zu 已用=%zu\n",
+            (void *)(pool->base + old_boundary), old_vm_cap, old_vm_used);
+    fprintf(stderr, "  边界地址=%p (heap 占比 %.2f%%)\n",
+            (void *)(pool->base + old_boundary),
+            100.0 * (double)old_boundary / (double)pool->total_size);
+    fprintf(stderr, "  用户堆区: 起始=%p 容量=%zu 已用=%zu\n",
+            (void *)pool->base, old_boundary, old_heap_used);
+
+    fprintf(stderr, "---------- 调整后 ----------\n");
+    size_t vm_cap = (size_t)(pool->vm_state.end - pool->vm_state.base);
+    size_t vm_used = (size_t)(pool->vm_state.top - pool->vm_state.base);
+    fprintf(stderr, "  VM 工作区: 起始=%p 容量=%zu 已用=%zu\n",
+            (void *)pool->vm_state.base, vm_cap, vm_used);
+    fprintf(stderr, "  边界地址=%p (heap 占比 %.2f%%)\n",
+            (void *)(pool->base + pool->boundary),
+            100.0 * (double)pool->boundary / (double)pool->total_size);
+    fprintf(stderr, "  用户堆区: 起始=%p 容量=%zu 已用=%zu\n",
+            (void *)pool->heap_state.base, pool->boundary, pool->heap_state.used_bytes);
+
+    fprintf(stderr, "  调整方向: %s\n", direction ? direction : "无");
+    fprintf(stderr, "========================================\n\n");
 }
 
 int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {

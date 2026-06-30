@@ -45,6 +45,12 @@ const wchar_t* type_name(int32_t type) {
 // 基础设施：基于统一内存池的双分配器
 // ===============================================================================
 
+
+#ifndef AM_ALLOCATOR_POOL_SIZE
+#define AM_ALLOCATOR_POOL_SIZE ((size_t)(1200ULL * 1024 * 1024))
+#endif
+
+
 static am_allocator_pool_t *g_pool = NULL;
 static am_allocator_t *vm_alloc = NULL;
 static am_allocator_t *heap_alloc = NULL;
@@ -166,35 +172,47 @@ static void test_runtime_load_from_file(char *path) {
     // printf("=== AST ===\n");
     // am_debug_ast_print_to_stdout(linked);
 
+    am_module_t *mod = am_compile(linked);
 
-    am_heap_t *nodes_copy = am_heap_copy(vm_alloc, vm_alloc, linked->nodes);
-    assert(nodes_copy != NULL);
-
-    size_t dump_size = am_heap_deep_dump(vm_alloc, vm_alloc, nodes_copy, NULL, 0);
-    assert(dump_size != SIZE_MAX);
-
-    uint8_t *dump_buffer = (uint8_t *)malloc(dump_size);
-    assert(dump_buffer);
-    memset(dump_buffer, 0, dump_size);
-
-    size_t written = am_heap_deep_dump(vm_alloc, vm_alloc, nodes_copy, dump_buffer, 0);
-    assert(written == dump_size);
-
-    am_heap_t *loaded_nodes = am_heap_deep_load(vm_alloc, vm_alloc, dump_buffer, 0);
-    assert(loaded_nodes != NULL);
-
-    am_ast_t loaded_linked_ast = *linked;
-    loaded_linked_ast.nodes = loaded_nodes;
-
-
-    am_module_t *mod = am_compile(&loaded_linked_ast);
     assert(mod != NULL);
-    printf("OPSTACK depth = %zu\n", mod->opstack_depth);
 
     // printf("=== IL Code ===\n");
     // am_debug_print_ilcode(mod->ast, mod->ilcode, mod->ilcode_length);
 
-    am_runtime_t *rt = am_runtime_create(vm_alloc, heap_alloc, base_dir_w);
+    /* =============================================================
+     * 1. 将编译出的模块持久化到系统内存（模拟外部文件转储）
+     * ============================================================= */
+    size_t dump_size = am_module_dump(vm_alloc, vm_alloc, mod, NULL, 0);
+    assert(dump_size != SIZE_MAX);
+
+    uint8_t *module_buffer = (uint8_t *)malloc(dump_size);
+    assert(module_buffer != NULL);
+    memset(module_buffer, 0, dump_size);
+
+    size_t written = am_module_dump(vm_alloc, vm_alloc, mod, module_buffer, 0);
+    assert(written == dump_size);
+    printf("Module dumped: %zu bytes\n", dump_size);
+
+    /* =============================================================
+     * 2. 彻底清空 VM 工作区，为 runtime 腾出空间
+     *    （原始 AST、module、ilcode 均在 vm_alloc 中，转储后已不需要）
+     * ============================================================= */
+    am_allocator_pool_reset_vm(g_pool);
+
+    /* base_dir_w 已随 VM 清空而失效，用栈缓冲区重新转换供 runtime 使用 */
+    wchar_t base_dir_w_reload[256];
+    _mbstowcs(base_dir_w_reload, base_dir, 256);
+
+    /* =============================================================
+     * 3. 从转储缓冲区加载模块，然后创建 runtime 并运行
+     * ============================================================= */
+    am_module_t *mod_loaded = am_module_load(vm_alloc, heap_alloc, module_buffer, 0);
+    assert(mod_loaded != NULL);
+    printf("Module loaded: opstack_depth=%zu, ilcode_length=%zu\n",
+           mod_loaded->opstack_depth, (size_t)mod_loaded->ilcode_length);
+
+
+    am_runtime_t *rt = am_runtime_create(vm_alloc, heap_alloc, base_dir_w_reload);
     assert(rt != NULL);
 
     // 注册内置 native 库
@@ -205,7 +223,7 @@ static void test_runtime_load_from_file(char *path) {
     rt->callback_on_halt = on_halt;
     rt->callback_on_error = on_error;
 
-    am_pid_t pid1 = am_load_module(rt, mod);
+    am_pid_t pid1 = am_load_module(rt, mod_loaded);
     (void)pid1;
     // am_pid_t pid2 = am_load_module(rt, mod);
 
@@ -214,11 +232,8 @@ static void test_runtime_load_from_file(char *path) {
     printf("\n=== VM halted ===\n");
 
     am_runtime_destroy(rt);
-    free(dump_buffer);
+    free(module_buffer);
     free(base_dir);
-    free(mod->ilcode);
-    am_free(linked->alloc, mod);
-    am_ast_destroy(linked);
 }
 
 

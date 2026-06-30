@@ -16,6 +16,16 @@ static am_handle_t g_heap_handle_counter = 1;
 // 内部辅助函数：在 map 中查找 key 所在槽位（与 src/map.c 一致）
 // ===============================================================================
 
+/* 安全销毁 deep_dump 临时堆表：先把所有 value 置空，
+ * 避免 am_map_destroy 把偏移量或原堆指针误当对象释放。 */
+static void am_heap_temp_table_destroy(am_allocator_t *alloc, am_map_t *table) {
+    if (!table) return;
+    for (size_t i = 0; i < table->capacity; i++) {
+        table->slots[i].value = AM_VALUE_NULL;
+    }
+    am_map_destroy(alloc, table);
+}
+
 static int32_t am_heap_find_slot(const am_map_t *m, am_value_t key, size_t *out_insert_idx) {
     size_t idx = am_value_hash(key) & m->mask;
     size_t insert_idx = UINT32_MAX;
@@ -315,7 +325,7 @@ size_t am_heap_deep_dump(am_allocator_t *container_alloc, am_allocator_t *obj_al
     for (size_t i = 0; i < count; i++) {
         am_map_t *m = am_map_set(container_alloc, temp_heap.table, entries[i].key, entries[i].value);
         if (!m) {
-            am_map_destroy(container_alloc, temp_heap.table);
+            am_heap_temp_table_destroy(container_alloc, temp_heap.table);
             am_free(container_alloc, entries);
             return SIZE_MAX;
         }
@@ -325,7 +335,7 @@ size_t am_heap_deep_dump(am_allocator_t *container_alloc, am_allocator_t *obj_al
     // 计算heap对象本身的dump大小
     size_t heap_map_size = am_heap_dump(container_alloc, obj_alloc, &temp_heap, NULL, 0);
     if (heap_map_size == SIZE_MAX) {
-        am_map_destroy(container_alloc, temp_heap.table);
+        am_heap_temp_table_destroy(container_alloc, temp_heap.table);
         am_free(container_alloc, entries);
         return SIZE_MAX;
     }
@@ -351,7 +361,7 @@ size_t am_heap_deep_dump(am_allocator_t *container_alloc, am_allocator_t *obj_al
         }
 
         if (obj_size == SIZE_MAX) {
-            am_map_destroy(container_alloc, temp_heap.table);
+            am_heap_temp_table_destroy(container_alloc, temp_heap.table);
             am_free(container_alloc, entries);
             return SIZE_MAX;
         }
@@ -371,12 +381,12 @@ size_t am_heap_deep_dump(am_allocator_t *container_alloc, am_allocator_t *obj_al
     // 将临时heap对象dump到buffer[offset+16]
     size_t written = am_heap_dump(container_alloc, obj_alloc, &temp_heap, buffer, buffer_offset);
     if (written != heap_map_size) {
-        am_map_destroy(container_alloc, temp_heap.table);
+        am_heap_temp_table_destroy(container_alloc, temp_heap.table);
         am_free(container_alloc, entries);
         return SIZE_MAX;
     }
 
-    am_map_destroy(container_alloc, temp_heap.table);
+    am_heap_temp_table_destroy(container_alloc, temp_heap.table);
     am_free(container_alloc, entries);
 
     // 写入总字节长度和heap dump长度
