@@ -2316,6 +2316,14 @@ All runtime tests passed.
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+这是一个Scheme解释器实现。请你阅读全部C语言代码，理解其语法分析、编译、虚拟机指令集等关键机制，在 @src/parser.c 中，修改 am_parser_opstack_depth_analysis 实现，要求如下。
+
+- 需求背景：现有 am_parser_opstack_depth_analysis 的功能是对AST进行静态分析，进而得到最大opstack深度。然而，由于compiler对AST进行编译时，可能会执行η变换等操作，导致实际编译出的IL代码的最大栈深度，与基于AST静态分析出来的结果不一致。因此应该对编译出来的IL指令序列做静态分析，才合理。
+- 具体要求：在 @src/compiler.c 中实现函数 am_compiler_opstack_depth_analysis ，功能依然是分析得到最大opstack深度，但分析对象是ilcode。实现 am_compiler_opstack_depth_analysis 后，你需要将所有的 am_parser_opstack_depth_analysis 调用，替换为新实现的 am_compiler_opstack_depth_analysis ，并清除 am_parser_opstack_depth_analysis 的实现。
+
+无需编写新的测试。保证 @main.c 编译运行正确即可，因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

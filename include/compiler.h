@@ -55,6 +55,12 @@ int32_t am_compiler_label_resolution(am_compiler_ctx_t *ctx);
 
 typedef struct am_module_t am_module_t;
 
+// opstack最大深度的静态分析。成功返回最大深度，失败返回SIZE_MAX。
+// 说明：本分析基于编译器生成的中间语言指令序列（ilcode），估算运行时操作数栈可能达到的最大深度。
+//       分析覆盖所有lambda函数体、临时lambda（η变换生成）以及顶层thunk，取其中的最大值。
+size_t am_compiler_opstack_depth_analysis(am_compiler_ctx_t *ctx);
+
+
 // 功能描述：编译器入口。将AST编译为am_module_t。
 // 实现说明：成功返回指针，失败返回NULL。
 am_module_t *am_compile(am_ast_t *ast);

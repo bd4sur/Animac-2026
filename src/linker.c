@@ -661,13 +661,6 @@ am_ast_t *am_link(am_ast_t *main_ast, wchar_t *base_dir) {
         return NULL;
     }
 
-    // 静态分析最大opstack深度
-    global_ast->opstack_depth = am_parser_opstack_depth_analysis(global_ast);
-    if (global_ast->opstack_depth == SIZE_MAX) {
-        linker_ctx_destroy(ctx);
-        return NULL;
-    }
-
     // 对合并后的AST执行外部引用解析
     if (am_linker_import_ref_resolution(global_ast, base_dir) != 0) {
         linker_ctx_destroy(ctx);

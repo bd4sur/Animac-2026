@@ -906,6 +906,300 @@ static int32_t compile_quasiquote(am_compiler_ctx_t *ctx, am_handle_t handle) {
 
 
 // ===============================================================================
+// opstack 最大深度的静态分析
+// ===============================================================================
+
+// 分析上下文：记录一个函数入口点（iaddr）及其初始栈深度
+typedef struct compiler_depth_entry_t {
+    am_iaddr_t iaddr;
+    size_t init_depth;
+} compiler_depth_entry_t;
+
+
+// 单条指令对操作数栈的净影响（保守估计）。
+// 返回值：正数表示压栈，负数表示出栈，0 表示不变。
+static int32_t compiler_stack_effect(am_compiler_ctx_t *ctx, am_iaddr_t iaddr) {
+    if (!ctx || iaddr >= ctx->icount) return 0;
+
+    uint32_t op = ctx->ilcode[iaddr].opcode;
+    switch (op) {
+        case AM_VM_OP_nop:         return 0;
+        case AM_VM_OP_store:       return -1;
+        case AM_VM_OP_load:        return 1;
+        case AM_VM_OP_loadclosure: return 1;
+        case AM_VM_OP_push:        return 1;
+        case AM_VM_OP_pop:         return -1;
+        case AM_VM_OP_swap:        return 0;
+        case AM_VM_OP_set:         return -1;
+        case AM_VM_OP_call:        return 0;
+        case AM_VM_OP_callnative:  return 0;
+        case AM_VM_OP_tailcall:    return 0;
+        case AM_VM_OP_return:      return 0;
+        case AM_VM_OP_capturecc:   return 0;
+        case AM_VM_OP_iftrue:      return -1;
+        case AM_VM_OP_iffalse:     return -1;
+        case AM_VM_OP_goto:        return 0;
+        case AM_VM_OP_read:        return 1;
+        case AM_VM_OP_write:       return -2;
+        case AM_VM_OP_pause:       return 0;
+        case AM_VM_OP_halt:        return 0;
+        case AM_VM_OP_fork:        return 0;
+        case AM_VM_OP_display:     return -1;
+        case AM_VM_OP_newline:     return 0;
+        case AM_VM_OP_add:
+        case AM_VM_OP_sub:
+        case AM_VM_OP_mul:
+        case AM_VM_OP_div:
+        case AM_VM_OP_mod:
+        case AM_VM_OP_pow:
+        case AM_VM_OP_eq:
+        case AM_VM_OP_eqv:
+        case AM_VM_OP_equal:
+        case AM_VM_OP_ge:
+        case AM_VM_OP_le:
+        case AM_VM_OP_gt:
+        case AM_VM_OP_lt:
+        case AM_VM_OP_and:
+        case AM_VM_OP_or:
+        case AM_VM_OP_cons:
+        case AM_VM_OP_get_item:
+        case AM_VM_OP_list_push:
+            return -1;
+        case AM_VM_OP_not:
+        case AM_VM_OP_isnull:
+        case AM_VM_OP_isundef:
+        case AM_VM_OP_isatom:
+        case AM_VM_OP_islist:
+        case AM_VM_OP_isnumber:
+        case AM_VM_OP_isnan:
+        case AM_VM_OP_typeof:
+        case AM_VM_OP_car:
+        case AM_VM_OP_cdr:
+        case AM_VM_OP_list_pop:
+        case AM_VM_OP_length:
+        case AM_VM_OP_duplicate:
+            return 0;
+        case AM_VM_OP_set_item:
+            return -2;
+        case AM_VM_OP_concat: {
+            // concat 弹出 count+1 个值并压入 1 个结果；count 由前一条 push 指令给出
+            if (iaddr > 0 && ctx->ilcode[iaddr - 1].opcode == AM_VM_OP_push &&
+                am_value_is_uint(ctx->ilcode[iaddr - 1].operand)) {
+                am_uint_t count = am_value_to_uint(ctx->ilcode[iaddr - 1].operand);
+                return -(am_int_t)count;
+            }
+            return 0; // 保守估计
+        }
+        default:
+            return 0;
+    }
+}
+
+
+static int32_t compiler_depth_add_entry(compiler_depth_entry_t **entries, size_t *count,
+                                         size_t *capacity, am_iaddr_t iaddr, size_t init_depth) {
+    if (iaddr == SIZE_MAX) return 0;
+
+    // 去重
+    for (size_t i = 0; i < *count; i++) {
+        if ((*entries)[i].iaddr == iaddr) return 0;
+    }
+
+    if (*count >= *capacity) {
+        size_t new_cap = *capacity ? *capacity * 2 : 16;
+        compiler_depth_entry_t *new_entries = (compiler_depth_entry_t *)realloc(
+            *entries, new_cap * sizeof(compiler_depth_entry_t));
+        if (!new_entries) return -1;
+        *entries = new_entries;
+        *capacity = new_cap;
+    }
+
+    (*entries)[*count].iaddr = iaddr;
+    (*entries)[*count].init_depth = init_depth;
+    (*count)++;
+    return 0;
+}
+
+
+typedef struct {
+    am_iaddr_t iaddr;
+    size_t depth;
+} compiler_depth_frame_t;
+
+
+// 使用显式栈的迭代 DFS，避免循环体净压栈导致 C 调用栈溢出。
+static void compiler_depth_search(am_compiler_ctx_t *ctx, am_iaddr_t entry, size_t init_depth,
+                                   size_t *best_depth, size_t *global_max) {
+    if (!ctx || entry >= ctx->icount) return;
+
+    compiler_depth_frame_t *stack = (compiler_depth_frame_t *)malloc(
+        ctx->icount * 4 * sizeof(compiler_depth_frame_t));
+    if (!stack) return;
+
+    size_t stack_capacity = ctx->icount * 4;
+    size_t stack_top = 0;
+    stack[stack_top].iaddr = entry;
+    stack[stack_top].depth = init_depth;
+    stack_top++;
+
+    while (stack_top > 0) {
+        compiler_depth_frame_t frame = stack[--stack_top];
+        am_iaddr_t iaddr = frame.iaddr;
+        size_t depth = frame.depth;
+
+        if (iaddr >= ctx->icount) continue;
+        if (best_depth[iaddr] != SIZE_MAX && depth <= best_depth[iaddr]) continue;
+        // 防止循环体净压栈导致无限展开：深度超过指令数时停止跟随该路径
+        if (depth > ctx->icount + 16) continue;
+
+        best_depth[iaddr] = depth;
+        if (depth > *global_max) *global_max = depth;
+
+        uint32_t op = ctx->ilcode[iaddr].opcode;
+        int32_t effect = compiler_stack_effect(ctx, iaddr);
+        size_t next_depth;
+        if (effect >= 0) {
+            next_depth = depth + (size_t)effect;
+        }
+        else {
+            size_t abs_effect = (size_t)(-effect);
+            next_depth = (depth >= abs_effect) ? depth - abs_effect : 0;
+        }
+
+        // 辅助宏：将后继状态压栈
+        #define DEPTH_PUSH(addr, d) do { \
+            if (stack_top < stack_capacity) { \
+                stack[stack_top].iaddr = (addr); \
+                stack[stack_top].depth = (d); \
+                stack_top++; \
+            } \
+        } while (0)
+
+        switch (op) {
+            case AM_VM_OP_goto: {
+                am_iaddr_t target = am_compiler_parse_label_to_iaddr(ctx, ctx->ilcode[iaddr].operand);
+                if (target != SIZE_MAX) DEPTH_PUSH(target, next_depth);
+                break;
+            }
+            case AM_VM_OP_iftrue:
+            case AM_VM_OP_iffalse: {
+                am_iaddr_t target = am_compiler_parse_label_to_iaddr(ctx, ctx->ilcode[iaddr].operand);
+                if (target != SIZE_MAX) DEPTH_PUSH(target, next_depth);
+                DEPTH_PUSH(iaddr + 1, next_depth);
+                break;
+            }
+            case AM_VM_OP_call: {
+                // 不进入被调用函数；假设被调用函数净栈效果为 0，继续在调用点之后执行
+                DEPTH_PUSH(iaddr + 1, next_depth);
+                break;
+            }
+            case AM_VM_OP_tailcall: {
+                // 尾调用不返回，停止当前路径
+                break;
+            }
+            case AM_VM_OP_return:
+            case AM_VM_OP_halt: {
+                break;
+            }
+            default: {
+                DEPTH_PUSH(iaddr + 1, next_depth);
+                break;
+            }
+        }
+
+        #undef DEPTH_PUSH
+    }
+
+    free(stack);
+}
+
+
+size_t am_compiler_opstack_depth_analysis(am_compiler_ctx_t *ctx) {
+    if (!ctx || !ctx->ilcode || ctx->icount == 0) return SIZE_MAX;
+
+    size_t global_max = 0;
+    compiler_depth_entry_t *entries = NULL;
+    size_t entry_count = 0;
+    size_t entry_capacity = 0;
+
+    // 程序入口
+    if (compiler_depth_add_entry(&entries, &entry_count, &entry_capacity, 0, 0) != 0) {
+        free(entries);
+        return SIZE_MAX;
+    }
+
+    // 真实 lambda 入口
+    if (ctx->ast && ctx->ast->lambda_handles) {
+        for (size_t i = 0; i < ctx->ast->lambda_handles->length; i++) {
+            am_value_t h = am_list_get(ctx->ast->alloc, ctx->ast->lambda_handles, i);
+            if (!am_value_is_handle(h)) continue;
+
+            am_value_t label = am_compiler_make_label(ctx, h);
+            if (!am_value_is_label(label)) continue;
+
+            am_iaddr_t iaddr = am_compiler_parse_label_to_iaddr(ctx, label);
+            if (iaddr == SIZE_MAX) continue;
+
+            am_value_t node_val = am_ast_get_node(ctx->ast, am_value_to_handle(h));
+            am_uint_t n_param = 0;
+            if (am_value_is_ptr(node_val)) {
+                am_list_t *lambda = (am_list_t *)am_value_to_ptr(node_val);
+                n_param = compiler_lambda_param_count(lambda);
+            }
+
+            if (compiler_depth_add_entry(&entries, &entry_count, &entry_capacity,
+                                          iaddr, (size_t)n_param) != 0) {
+                free(entries);
+                return SIZE_MAX;
+            }
+        }
+    }
+
+    // 临时 lambda 入口（η 变换等编译器生成的临时 lambda）
+    for (am_iaddr_t i = 0; i < ctx->icount; i++) {
+        uint32_t op = ctx->ilcode[i].opcode;
+        if (op != AM_VM_OP_call && op != AM_VM_OP_tailcall) continue;
+
+        am_value_t operand = ctx->ilcode[i].operand;
+        if (!am_value_is_label(operand)) continue;
+
+        am_iaddr_t target = am_compiler_parse_label_to_iaddr(ctx, operand);
+        if (target == SIZE_MAX || target >= ctx->icount) continue;
+        if (ctx->ilcode[target].opcode != AM_VM_OP_store) continue;
+
+        size_t n_param = 0;
+        for (am_iaddr_t j = target; j < ctx->icount && ctx->ilcode[j].opcode == AM_VM_OP_store; j++) {
+            n_param++;
+        }
+
+        if (compiler_depth_add_entry(&entries, &entry_count, &entry_capacity,
+                                      target, n_param) != 0) {
+            free(entries);
+            return SIZE_MAX;
+        }
+    }
+
+    size_t *best_depth = (size_t *)malloc(ctx->icount * sizeof(size_t));
+    if (!best_depth) {
+        free(entries);
+        return SIZE_MAX;
+    }
+
+    for (size_t i = 0; i < entry_count; i++) {
+        for (am_iaddr_t j = 0; j < ctx->icount; j++) {
+            best_depth[j] = SIZE_MAX;
+        }
+        compiler_depth_search(ctx, entries[i].iaddr, entries[i].init_depth, best_depth, &global_max);
+    }
+
+    free(best_depth);
+    free(entries);
+
+    return global_max > 0 ? global_max : 1;
+}
+
+
+// ===============================================================================
 // 编译器入口与标签解析
 // ===============================================================================
 
@@ -962,6 +1256,12 @@ am_module_t *am_compile(am_ast_t *ast) {
         return NULL;
     }
 
+    size_t opstack_depth = am_compiler_opstack_depth_analysis(ctx);
+    if (opstack_depth == SIZE_MAX) {
+        am_compiler_ctx_destroy(ctx);
+        return NULL;
+    }
+
     if (am_compiler_label_resolution(ctx) != 0) {
         am_compiler_ctx_destroy(ctx);
         return NULL;
@@ -974,7 +1274,7 @@ am_module_t *am_compile(am_ast_t *ast) {
     }
 
     mod->base.type = AM_OBJECT_TYPE_MODULE;
-    mod->opstack_depth = ast->opstack_depth;
+    mod->opstack_depth = opstack_depth;
     mod->ast = ast;
     mod->ilcode = ctx->ilcode;
     mod->ilcode_length = ctx->icount;
