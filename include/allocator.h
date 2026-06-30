@@ -50,18 +50,51 @@ static inline void am_free(am_allocator_t *alloc, void *ptr) {
 // void am_free_impl(void *state, void *ptr) { free(ptr); }
 // const am_allocator_vtable_t malloc_vtable = { am_malloc_impl, am_free_impl, NULL };
 
+
+
+
+
+#ifndef AM_ALLOCATOR_PRINT_COMPACT_REPORT
+#define AM_ALLOCATOR_PRINT_COMPACT_REPORT (0)
+#endif
+
 ///////////////////////////////////////////
 // 共享内存池与双分配器管理
 ///////////////////////////////////////////
 
 #ifndef AM_ALLOCATOR_POOL_SIZE
-#define AM_ALLOCATOR_POOL_SIZE ((size_t)(2048ULL * 1024 * 1024))
+#define AM_ALLOCATOR_POOL_SIZE ((size_t)(1200ULL * 1024 * 1024))
 #endif
 
 // 每经历 AM_HEAP_COMPACT_INTERVAL 次 GC 后触发一次标记-压缩。
 // 设为 0 表示不在 GC 时自动触发压缩（可手动调用 am_allocator_heap_compact）。
 #ifndef AM_HEAP_COMPACT_INTERVAL
 #define AM_HEAP_COMPACT_INTERVAL (2)
+#endif
+
+// 动态边界调整相关阈值与限制。
+// 边界以占总池比例表示；heap 区最小/最大比例受以下宏约束。
+#ifndef AM_POOL_MIN_HEAP_RATIO
+#define AM_POOL_MIN_HEAP_RATIO (0.1)
+#endif
+#ifndef AM_POOL_MIN_VM_RATIO
+#define AM_POOL_MIN_VM_RATIO (0.1)
+#endif
+
+#ifndef AM_POOL_VM_EXPAND_THRESHOLD
+#define AM_POOL_VM_EXPAND_THRESHOLD (0.75)
+#endif
+#ifndef AM_POOL_HEAP_EXPAND_THRESHOLD
+#define AM_POOL_HEAP_EXPAND_THRESHOLD (0.75)
+#endif
+#ifndef AM_POOL_VM_SLACK_THRESHOLD
+#define AM_POOL_VM_SLACK_THRESHOLD (0.30)
+#endif
+#ifndef AM_POOL_HEAP_SLACK_THRESHOLD
+#define AM_POOL_HEAP_SLACK_THRESHOLD (0.30)
+#endif
+#ifndef AM_POOL_BOUNDARY_ADJ_STEP
+#define AM_POOL_BOUNDARY_ADJ_STEP (0.05)
 #endif
 
 // 不透明内存池类型
@@ -89,6 +122,18 @@ size_t am_allocator_pool_heap_used(const am_allocator_pool_t *pool);
 struct am_heap_t;
 typedef struct am_heap_t am_heap_t;
 int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap);
+
+// 按占总池比例调整 VM/heap 边界。
+// - ratio 为 heap 区所占比例；内部会被裁剪到 [AM_POOL_MIN_HEAP_RATIO, 1 - AM_POOL_MIN_VM_RATIO]。
+// - 若新边界大于当前边界（heap 扩张），仅当 VM 工作区为空时才允许。
+// - 若新边界小于当前边界（VM 扩张），要求当前已用 heap 对象能够放入新的 heap 容量中。
+int32_t am_allocator_pool_adjust_boundary(am_allocator_pool_t *pool, double ratio);
+
+// 根据 VM/heap 使用压力自动调整边界。通常在每个 GC 安全点之后调用。
+int32_t am_allocator_pool_auto_adjust(am_allocator_pool_t *pool);
+
+// 返回当前活动的内存池（单池场景下使用）。
+am_allocator_pool_t *am_allocator_pool_current(void);
 
 #ifdef __cplusplus
 }

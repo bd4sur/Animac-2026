@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #include "allocator.h"
 #include "object.h"
@@ -10,6 +11,9 @@
 
 #define AM_ALLOC_ALIGN      (sizeof(void *))
 #define AM_ALIGN_UP(x, a)   (((x) + (a) - 1) & ~((a) - 1))
+
+/* 用于压缩报告：当前活动的内存池。单池场景下使用。 */
+static am_allocator_pool_t *g_current_pool = NULL;
 
 /* =============================================================================
  * VM 工作区分配器：bump pointer 策略
@@ -32,6 +36,8 @@ static void *bump_malloc(void *state, size_t size) {
 
     size_t total = AM_ALIGN_UP(sizeof(am_bump_header_t) + size, AM_ALLOC_ALIGN);
     if (s->top + total > s->end) {
+        fprintf(stderr, "[allocator] VM bump 分配失败: 请求 %zu bytes (含头部对齐后 %zu), 剩余 %zu bytes\n",
+                size, total, (size_t)(s->end - s->top));
         return NULL;
     }
 
@@ -222,6 +228,8 @@ static void *freelist_malloc(void *state, size_t size) {
         }
         cur = cur->next_free;
     }
+    fprintf(stderr, "[allocator] heap freelist 分配失败: 请求 %zu bytes (含头部对齐后 %zu), 堆已用 %zu / %zu bytes\n",
+            size, needed, s->used_bytes, s->capacity);
     return NULL;
 }
 
@@ -319,10 +327,14 @@ am_allocator_pool_t *am_allocator_pool_create(size_t total_size) {
     if (total_size < 2 * 1024 * 1024) total_size = 2 * 1024 * 1024;
 
     am_allocator_pool_t *pool = (am_allocator_pool_t *)malloc(sizeof(am_allocator_pool_t));
-    if (!pool) return NULL;
+    if (!pool) {
+        fprintf(stderr, "[allocator] 内存池控制块分配失败: sizeof=%zu\n", sizeof(am_allocator_pool_t));
+        return NULL;
+    }
 
     pool->base = (uint8_t *)malloc(total_size);
     if (!pool->base) {
+        fprintf(stderr, "[allocator] 内存池底层内存分配失败: 请求 %zu bytes\n", total_size);
         free(pool);
         return NULL;
     }
@@ -331,6 +343,8 @@ am_allocator_pool_t *am_allocator_pool_create(size_t total_size) {
 
     pool_init_heap(pool);
     pool_init_vm(pool);
+
+    g_current_pool = pool;
 
     pool->heap_alloc.vtable = &freelist_vtable;
     pool->heap_alloc.state = &pool->heap_state;
@@ -343,6 +357,9 @@ am_allocator_pool_t *am_allocator_pool_create(size_t total_size) {
 
 void am_allocator_pool_destroy(am_allocator_pool_t *pool) {
     if (!pool) return;
+    if (g_current_pool == pool) {
+        g_current_pool = NULL;
+    }
     if (pool->base) {
         free(pool->base);
         pool->base = NULL;
@@ -384,6 +401,134 @@ size_t am_allocator_pool_heap_used(const am_allocator_pool_t *pool) {
     return pool->heap_state.used_bytes;
 }
 
+am_allocator_pool_t *am_allocator_pool_current(void) {
+    return g_current_pool;
+}
+
+/* 计算 pos 之前紧邻的已分配/空闲块大小（从堆首线性扫描），用于重建边界后的空闲块 prev_size。 */
+static size_t pool_prev_block_size(const am_freelist_state_t *s, const uint8_t *pos) {
+    uint8_t *p = s->base;
+    size_t last_size = 0;
+    while (p < pos) {
+        am_heap_block_header_t *b = (am_heap_block_header_t *)p;
+        last_size = block_real_size(b);
+        if (p + last_size >= pos) break;
+        p += last_size;
+    }
+    return last_size;
+}
+
+/* 在不移动 heap 对象的前提下，按新的 boundary 重新初始化 heap 空闲链表。
+ * 调用前必须保证所有已用对象都位于 [base, base+new_boundary) 内。 */
+static int32_t pool_reinit_heap_at(am_allocator_pool_t *pool, size_t new_boundary) {
+    am_freelist_state_t *s = &pool->heap_state;
+    if (new_boundary < s->used_bytes) return -1;
+
+    size_t free_size = new_boundary - s->used_bytes;
+    if (free_size != 0 && free_size < AM_BLOCK_MIN_SIZE) return -1;
+
+    s->capacity = new_boundary;
+    if (free_size == 0) {
+        s->free_list_head = NULL;
+        return 0;
+    }
+
+    am_heap_block_header_t *freeb = (am_heap_block_header_t *)(pool->base + s->used_bytes);
+    block_set_size(freeb, free_size, false);
+    freeb->prev_size = (s->used_bytes > 0) ? pool_prev_block_size(s, (uint8_t *)freeb) : 0;
+    freeb->next_free = NULL;
+    freeb->prev_free = NULL;
+    freeb->live = false;
+    s->free_list_head = freeb;
+    return 0;
+}
+
+/* 按新的 boundary 重新初始化 VM bump 分配器。
+ * - 若 VM 为空（top == base），允许边界向任意方向移动。
+ * - 若边界左移（VM 扩张），保留现有 VM 对象，仅扩展容量。
+ * - 若边界右移（heap 扩张），调用前必须确保 VM 已为空。 */
+static void pool_reinit_vm_at(am_allocator_pool_t *pool, size_t new_boundary) {
+    am_bump_state_t *s = &pool->vm_state;
+    uint8_t *new_base = pool->base + new_boundary;
+
+    if (s->top == s->base) {
+        // VM 为空：直接按新区域重新开始
+        s->base = new_base;
+        s->top = new_base;
+        s->end = pool->base + pool->total_size;
+    } else {
+        // VM 非空：只能左移（VM 扩张），且不能丢弃已有对象
+        s->base = new_base;
+        s->end = pool->base + pool->total_size;
+    }
+}
+
+int32_t am_allocator_pool_adjust_boundary(am_allocator_pool_t *pool, double ratio) {
+    if (!pool) return -1;
+
+    double min_ratio = AM_POOL_MIN_HEAP_RATIO;
+    double max_ratio = 1.0 - AM_POOL_MIN_VM_RATIO;
+    if (ratio < min_ratio) ratio = min_ratio;
+    if (ratio > max_ratio) ratio = max_ratio;
+
+    size_t align_mask = ~(AM_ALLOC_ALIGN - 1);
+    size_t min_boundary = ((size_t)(pool->total_size * min_ratio)) & align_mask;
+    size_t max_boundary = ((size_t)(pool->total_size * max_ratio)) & align_mask;
+    size_t new_boundary = ((size_t)(pool->total_size * ratio)) & align_mask;
+
+    if (new_boundary < min_boundary) new_boundary = min_boundary;
+    if (new_boundary > max_boundary) new_boundary = max_boundary;
+    if (new_boundary == pool->boundary) return 0;
+
+    if (new_boundary > pool->boundary) {
+        // heap 扩张：必须保证 VM 工作区为空，否则无法安全搬迁 VM 对象
+        if (pool->vm_state.top != pool->vm_state.base) return -1;
+        if (pool_reinit_heap_at(pool, new_boundary) != 0) return -1;
+        pool->boundary = new_boundary;
+        pool_reinit_vm_at(pool, new_boundary);
+        return 0;
+    } else {
+        // VM 扩张：要求当前已用 heap 对象能放入新的 heap 容量
+        if (pool->heap_state.used_bytes > new_boundary) return -1;
+        if (pool_reinit_heap_at(pool, new_boundary) != 0) return -1;
+        pool->boundary = new_boundary;
+        pool_reinit_vm_at(pool, new_boundary);
+        return 0;
+    }
+}
+
+int32_t am_allocator_pool_auto_adjust(am_allocator_pool_t *pool) {
+    if (!pool) return -1;
+
+    size_t total = pool->total_size;
+    size_t heap_cap = pool->boundary;
+    size_t vm_cap = total - pool->boundary;
+    if (heap_cap == 0 || vm_cap == 0) return -1;
+
+    size_t heap_used = pool->heap_state.used_bytes;
+    size_t vm_used = (size_t)(pool->vm_state.top - pool->vm_state.base);
+
+    double heap_ratio = (double)heap_used / (double)heap_cap;
+    double vm_ratio = (double)vm_used / (double)vm_cap;
+    double current_ratio = (double)heap_cap / (double)total;
+
+    // VM 压力大且 heap 有富余：把边界让给 VM（减小 heap 比例）
+    if (vm_ratio > AM_POOL_VM_EXPAND_THRESHOLD && heap_ratio < AM_POOL_HEAP_SLACK_THRESHOLD) {
+        double target = current_ratio - AM_POOL_BOUNDARY_ADJ_STEP;
+        return am_allocator_pool_adjust_boundary(pool, target);
+    }
+
+    // heap 压力大且 VM 为空：把边界让给 heap（增大 heap 比例）
+    if (heap_ratio > AM_POOL_HEAP_EXPAND_THRESHOLD &&
+        vm_ratio < AM_POOL_VM_SLACK_THRESHOLD &&
+        pool->vm_state.top == pool->vm_state.base) {
+        double target = current_ratio + AM_POOL_BOUNDARY_ADJ_STEP;
+        return am_allocator_pool_adjust_boundary(pool, target);
+    }
+
+    return 0;
+}
+
 /* =============================================================================
  * 堆区压缩：在 GC 安全点移动存活对象，更新 heap 表中的指针
  * ============================================================================ */
@@ -414,6 +559,75 @@ static int cmp_slot_ptr(const void *a, const void *b) {
     return 0;
 }
 
+/* 压缩报告用到的空闲块快照 */
+typedef struct compact_free_info_t {
+    uint8_t *start;
+    size_t size;
+} compact_free_info_t;
+
+/* 遍历堆区，打印所有空闲块的位置和大小（要求块头部有效） */
+static void compact_print_free_blocks(const am_freelist_state_t *s, const char *label) {
+    fprintf(stderr, "%s\n", label);
+    uint8_t *p = s->base;
+    int n = 0;
+    while (p < s->base + s->capacity) {
+        am_heap_block_header_t *b = (am_heap_block_header_t *)p;
+        size_t sz = block_real_size(b);
+        if (!block_is_used(b)) {
+            fprintf(stderr, "  起始=%p 结束=%p 大小=%zu\n",
+                    (void *)p, (void *)(p + sz), sz);
+            n++;
+        }
+        p += sz;
+    }
+    if (n == 0) {
+        fprintf(stderr, "  (无空闲块)\n");
+    }
+}
+
+/* 打印统一内存池的总体统计 */
+static void compact_print_pool_stats(const am_allocator_pool_t *pool) {
+    fprintf(stderr, "内存池总大小: %zu bytes\n", pool->total_size);
+    size_t vm_cap = (size_t)(pool->vm_state.end - pool->vm_state.base);
+    size_t vm_used = (size_t)(pool->vm_state.top - pool->vm_state.base);
+    fprintf(stderr, "VM 工作区: 起始=%p 容量=%zu 已用=%zu\n",
+            (void *)pool->vm_state.base, vm_cap, vm_used);
+    fprintf(stderr, "用户堆区: 起始=%p 容量=%zu\n",
+            (void *)pool->heap_state.base, pool->boundary);
+}
+
+/* 打印一次完整的压缩报告。调用时压缩已完成，before_* 参数记录压缩前状态。 */
+static void compact_print_report(const am_freelist_state_t *s,
+                                 size_t used_before,
+                                 const compact_free_info_t *before_free,
+                                 size_t before_free_count,
+                                 size_t live_count) {
+    fprintf(stderr, "\n========== 堆区压缩报告 ==========\n");
+    if (g_current_pool) {
+        compact_print_pool_stats(g_current_pool);
+    } else {
+        fprintf(stderr, "内存池信息: (未知)\n");
+    }
+
+    fprintf(stderr, "压缩前: 已用=%zu 空闲=%zu\n", used_before, s->capacity - used_before);
+    fprintf(stderr, "压缩前空闲块:\n");
+    if (before_free_count == 0) {
+        fprintf(stderr, "  (无空闲块)\n");
+    } else {
+        for (size_t i = 0; i < before_free_count; i++) {
+            fprintf(stderr, "  起始=%p 结束=%p 大小=%zu\n",
+                    (void *)before_free[i].start,
+                    (void *)(before_free[i].start + before_free[i].size),
+                    before_free[i].size);
+        }
+    }
+
+    fprintf(stderr, "压缩后: 已用=%zu 空闲=%zu\n", s->used_bytes, s->capacity - s->used_bytes);
+    compact_print_free_blocks(s, "压缩后空闲块:");
+    fprintf(stderr, "存活对象: %zu 个, 共 %zu bytes\n", live_count, s->used_bytes);
+    fprintf(stderr, "==================================\n\n");
+}
+
 int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
     if (!heap_alloc || !heap_alloc->state || !heap || !heap->table) return -1;
     am_freelist_state_t *s = (am_freelist_state_t *)heap_alloc->state;
@@ -439,6 +653,8 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
                 entries_cap = entries_cap ? entries_cap * 2 : 64;
                 live_entry_t *tmp = (live_entry_t *)realloc(entries, entries_cap * sizeof(live_entry_t));
                 if (!tmp) {
+                    fprintf(stderr, "[allocator] 压缩失败: entries realloc 失败 (%zu bytes)\n",
+                            entries_cap * sizeof(live_entry_t));
                     free(entries);
                     return -1;
                 }
@@ -450,6 +666,40 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
         }
     }
 
+#if AM_ALLOCATOR_PRINT_COMPACT_REPORT
+    /* 记录压缩前的堆区统计与空闲块分布，用于最后输出报告 */
+    size_t used_before = s->used_bytes;
+    compact_free_info_t *before_free = NULL;
+    size_t before_free_count = 0;
+    size_t before_free_cap = 0;
+    {
+        uint8_t *p = s->base;
+        while (p < s->base + s->capacity) {
+            am_heap_block_header_t *b = (am_heap_block_header_t *)p;
+            size_t sz = block_real_size(b);
+            if (!block_is_used(b)) {
+                if (before_free_count >= before_free_cap) {
+                    before_free_cap = before_free_cap ? before_free_cap * 2 : 16;
+                    compact_free_info_t *tmp = (compact_free_info_t *)realloc(
+                        before_free, before_free_cap * sizeof(compact_free_info_t));
+                    if (!tmp) {
+                        fprintf(stderr, "[allocator] 压缩失败: before_free realloc 失败 (%zu bytes)\n",
+                                before_free_cap * sizeof(compact_free_info_t));
+                        free(entries);
+                        free(before_free);
+                        return -1;
+                    }
+                    before_free = tmp;
+                }
+                before_free[before_free_count].start = p;
+                before_free[before_free_count].size = sz;
+                before_free_count++;
+            }
+            p += sz;
+        }
+    }
+#endif
+
     if (count == 0) {
         am_heap_block_header_t *b = (am_heap_block_header_t *)s->base;
         block_set_size(b, s->capacity, false);
@@ -459,6 +709,10 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
         b->live = false;
         s->free_list_head = b;
         s->used_bytes = 0;
+#if AM_ALLOCATOR_PRINT_COMPACT_REPORT
+        compact_print_report(s, used_before, before_free, before_free_count, 0);
+        free(before_free);
+#endif
         free(entries);
         return 0;
     }
@@ -467,7 +721,12 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
 
     am_map_entry_t **primary_slots = (am_map_entry_t **)malloc(count * sizeof(am_map_entry_t *));
     if (!primary_slots) {
+        fprintf(stderr, "[allocator] 压缩失败: primary_slots malloc 失败 (%zu bytes)\n",
+                count * sizeof(am_map_entry_t *));
         free(entries);
+#if AM_ALLOCATOR_PRINT_COMPACT_REPORT
+        free(before_free);
+#endif
         return -1;
     }
     for (size_t i = 0; i < count; i++) {
@@ -477,8 +736,13 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
 
     reloc_entry_t *reloc = (reloc_entry_t *)malloc(count * sizeof(reloc_entry_t));
     if (!reloc) {
+        fprintf(stderr, "[allocator] 压缩失败: reloc malloc 失败 (%zu bytes)\n",
+                count * sizeof(reloc_entry_t));
         free(entries);
         free(primary_slots);
+#if AM_ALLOCATOR_PRINT_COMPACT_REPORT
+        free(before_free);
+#endif
         return -1;
     }
 
@@ -547,6 +811,11 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
         s->free_list_head = NULL;
     }
     s->used_bytes = (size_t)(dest - s->base);
+
+#if AM_ALLOCATOR_PRINT_COMPACT_REPORT
+    compact_print_report(s, used_before, before_free, before_free_count, count);
+    free(before_free);
+#endif
 
     free(entries);
     free(primary_slots);
