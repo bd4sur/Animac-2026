@@ -11,84 +11,304 @@
 
 #define AM_ALLOC_ALIGN      (sizeof(void *))
 #define AM_ALIGN_UP(x, a)   (((x) + (a) - 1) & ~((a) - 1))
+#define AM_BLOCK_USED_FLAG  ((size_t)1)
 
 /* 用于压缩报告：当前活动的内存池。单池场景下使用。 */
 static am_allocator_pool_t *g_current_pool = NULL;
 
 /* =============================================================================
- * VM 工作区分配器：bump pointer 策略
- * 工作区不进行细粒度回收，仅在关键时间点整体重置。
+ * VM 工作区分配器：Segregated Free-List + 边界标签合并
+ *
+ * 工作区对象生命周期差异大（map/list 频繁扩容，临时缓冲区等），且代码中
+ * 大量调用 am_free/am_realloc。若继续使用 bump pointer，废弃对象会钉死
+ * 内存，导致 VM 空闲空间快速耗尽。改用分离空闲链表：
+ *   - 小/中对象按预定义 size class 分桶，分配 O(1)；
+ *   - 大对象使用单独的有序空闲链表；
+ *   - 释放时按边界标签与相邻空闲块合并，再插回对应桶。
  * ============================================================================ */
 
-typedef struct am_bump_header_t {
-    size_t size; /* 包含本头部的总字节数，已对齐 */
-} am_bump_header_t;
+/* 预定义 size classes：
+ *   48..512  按 16 字节递增（减少 map/list 等常见小对象的内部碎片）
+ *   1024..524288 按 2 的幂递增
+ *   大于 524288 的块放入 large_free_head 链表 */
+static const size_t am_vm_size_classes[] = {
+    48, 64, 80, 96, 112, 128, 144, 160, 176, 192,
+    208, 224, 240, 256, 272, 288, 304, 320, 336, 352,
+    368, 384, 400, 416, 432, 448, 464, 480, 496, 512,
+    1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288
+};
+#define AM_VM_N_CLASSES (sizeof(am_vm_size_classes) / sizeof(am_vm_size_classes[0]))
+#define AM_VM_SMALL_MAX_CLASS (524288)
 
-typedef struct am_bump_state_t {
-    uint8_t *base;
-    uint8_t *top;
-    uint8_t *end;
-} am_bump_state_t;
+typedef struct am_vm_block_header_t {
+    size_t size;       /* 总块大小（含头部），最低位为 1 表示已分配 */
+    size_t prev_size;  /* 前一个块的总大小，首块为 0 */
+    struct am_vm_block_header_t *next_free;
+    struct am_vm_block_header_t *prev_free;
+} am_vm_block_header_t;
 
-static void *bump_malloc(void *state, size_t size) {
-    am_bump_state_t *s = (am_bump_state_t *)state;
+#define AM_VM_HEADER_SIZE AM_ALIGN_UP(sizeof(am_vm_block_header_t), AM_ALLOC_ALIGN)
+#define AM_VM_MIN_BLOCK_SIZE (AM_VM_HEADER_SIZE + AM_ALLOC_ALIGN)
+
+typedef struct am_segregated_state_t {
+    uint8_t *base;      /* VM 区起始地址 */
+    uint8_t *end;       /* VM 区结束地址 */
+    size_t used_bytes;  /* 已分配字节数 */
+    am_vm_block_header_t *buckets[AM_VM_N_CLASSES];
+    am_vm_block_header_t *large_free_head; /* 管理大于 AM_VM_SMALL_MAX_CLASS 的块 */
+} am_segregated_state_t;
+
+static inline size_t vm_block_real_size(const am_vm_block_header_t *b) {
+    return b->size & ~AM_BLOCK_USED_FLAG;
+}
+
+static inline bool vm_block_is_used(const am_vm_block_header_t *b) {
+    return (b->size & AM_BLOCK_USED_FLAG) != 0;
+}
+
+static inline void vm_block_set_size(am_vm_block_header_t *b, size_t sz, bool used) {
+    b->size = (sz & ~AM_BLOCK_USED_FLAG) | (used ? AM_BLOCK_USED_FLAG : 0);
+}
+
+static inline uint8_t *vm_block_payload(const am_vm_block_header_t *b) {
+    return (uint8_t *)b + AM_VM_HEADER_SIZE;
+}
+
+static inline am_vm_block_header_t *vm_block_from_payload(void *p) {
+    return (am_vm_block_header_t *)((uint8_t *)p - AM_VM_HEADER_SIZE);
+}
+
+static inline am_vm_block_header_t *vm_block_next(const am_segregated_state_t *s,
+                                                   const am_vm_block_header_t *b) {
+    uint8_t *p = (uint8_t *)b + vm_block_real_size(b);
+    if (p >= s->end) return NULL;
+    return (am_vm_block_header_t *)p;
+}
+
+static inline am_vm_block_header_t *vm_block_prev(const am_segregated_state_t *s,
+                                                   const am_vm_block_header_t *b) {
+    size_t ps = b->prev_size & ~AM_BLOCK_USED_FLAG;
+    (void)s;
+    if (ps == 0) return NULL;
+    return (am_vm_block_header_t *)((uint8_t *)b - ps);
+}
+
+/* 根据块大小返回 size class 索引；若超过所有桶则返回 SIZE_MAX */
+static size_t vm_size_to_class_index(size_t size) {
+    if (size <= 512) {
+        if (size <= 48) return 0;
+        return ((size + 15) / 16) - 3; /* class[0] = 48 = 3*16 */
+    }
+    if (size <= AM_VM_SMALL_MAX_CLASS) {
+        size_t s = 1024;
+        size_t idx = 30;
+        while (s < size) {
+            s <<= 1;
+            idx++;
+        }
+        return idx;
+    }
+    return SIZE_MAX;
+}
+
+/* 将空闲块插入对应 bucket 或 large list */
+static void vm_bucket_insert(am_segregated_state_t *s, am_vm_block_header_t *b) {
+    size_t sz = vm_block_real_size(b);
+    size_t idx = vm_size_to_class_index(sz);
+    if (idx != SIZE_MAX) {
+        b->prev_free = NULL;
+        b->next_free = s->buckets[idx];
+        if (s->buckets[idx]) s->buckets[idx]->prev_free = b;
+        s->buckets[idx] = b;
+    } else {
+        b->prev_free = NULL;
+        b->next_free = s->large_free_head;
+        if (s->large_free_head) s->large_free_head->prev_free = b;
+        s->large_free_head = b;
+    }
+}
+
+/* 从 bucket 或 large list 中移除空闲块 */
+static void vm_bucket_remove(am_segregated_state_t *s, am_vm_block_header_t *b) {
+    size_t sz = vm_block_real_size(b);
+    size_t idx = vm_size_to_class_index(sz);
+    if (idx != SIZE_MAX) {
+        if (b->prev_free) b->prev_free->next_free = b->next_free;
+        else s->buckets[idx] = b->next_free;
+        if (b->next_free) b->next_free->prev_free = b->prev_free;
+    } else {
+        if (b->prev_free) b->prev_free->next_free = b->next_free;
+        else s->large_free_head = b->next_free;
+        if (b->next_free) b->next_free->prev_free = b->prev_free;
+    }
+    b->prev_free = NULL;
+    b->next_free = NULL;
+}
+
+/* 将释放/拆分出的块尝试与相邻块合并，再插回桶中 */
+static void vm_coalesce_and_insert(am_segregated_state_t *s, am_vm_block_header_t *b) {
+    size_t new_size = vm_block_real_size(b);
+    am_vm_block_header_t *prev = vm_block_prev(s, b);
+    am_vm_block_header_t *next = vm_block_next(s, b);
+
+    if (prev && !vm_block_is_used(prev)) {
+        vm_bucket_remove(s, prev);
+        new_size += vm_block_real_size(prev);
+        b = prev;
+    }
+    if (next && !vm_block_is_used(next)) {
+        vm_bucket_remove(s, next);
+        new_size += vm_block_real_size(next);
+    }
+
+    vm_block_set_size(b, new_size, false);
+    am_vm_block_header_t *new_next = vm_block_next(s, b);
+    if (new_next) new_next->prev_size = new_size;
+    vm_bucket_insert(s, b);
+}
+
+/* 在 large list 中查找 best-fit（最小足够）的空闲块 */
+static am_vm_block_header_t *vm_find_large_block(am_segregated_state_t *s, size_t min_size) {
+    am_vm_block_header_t *best = NULL;
+    am_vm_block_header_t *best_prev = NULL;
+    am_vm_block_header_t *prev = NULL;
+    for (am_vm_block_header_t *cur = s->large_free_head; cur; cur = cur->next_free) {
+        if (vm_block_real_size(cur) >= min_size) {
+            if (!best || vm_block_real_size(cur) < vm_block_real_size(best)) {
+                best = cur;
+                best_prev = prev;
+            }
+        }
+        prev = cur;
+    }
+    if (!best) return NULL;
+
+    if (best_prev) best_prev->next_free = best->next_free;
+    else s->large_free_head = best->next_free;
+    if (best->next_free) best->next_free->prev_free = best_prev;
+    best->next_free = best->prev_free = NULL;
+    return best;
+}
+
+/* 从指定 class 开始向上查找足够大的空闲块（bucket 内按 best-fit）。
+ * 注意：同一 bucket 中可能包含小于 alloc_size 的块（由 large block 拆分产生），
+ * 因此必须逐个检查大小。 */
+static am_vm_block_header_t *vm_find_free_block(am_segregated_state_t *s, size_t class_idx, size_t alloc_size) {
+    for (size_t i = class_idx; i < AM_VM_N_CLASSES; i++) {
+        am_vm_block_header_t *prev = NULL;
+        am_vm_block_header_t *best = NULL;
+        am_vm_block_header_t *best_prev = NULL;
+        for (am_vm_block_header_t *cur = s->buckets[i]; cur; cur = cur->next_free) {
+            size_t cur_sz = vm_block_real_size(cur);
+            if (cur_sz >= alloc_size) {
+                if (!best || cur_sz < vm_block_real_size(best)) {
+                    best = cur;
+                    best_prev = prev;
+                    if (cur_sz == am_vm_size_classes[i]) break; /* 找到精确匹配 */
+                }
+            }
+            prev = cur;
+        }
+        if (best) {
+            if (best_prev) best_prev->next_free = best->next_free;
+            else s->buckets[i] = best->next_free;
+            if (best->next_free) best->next_free->prev_free = best_prev;
+            best->next_free = best->prev_free = NULL;
+            return best;
+        }
+    }
+    return vm_find_large_block(s, alloc_size);
+}
+
+static void *segregated_malloc(void *state, size_t size) {
+    am_segregated_state_t *s = (am_segregated_state_t *)state;
     if (size == 0 || !s) return NULL;
 
-    size_t total = AM_ALIGN_UP(sizeof(am_bump_header_t) + size, AM_ALLOC_ALIGN);
-    if (s->top + total > s->end) {
-        fprintf(stderr, "[allocator] VM bump 分配失败: 请求 %zu bytes (含头部对齐后 %zu), 剩余 %zu bytes\n",
-                size, total, (size_t)(s->end - s->top));
+    size_t needed = AM_ALIGN_UP(AM_VM_HEADER_SIZE + size, AM_ALLOC_ALIGN);
+    if (needed < AM_VM_MIN_BLOCK_SIZE) needed = AM_VM_MIN_BLOCK_SIZE;
+
+    size_t class_idx = vm_size_to_class_index(needed);
+    size_t alloc_size = (class_idx != SIZE_MAX) ? am_vm_size_classes[class_idx] : needed;
+
+    am_vm_block_header_t *b;
+    if (class_idx != SIZE_MAX) {
+        b = vm_find_free_block(s, class_idx, alloc_size);
+    } else {
+        b = vm_find_large_block(s, needed);
+    }
+    if (!b) {
+        fprintf(stderr, "[allocator] VM segregated 分配失败: 请求 %zu bytes (含头部对齐后 %zu), 已用 %zu / %zu bytes\n",
+                size, needed, s->used_bytes, (size_t)(s->end - s->base));
         return NULL;
     }
 
-    am_bump_header_t *h = (am_bump_header_t *)s->top;
-    h->size = total;
-    s->top += total;
-    return (uint8_t *)h + sizeof(am_bump_header_t);
+    size_t block_sz = vm_block_real_size(b);
+
+    /* 拆分：如果块比所需大出一个最小块以上 */
+    if (block_sz >= alloc_size + AM_VM_MIN_BLOCK_SIZE) {
+        am_vm_block_header_t *split = (am_vm_block_header_t *)((uint8_t *)b + alloc_size);
+        size_t split_size = block_sz - alloc_size;
+        vm_block_set_size(split, split_size, false);
+        split->prev_size = alloc_size;
+        am_vm_block_header_t *split_next = vm_block_next(s, split);
+        if (split_next) split_next->prev_size = split_size;
+        vm_bucket_insert(s, split);
+        block_sz = alloc_size;
+    }
+
+    vm_block_set_size(b, block_sz, true);
+    s->used_bytes += block_sz;
+    return vm_block_payload(b);
 }
 
-static void *bump_calloc(void *state, size_t size) {
-    void *p = bump_malloc(state, size);
+static void *segregated_calloc(void *state, size_t size) {
+    void *p = segregated_malloc(state, size);
     if (p) memset(p, 0, size);
     return p;
 }
 
-static void *bump_realloc(void *state, void *ptr, size_t size) {
-    if (ptr == NULL) return bump_malloc(state, size);
+static void segregated_free(void *state, void *ptr) {
+    am_segregated_state_t *s = (am_segregated_state_t *)state;
+    if (!ptr || !s) return;
+
+    am_vm_block_header_t *b = vm_block_from_payload(ptr);
+    if (!vm_block_is_used(b)) return; /* 重复释放 */
+
+    s->used_bytes -= vm_block_real_size(b);
+    vm_block_set_size(b, vm_block_real_size(b), false);
+    vm_coalesce_and_insert(s, b);
+}
+
+static void *segregated_realloc(void *state, void *ptr, size_t size) {
+    if (ptr == NULL) return segregated_malloc(state, size);
     if (size == 0) {
-        /* bump 分配器不回收单个对象 */
+        segregated_free(state, ptr);
         return NULL;
     }
 
-    am_bump_header_t *h = (am_bump_header_t *)((uint8_t *)ptr - sizeof(am_bump_header_t));
-    size_t old_payload = h->size - sizeof(am_bump_header_t);
+    am_vm_block_header_t *b = vm_block_from_payload(ptr);
+    size_t old_payload = vm_block_real_size(b) - AM_VM_HEADER_SIZE;
     if (size <= old_payload) return ptr;
 
-    void *new_ptr = bump_malloc(state, size);
+    void *new_ptr = segregated_malloc(state, size);
     if (new_ptr) {
         size_t copy = old_payload < size ? old_payload : size;
         memcpy(new_ptr, ptr, copy);
+        segregated_free(state, ptr);
     }
-    /* 原内存不释放，等待整体重置 */
     return new_ptr;
 }
 
-static void bump_free(void *state, void *ptr) {
-    (void)state;
-    (void)ptr;
-    /* bump 分配器不支持单个释放 */
-}
-
-static void bump_destroy(void *state) {
+static void segregated_destroy(void *state) {
     (void)state;
 }
 
-static const am_allocator_vtable_t bump_vtable = {
-    bump_malloc,
-    bump_calloc,
-    bump_realloc,
-    bump_free,
-    bump_destroy
+static const am_allocator_vtable_t segregated_vtable = {
+    segregated_malloc,
+    segregated_calloc,
+    segregated_realloc,
+    segregated_free,
+    segregated_destroy
 };
 
 /* =============================================================================
@@ -105,7 +325,6 @@ typedef struct am_heap_block_header_t {
 } am_heap_block_header_t;
 
 #define AM_HEAP_HEADER_SIZE AM_ALIGN_UP(sizeof(am_heap_block_header_t), AM_ALLOC_ALIGN)
-#define AM_BLOCK_USED_FLAG  ((size_t)1)
 #define AM_BLOCK_MIN_SIZE   (AM_HEAP_HEADER_SIZE + AM_ALLOC_ALIGN)
 
 typedef struct am_freelist_state_t {
@@ -293,7 +512,7 @@ struct am_allocator_pool_t {
     size_t total_size;
     size_t boundary;
 
-    am_bump_state_t vm_state;
+    am_segregated_state_t vm_state;
     am_allocator_t vm_alloc;
 
     am_freelist_state_t heap_state;
@@ -317,10 +536,22 @@ static void pool_init_heap(am_allocator_pool_t *pool) {
 }
 
 static void pool_init_vm(am_allocator_pool_t *pool) {
-    am_bump_state_t *s = &pool->vm_state;
+    am_segregated_state_t *s = &pool->vm_state;
     s->base = pool->base + pool->boundary;
-    s->top = s->base;
     s->end = pool->base + pool->total_size;
+    s->used_bytes = 0;
+    for (size_t i = 0; i < AM_VM_N_CLASSES; i++) {
+        s->buckets[i] = NULL;
+    }
+    s->large_free_head = NULL;
+
+    size_t cap = (size_t)(s->end - s->base);
+    if (cap >= AM_VM_MIN_BLOCK_SIZE) {
+        am_vm_block_header_t *b = (am_vm_block_header_t *)s->base;
+        vm_block_set_size(b, cap, false);
+        b->prev_size = 0;
+        vm_bucket_insert(s, b);
+    }
 }
 
 am_allocator_pool_t *am_allocator_pool_create(size_t total_size) {
@@ -347,7 +578,7 @@ am_allocator_pool_t *am_allocator_pool_create(size_t total_size) {
     pool->heap_alloc.vtable = &freelist_vtable;
     pool->heap_alloc.state = &pool->heap_state;
 
-    pool->vm_alloc.vtable = &bump_vtable;
+    pool->vm_alloc.vtable = &segregated_vtable;
     pool->vm_alloc.state = &pool->vm_state;
 
     return pool;
@@ -377,7 +608,7 @@ am_allocator_t *am_allocator_pool_get_heap(am_allocator_pool_t *pool) {
 
 void am_allocator_pool_reset_vm(am_allocator_pool_t *pool) {
     if (!pool) return;
-    pool->vm_state.top = pool->vm_state.base;
+    pool_init_vm(pool);
 }
 
 void am_allocator_pool_reset_heap(am_allocator_pool_t *pool) {
@@ -391,7 +622,7 @@ size_t am_allocator_pool_total_size(const am_allocator_pool_t *pool) {
 
 size_t am_allocator_pool_vm_used(const am_allocator_pool_t *pool) {
     if (!pool) return 0;
-    return (size_t)(pool->vm_state.top - pool->vm_state.base);
+    return pool->vm_state.used_bytes;
 }
 
 size_t am_allocator_pool_heap_used(const am_allocator_pool_t *pool) {
@@ -441,23 +672,48 @@ static int32_t pool_reinit_heap_at(am_allocator_pool_t *pool, size_t new_boundar
     return 0;
 }
 
-/* 按新的 boundary 重新初始化 VM bump 分配器。
- * - 若 VM 为空（top == base），允许边界向任意方向移动。
- * - 若边界左移（VM 扩张），保留现有 VM 对象，仅扩展容量。
+/* 按新的 boundary 重新初始化 VM segregated 分配器。
+ * - 若 VM 为空（used_bytes == 0），允许边界向任意方向移动。
+ * - 若边界左移（VM 扩张），保留现有 VM 对象，把新增区域 [new_base, old_base)
+ *   作为空闲块加入。
  * - 若边界右移（heap 扩张），调用前必须确保 VM 已为空。 */
 static void pool_reinit_vm_at(am_allocator_pool_t *pool, size_t new_boundary) {
-    am_bump_state_t *s = &pool->vm_state;
+    am_segregated_state_t *s = &pool->vm_state;
     uint8_t *new_base = pool->base + new_boundary;
 
-    if (s->top == s->base) {
+    if (s->used_bytes == 0) {
         // VM 为空：直接按新区域重新开始
         s->base = new_base;
-        s->top = new_base;
         s->end = pool->base + pool->total_size;
+        s->used_bytes = 0;
+        for (size_t i = 0; i < AM_VM_N_CLASSES; i++) {
+            s->buckets[i] = NULL;
+        }
+        s->large_free_head = NULL;
+
+        size_t cap = (size_t)(s->end - s->base);
+        if (cap >= AM_VM_MIN_BLOCK_SIZE) {
+            am_vm_block_header_t *b = (am_vm_block_header_t *)s->base;
+            vm_block_set_size(b, cap, false);
+            b->prev_size = 0;
+            vm_bucket_insert(s, b);
+        }
     } else {
         // VM 非空：只能左移（VM 扩张），且不能丢弃已有对象
+        uint8_t *old_base = s->base;
         s->base = new_base;
         s->end = pool->base + pool->total_size;
+
+        size_t added = (size_t)(old_base - new_base);
+        if (added >= AM_VM_MIN_BLOCK_SIZE) {
+            am_vm_block_header_t *b = (am_vm_block_header_t *)new_base;
+            vm_block_set_size(b, added, false);
+            b->prev_size = 0;
+            // 与紧邻的已有块连接
+            am_vm_block_header_t *next = vm_block_next(s, b);
+            if (next) next->prev_size = added;
+            vm_coalesce_and_insert(s, b);
+        }
     }
 }
 
@@ -480,7 +736,7 @@ int32_t am_allocator_pool_adjust_boundary(am_allocator_pool_t *pool, double rati
 
     if (new_boundary > pool->boundary) {
         // heap 扩张：必须保证 VM 工作区为空，否则无法安全搬迁 VM 对象
-        if (pool->vm_state.top != pool->vm_state.base) return -1;
+        if (pool->vm_state.used_bytes != 0) return -1;
         if (pool_reinit_heap_at(pool, new_boundary) != 0) return -1;
         pool->boundary = new_boundary;
         pool_reinit_vm_at(pool, new_boundary);
@@ -510,7 +766,7 @@ int32_t am_allocator_pool_auto_adjust(am_allocator_pool_t *pool) {
     if (heap_cap == 0 || vm_cap == 0) return -1;
 
     size_t heap_used = pool->heap_state.used_bytes;
-    size_t vm_used = (size_t)(pool->vm_state.top - pool->vm_state.base);
+    size_t vm_used = pool->vm_state.used_bytes;
 
     double heap_ratio = (double)heap_used / (double)heap_cap;
     double vm_ratio = (double)vm_used / (double)vm_cap;
@@ -534,7 +790,7 @@ int32_t am_allocator_pool_auto_adjust(am_allocator_pool_t *pool) {
     // heap 压力大且 VM 为空：把边界让给 heap（增大 heap 比例）
     if (heap_ratio > AM_POOL_HEAP_EXPAND_THRESHOLD &&
         vm_ratio < AM_POOL_VM_SLACK_THRESHOLD &&
-        pool->vm_state.top == pool->vm_state.base) {
+        pool->vm_state.used_bytes == 0) {
         double target = current_ratio + AM_POOL_BOUNDARY_ADJ_STEP;
         int32_t ret = am_allocator_pool_adjust_boundary(pool, target);
         if (ret == 0 && pool->boundary != old_boundary) {
@@ -606,7 +862,7 @@ static void compact_print_free_blocks(const am_freelist_state_t *s, const char *
 /* 打印 VM 工作区信息 */
 static void compact_print_vm_section(const am_allocator_pool_t *pool) {
     size_t vm_cap = (size_t)(pool->vm_state.end - pool->vm_state.base);
-    size_t vm_used = (size_t)(pool->vm_state.top - pool->vm_state.base);
+    size_t vm_used = pool->vm_state.used_bytes;
     fprintf(stderr, "---------- VM 工作区 ----------\n");
     fprintf(stderr, "  起始地址=%p\n", (void *)pool->vm_state.base);
     fprintf(stderr, "  结束地址=%p\n", (void *)pool->vm_state.end);
@@ -715,7 +971,7 @@ static void compact_print_boundary_adjust_report(const am_allocator_pool_t *pool
 
     fprintf(stderr, "---------- 调整后 ----------\n");
     size_t vm_cap = (size_t)(pool->vm_state.end - pool->vm_state.base);
-    size_t vm_used = (size_t)(pool->vm_state.top - pool->vm_state.base);
+    size_t vm_used = pool->vm_state.used_bytes;
     fprintf(stderr, "  VM 工作区: 起始=%p 容量=%zu 已用=%zu\n",
             (void *)pool->vm_state.base, vm_cap, vm_used);
     fprintf(stderr, "  边界地址=%p (heap 占比 %.2f%%)\n",
