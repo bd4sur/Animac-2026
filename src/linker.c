@@ -16,7 +16,7 @@
 
 
 // 链接器处理的模块数上限
-#define AM_LINKER_MAX_MODULES (1024)
+#define AM_LINKER_MAX_MODULES (64)
 
 
 // 链接器上下文

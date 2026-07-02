@@ -12,6 +12,21 @@
 (import List "list.scm")
 (import NanoModels "nano_llm_model.scm")
 
+(define memstat
+  (lambda ()
+    (define mem (System.memstat))
+    (define vm_cap (get_item mem 0))
+    (define vm_use (get_item mem 1))
+    (define heap_cap (get_item mem 2))
+    (define heap_use (get_item mem 3))
+    (display "============ 内存统计 ============\n")
+    (display "  总内存：") (display (/ (/ (+ vm_cap heap_cap) 1024) 1024)) (display "MiB") (newline)
+    (display "    工作区容量：") (display vm_cap) (display "B") (newline)
+    (display "    工作区已用：") (display (* 100 (/ vm_use vm_cap))) (display "%") (newline)
+    (display "    用户区容量：") (display heap_cap) (display "B") (newline)
+    (display "    用户区已用：") (display (* 100 (/ heap_use heap_cap))) (display "%") (newline)
+    (display "=================================\n")))
+
 ;;; 用于支持多个任务的外层函数：开始 ;;;
 (define LLM_RUN (lambda (task)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -20,7 +35,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; 从base64加载模型
 
-(if (= task 0)
+(if (== task 0)
     (LLM.init NanoModels.SORT_6_MODEL)
     (LLM.init NanoModels.PSYCHO_230K_MODEL)
 )
@@ -83,7 +98,7 @@
   (lambda (len)
     (define iter
       (lambda (buf i)
-        (if (= i 0) buf (iter (cons 0 buf) (- i 1)))))
+        (if (== i 0) buf (iter (cons 0 buf) (- i 1)))))
     (iter '() len)))
 
 (define x   (new_buffer n_embd))
@@ -543,7 +558,7 @@
     (define pos 0)
     (newline)
     (while (< pos max_seq_len) {
-      (if (= t_0 0) (set! t_0 (System.timestamp)))
+      (if (== t_0 0) (set! t_0 (System.timestamp)))
       (display "▁")
       (set! probs (llm_forward new_token pos max_seq_len #t))
       (display "\b")
@@ -555,7 +570,7 @@
         ;; Decoding
         ;; 暂不实现幅度惩罚（待实现字典）
         ;; 温度采样：当温度设为0时，退化为贪心采样
-        (if (= temperature 0) {
+        (if (== temperature 0) {
           (set! new_token (sample_argmax probs vocab_size))
         } {
           (set! i 0)
@@ -579,6 +594,7 @@
       (display (LLM.decode new_token))
       (set! tps (* (/ pos (- (System.timestamp) t_0)) 1000) 3)
       (set! pos (+ pos 1))
+      ; (memstat)
     })
     (display "\n")
     (display "TPS = ")
@@ -621,12 +637,12 @@
     (define randstr "")
     (define count 0)
     (while (< count len) {
-      (set! randstr (String.concat randstr (String.atom_to_string (Math.round (* 10 (Math.random))))))
+      (set! randstr (String.concat randstr (String.atom_to_string (Math.floor (* 10 (Math.random))))))
       (set! count (+ count 1))
     })
     randstr))
 
-(if (= task 0) {
+(if (== task 0) {
   (display "序列生成任务：用LLM解决排序问题\n")
   (define input_seq (make_random_list 6))
   (display "  排序前：")

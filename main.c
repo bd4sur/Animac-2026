@@ -19,6 +19,7 @@
 #include "native_System.h"
 #include "native_Math.h"
 #include "native_String.h"
+#include "native_LLM.h"
 
 // 打印 token 类型名称
 const wchar_t* type_name(int32_t type) {
@@ -47,7 +48,7 @@ const wchar_t* type_name(int32_t type) {
 
 
 #ifndef AM_ALLOCATOR_POOL_SIZE
-#define AM_ALLOCATOR_POOL_SIZE ((size_t)(128ULL * 1024 * 1024))
+#define AM_ALLOCATOR_POOL_SIZE ((size_t)(200ULL * 1024 * 1024))
 #endif
 
 
@@ -230,6 +231,7 @@ static void test_runtime_load_from_file(char *path) {
     am_runtime_register_native_lib(rt, &am_native_System_lib);
     am_runtime_register_native_lib(rt, &am_native_Math_lib);
     am_runtime_register_native_lib(rt, &am_native_String_lib);
+    am_runtime_register_native_lib(rt, &am_native_LLM_lib);
 
     rt->callback_on_halt = on_halt;
     rt->callback_on_error = on_error;

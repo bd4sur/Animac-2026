@@ -2728,9 +2728,33 @@ int32_t am_runtime_get_memory_stats(am_runtime_t *rt, am_runtime_memory_stats_t 
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+请参照 @typescript/src/REPL.ts 和 @main.c ，新建 @repl.c ，用C语言实现Scheme解释器的REPL。这个REPL的实现思路是所谓的“replay-based REPL”，并支持自动缩进。具体逻辑可参照 @typescript/src/REPL.ts 。
+
+你可以使用WSL进行编译构建和测试，但不要修改已有的代码。不要执行任何删除文件之类的操作，如`rm`等。
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个Scheme解释器，具备FFI功能，称为“本地宿主接口”（native）。现在请你在 @src/native_LLM.c 和 @ include/native_LLM.h 中，实现语言模型推理相关的本地宿主接口的实现。详细要求如下：
+
+- 你需要全面阅读C语言代码，理解本地宿主接口机制。在参考 @src/native_System.c 、 @src/native_String.c 、 @src/native_Math.c 时，务必注意每个函数实现的“套路”，也就是出栈入栈、TPV（am_value_t）与具体值类型的转化、堆对象的存取和增删改、handle机制、调用step函数以PC++等机制。这些机制有的被封装在工具函数中了，你要注意发现它们，不要遗漏。
+- 现有TypeScript实现的LLM本地宿主接口参考实现，位于 @typescript/lib/LLM.js 。你需要阅读理解这个文件，实现其中的 init 、 get_config 、 get_param 、 matmul 、 encode 、 decode 这几个函数。其他函数无需实现，但可以参考。
+- 除TS实现之外，还有等效的C语言实现，主要在 @llm/infer.c 、 @llm/tensor.c 、 @llm/tokenizer.c 等文件以及相关的头文件中。你可以参考C语言代码中实现分词器、前缀树等算法的部分，以弥补TS中被高级语言封装起来的部分。
+- 你需要用C语言从头实现一个从base64字符串到字节序列的解码算法，用于模型加载相关接口。
+- 你所实现的LLM本地宿主函数库，最终是服务于 @test/nano_llm_infer.scm ，这是一个完全由Scheme实现的Transformer语言模型推理。以该文件为测试输入。
+
+无需编写新的测试。保证 @main.c 编译运行正确，以及解释执行 @test/nano_llm_infer.scm 正确即可，因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
+
+补充两点：
+
+1、 @test/nano_llm_infer.scm 中报错变量未找到，是因为用了不兼容的“=”运算符，我已经全部改成兼容的"=="了。
+
+2、再次核实 @src/native_LLM.c 中关于Trie树的实现。你的实现应该以 @typescript/lib/LLM.js 为准， @llm/tokenizer.c 实现的是Radix树，仅供参考。
+
+继续。
 
 ---------------------
 
