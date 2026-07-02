@@ -2500,10 +2500,141 @@ if (used >= proc->opstack_capacity) {
 
 ---------------------
 
+现在在测试 @test/fork.scm 用例时，./main /mnt/d/Desktop/GitRepos/Animac-2026/test/fork.scm，会报段错误，如下：
 
+```
+test_runtime_load_from_file ...
+Module dumped: 4584 bytes
+Module loaded: opstack_depth=2, ilcode_length=22
+=== VM output ===
+Exec: PC=0 | OpCode=8 | Oprand=69(varid=2)
+Exec: PC=2 | OpCode=8 | Oprand=71(varid=2)
+Exec: PC=3 | OpCode=1 | Oprand=263(varid=8)
+[Runtime] 指令执行异常
+Exec: PC=3 | OpCode=1 | Oprand=263(varid=8)
+Exec: PC=4 | OpCode=4 | Oprand=21(varid=0)
+Exec: PC=5 | OpCode=2 | Oprand=263(varid=8)
+Exec: PC=6 | OpCode=30 | Oprand=15(varid=0)
+Exec: PC=7 | OpCode=13 | Oprand=389(varid=12)
+Exec: PC=12 | OpCode=4 | Oprand=931(varid=29)
+Exec: PC=13 | OpCode=21 | Oprand=15(varid=0)
+childExec: PC=14 | OpCode=11 | Oprand=15(varid=0)
+Exec: PC=1 | OpCode=19 | Oprand=15(varid=0)
+
+=== VM halted ===
+Segmentation fault (core dumped)
+```
+
+补充说明：fork机制完全没有使用op_fork和fork指令，而是使用 @src/native_System.c 中实现的System_fork函数实现的，提请注意。
+
+请排查问题。
+
+已定位并修复 `test/fork.scm` 的段错误。
+
+## 根因
+
+`System.fork` 会生成子进程，子进程对父进程堆做深拷贝，但**父子进程共享同一个底层 `heap_alloc` 物理堆区**，各自维护独立的 `am_heap_t` 句柄表。
+
+事件循环在每次计算阶段结束后，会对所有就绪进程依次调用 `am_process_gc` 做标记-清除，并每隔 `AM_HEAP_COMPACT_INTERVAL` 次触发一次 `am_allocator_heap_compact` 做标记-压缩。问题在于：
+
+1. 父进程 GC 压缩：把父进程存活对象搬到堆区前端 `s->base`。
+2. 子进程 GC 压缩：紧接着把子进程存活对象也搬到同一个 `s->base`，**覆盖**了父进程刚搬好的对象。
+
+父进程再次调度时，`current_closure_handle` 指向的内存已被子进程对象覆盖，类型字段变成 0/非法，随后 `store` 指令解引用无效对象，最终破坏 freelist，在 `am_heap_destroy` 时触发段错误。
+
+## 修复
+
+引入全局标志 `g_am_multi_process`：
+
+- `src/native_System.c`：fork 成功后置 `g_am_multi_process = 1`。
+- `src/process.c` 的 `am_process_gc`：多进程模式下跳过 `am_allocator_heap_compact`。
+- `src/runtime.c` 的 `runtime_gc_compact_if_needed`（当前被注释掉，但一并防护）：同样跳过压缩。
+
+保留标记-清除（sweep），因为父子进程对象互不共享，sweep 是安全的；仅禁用不安全的“按进程单独压缩”。
+
+## 验证
+
+- `./main test/fork_minimal.scm`：父子均正常输出并干净结束。
+- `./main test/fork.scm`：不再崩溃，定时器回调能持续执行。
+- `valgrind --error-exitcode=1 ./main test/fork_minimal.scm`：`ERROR SUMMARY: 0 errors`。
+- `timeout 3 valgrind ./main test/fork.scm`：0 个内存错误。
+
+单进程测试（`factorial.scm`、`calculator.scm`、`coroutine.scm`）也通过，未引入回归。
+
+## 补充说明
+
+这本质上是一个**架构层面的 workaround**：共享堆分配器 + 按进程独立压缩是不相容的。长期彻底的方案有两种方向：
+
+1. 让压缩全局化：一次性把所有进程的存活对象一起搬到堆区前端。
+2. 为每个进程（或每个 fork）分配独立的物理堆区/分配器。
+
+当前方案以最小改动解决了崩溃问题，但多进程模式下堆会失去压缩整理，可能带来碎片化。如果后续对 fork 使用频繁或长时间运行，建议按方向 1 或 2 重构。
 
 ---------------------
 
+现在请你执行按进程独立压缩改造，采用方案1：让压缩全局化：一次性把所有进程的存活对象一起搬到堆区前端。
+
+改造后，需要保留VM区/heap区边界的灵活移动等关键特性。
+
+请你使用 @test/fork.scm 、 @test/test.scm 、 @test/mlp.scm 三个测试用例进行测试。你可以使用WSL进行编译构建和测试。
+
+已完成按进程独立压缩的全局化改造（方案 1）。
+
+## 改造内容
+
+### 1. 新增全局压缩函数 `am_allocator_heap_compact_global`
+
+`src/allocator.c` 中实现，签名加入 `include/allocator.h`：
+
+```c
+int32_t am_allocator_heap_compact_global(am_allocator_t *heap_alloc, am_heap_t **heaps, size_t heap_count);
+```
+
+逻辑：
+- 一次性扫描**所有传入进程堆**的 handle 表，收集物理上位于堆区内的存活对象（用 `block->live` 去重，防御多 heap 引用同一对象）。
+- 按地址排序后，把所有存活对象顺序搬到堆区前端 `s->base`。
+- 第二遍再遍历所有 heap，更新非主 slot 中仍指向旧地址的指针。
+- 尾部重建空闲块并更新 `free_list_head` / `used_bytes`。
+
+原有的 `am_allocator_heap_compact(heap_alloc, heap)` 现在只是一个薄包装，调用全局版本并传入单元素 heap 数组，保持 API 兼容。
+
+### 2. `am_process_gc` 只负责标记-清除
+
+移除了 `am_process_gc` 里的压缩逻辑和 `g_am_multi_process` 临时开关。它现在只做：
+
+1. 收集 GC 根
+2. 递归标记
+3. 清除未标记对象
+
+### 3. 运行时统一调度全局压缩
+
+`src/runtime.c`：
+- 新增 `am_runtime_t.gc_count`，在 `am_runtime_create` 中初始化为 0。
+- `am_runtime_event_handler` 现在：
+  1. 对**所有现存进程**执行 `am_process_gc`（不再只 GC 就绪队列）。
+  2. `rt->gc_count++`。
+  3. 每 `AM_HEAP_COMPACT_INTERVAL` 个周期，收集所有非空进程的 `proc->heap`，调用 `am_allocator_heap_compact_global` 做一次全局压缩。
+  4. 压缩成功后仍调用 `am_allocator_pool_auto_adjust(pool)`，保留 VM/heap 边界灵活调整能力。
+- `runtime_gc_compact_if_needed`（当前被注释掉）也同步改为全局压缩，避免将来重新启用时再次踩坑。
+
+### 4. 移除临时 workaround
+
+`src/native_System.c` 中的 `g_am_multi_process` 全局标志和相关代码已完全移除，文件恢复到原始状态。
+
+## 测试结果（WSL Ubuntu-24.04，gcc -O3）
+
+| 测试 | 结果 |
+|------|------|
+| `test/fork.scm` | 不再段错误，父子进程正常调度，定时器回调持续执行。`timeout 3 valgrind --error-exitcode=1 ./main test/fork.scm` 报告 `ERROR SUMMARY: 0 errors`。 |
+| `test/test.scm` | 正常完成，输出与预期一致。 |
+| `test/mlp.scm` | 正常训练无崩溃，5 分钟超时前已跑到 Epoch 73，准确率多次达到 1.0；因训练脚本本身很长被 `timeout` 结束，不是解释器异常。 |
+| `test/factorial.scm` / `test/calculator.scm` / `test/coroutine.scm` | 单进程回归测试通过。 |
+
+## 说明
+
+- 由于 `am_runtime_execute` 里的逐指令 `printf` 在当前工作树中已经是注释状态，测试输出比较干净；这有利于 `mlp.scm` 这种大量指令的程序，但注意它并非本次改造引入，只是保留了当前工作树状态。
+- 全局压缩相比原来的按进程压缩，在单进程场景下行为等价；多进程场景下避免了把不同进程对象搬到同一前端互相覆盖的问题。
+- VM/heap 边界自适应调整仍然保留，因为压缩后 `am_allocator_pool_auto_adjust` 照常调用。
 
 ---------------------
 

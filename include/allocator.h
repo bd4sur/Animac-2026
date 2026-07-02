@@ -120,6 +120,10 @@ struct am_heap_t;
 typedef struct am_heap_t am_heap_t;
 int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap);
 
+// 对多个进程堆一起执行全局标记-压缩：把所有 heap 中存活对象搬到同一堆区前端，
+// 更新所有 heap 表中的指针。用于多进程共享同一个 heap_alloc 的场景。
+int32_t am_allocator_heap_compact_global(am_allocator_t *heap_alloc, am_heap_t **heaps, size_t heap_count);
+
 // 按占总池比例调整 VM/heap 边界。
 // - ratio 为 heap 区所占比例；内部会被裁剪到 [AM_POOL_MIN_HEAP_RATIO, 1 - AM_POOL_MIN_VM_RATIO]。
 // - 若新边界大于当前边界（heap 扩张），仅当 VM 工作区为空时才允许。

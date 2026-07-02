@@ -1480,6 +1480,7 @@ am_runtime_t *am_runtime_create(am_allocator_t *vm_alloc, am_allocator_t *heap_a
     rt->callback_on_error = NULL;
 
     rt->tick_counter = 0;
+    rt->gc_count = 0;
     rt->gc_timestamp = time(NULL);
 
     rt->timer_list = NULL;
@@ -1795,7 +1796,8 @@ int32_t am_runtime_execute(am_runtime_t *rt, am_process_t *proc) {
         return -1;
     }
 
-    printf("Exec: PC=%zu | OpCode=%u | Oprand=%zu(varid=%zu)\n", proc->PC, opcode, operand, am_value_to_varid(operand));
+    // printf("Exec: PC=%zu | OpCode=%u | Oprand=%zu(varid=%zu)\n", proc->PC, opcode, operand, am_value_to_varid(operand));
+
     return am_runtime_op_dispatch(rt, proc, opcode, operand);
 }
 
@@ -1820,13 +1822,31 @@ static void runtime_gc_compact_if_needed(am_runtime_t *rt) {
     double ratio = (double)heap_used / (double)heap_cap;
     if (ratio < AM_HEAP_GC_PRESSURE_THRESHOLD) return;
 
+    /* 标记-清除：对所有非停止进程执行 GC。 */
+    size_t heap_count = 0;
     for (size_t i = 0; i < rt->process_poll_counter; i++) {
         am_process_t *proc = rt->process_pool[i];
         if (!proc || proc->state == AM_PROCESS_STATE_STOPPED) continue;
-        if (am_process_gc(proc) != 0) continue;
-        /* 每次 GC 后都强制执行标记-压缩，避免 freelist 碎片化 */
-        if (am_allocator_heap_compact(proc->heap_alloc, proc->heap) == 0) {
-            (void)am_allocator_pool_auto_adjust(pool);
+        if (am_process_gc(proc) == 0 && proc->heap) {
+            heap_count++;
+        }
+    }
+
+    /* 标记-压缩：一次性压缩所有相关进程堆。 */
+    if (heap_count > 0) {
+        am_heap_t **heaps = (am_heap_t **)malloc(heap_count * sizeof(am_heap_t *));
+        if (heaps) {
+            size_t idx = 0;
+            for (size_t i = 0; i < rt->process_poll_counter; i++) {
+                am_process_t *proc = rt->process_pool[i];
+                if (proc && proc->heap) {
+                    heaps[idx++] = proc->heap;
+                }
+            }
+            if (am_allocator_heap_compact_global(rt->heap_alloc, heaps, idx) == 0) {
+                (void)am_allocator_pool_auto_adjust(pool);
+            }
+            free(heaps);
         }
     }
 }
@@ -1851,7 +1871,7 @@ int32_t am_runtime_tick(am_runtime_t *rt, uint32_t timeslice) {
         if (am_runtime_execute(rt, proc) != 0) {
             proc->state = AM_PROCESS_STATE_STOPPED;
             if (rt->callback_on_error) rt->callback_on_error(rt);
-            fprintf(stderr, "[Runtime] 指令执行异常\n");
+            fprintf(stderr, "[Runtime] 指令执行异常: PID=%zu PC=%zu\n", (size_t)pid, (size_t)proc->PC);
             break;
         }
         timeslice--;
@@ -1892,14 +1912,42 @@ int32_t am_runtime_event_handler(am_runtime_t *rt) {
     // time_t now = time(NULL);
     // if (now - rt->gc_timestamp >= AM_GC_INTERVAL) {
     //     rt->gc_timestamp = now;
-        for (size_t i = 0; i < rt->process_queue->length; i++) {
-            am_value_t pid_val = am_list_get(rt->vm_alloc, rt->process_queue, i);
-            if (!am_value_is_uint(pid_val)) continue;
-            am_pid_t pid = (am_pid_t)am_value_to_uint(pid_val);
-            if (pid < rt->process_poll_counter && rt->process_pool[pid]) {
-                am_process_gc(rt->process_pool[pid]);
+
+        /* 标记-清除：对所有现存进程执行 GC。 */
+        size_t heap_count = 0;
+        for (size_t i = 0; i < rt->process_poll_counter; i++) {
+            am_process_t *proc = rt->process_pool[i];
+            if (!proc) continue;
+            if (am_process_gc(proc) == 0 && proc->heap) {
+                heap_count++;
             }
         }
+
+        rt->gc_count++;
+
+#if AM_HEAP_COMPACT_INTERVAL > 0
+        /* 标记-压缩：在 GC 安全点一次性压缩所有进程的存活对象。
+         * 所有进程共享同一个底层 heap_alloc，全局压缩避免互相覆盖。 */
+        if ((rt->gc_count % AM_HEAP_COMPACT_INTERVAL) == 0 && heap_count > 0) {
+            am_heap_t **heaps = (am_heap_t **)malloc(heap_count * sizeof(am_heap_t *));
+            if (heaps) {
+                size_t idx = 0;
+                for (size_t i = 0; i < rt->process_poll_counter; i++) {
+                    am_process_t *proc = rt->process_pool[i];
+                    if (proc && proc->heap) {
+                        heaps[idx++] = proc->heap;
+                    }
+                }
+                if (am_allocator_heap_compact_global(rt->heap_alloc, heaps, idx) == 0) {
+                    am_allocator_pool_t *pool = am_allocator_pool_current();
+                    if (pool) {
+                        (void)am_allocator_pool_auto_adjust(pool);
+                    }
+                }
+                free(heaps);
+            }
+        }
+#endif
     // }
 #endif
 

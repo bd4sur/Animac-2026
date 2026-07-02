@@ -104,6 +104,7 @@ typedef struct am_runtime_t {
     void (*callback_on_error)(am_runtime_t *rt);  // 虚拟机捕获异常时触发
 
     size_t tick_counter;     // Tick 计数器
+    size_t gc_count;         // 全局 GC 周期计数器
     time_t gc_timestamp;     // GC 时间戳
 
     am_timer_t *timer_list;  // 定时器链表头

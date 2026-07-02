@@ -1048,20 +1048,6 @@ int32_t am_process_gc(am_process_t *proc) {
     }
 
     proc->gc_count++;
-#if AM_HEAP_COMPACT_INTERVAL > 0
-    if (proc->gc_count % AM_HEAP_COMPACT_INTERVAL == 0) {
-        /* 标记-压缩：整理堆区物理内存，必须在 GC 安全点执行 */
-        if (am_allocator_heap_compact(proc->heap_alloc, proc->heap) != 0) {
-            ret = -1;
-        } else {
-            /* 压缩后堆区前端连续，可安全根据使用压力调整 VM/heap 边界 */
-            am_allocator_pool_t *pool = am_allocator_pool_current();
-            if (pool) {
-                (void)am_allocator_pool_auto_adjust(pool);
-            }
-        }
-    }
-#endif
 
 cleanup:
     am_list_destroy(proc->vm_alloc, gcroots);

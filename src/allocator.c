@@ -1080,41 +1080,50 @@ static void compact_print_boundary_adjust_report(const am_allocator_pool_t *pool
     fprintf(stderr, "========================================\n\n");
 }
 
-int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
-    if (!heap_alloc || !heap_alloc->state || !heap || !heap->table) return -1;
+/* 对多个进程堆一起执行标记-压缩：把所有 heap 中被 handle 引用的存活对象
+ * 搬到堆区前端，更新所有 heap 表中的指针，并在尾部重建空闲块。
+ * 必须在 GC 安全点调用（所有相关进程已完成标记-清除）。 */
+int32_t am_allocator_heap_compact_global(am_allocator_t *heap_alloc, am_heap_t **heaps, size_t heap_count) {
+    if (!heap_alloc || !heap_alloc->state) return -1;
     am_freelist_state_t *s = (am_freelist_state_t *)heap_alloc->state;
 
-    size_t cap = heap->table->capacity;
     live_entry_t *entries = NULL;
     size_t count = 0;
     size_t entries_cap = 0;
 
-    /* 第一遍：收集所有被 handle 引用的存活对象（仅处理物理上位于堆区内的对象） */
-    for (size_t i = 0; i < cap; i++) {
-        am_value_t key = heap->table->slots[i].key;
-        if (key == AM_MAP_KEY_EMPTY || key == AM_MAP_KEY_TOMBSTONE) continue;
-        am_value_t v = heap->table->slots[i].value;
-        if (!am_value_is_ptr(v)) continue;
+    /* 第一遍：收集所有 heap 中被 handle 引用的存活对象
+     * （仅处理物理上位于堆区内的对象）。用 block->live 去重，以应对
+     * 同一对象被多个 heap 引用（理论上 fork 后不应出现，但做防御）。 */
+    for (size_t h = 0; h < heap_count; h++) {
+        am_heap_t *heap = heaps[h];
+        if (!heap || !heap->table) continue;
+        size_t cap = heap->table->capacity;
+        for (size_t i = 0; i < cap; i++) {
+            am_value_t key = heap->table->slots[i].key;
+            if (key == AM_MAP_KEY_EMPTY || key == AM_MAP_KEY_TOMBSTONE) continue;
+            am_value_t v = heap->table->slots[i].value;
+            if (!am_value_is_ptr(v)) continue;
 
-        am_heap_block_header_t *b = block_from_payload(am_value_to_ptr(v));
-        if ((uint8_t *)b < s->base || (uint8_t *)b >= s->base + s->capacity) continue;
+            am_heap_block_header_t *b = block_from_payload(am_value_to_ptr(v));
+            if ((uint8_t *)b < s->base || (uint8_t *)b >= s->base + s->capacity) continue;
 
-        if (!b->live) {
-            b->live = true;
-            if (count >= entries_cap) {
-                entries_cap = entries_cap ? entries_cap * 2 : 64;
-                live_entry_t *tmp = (live_entry_t *)realloc(entries, entries_cap * sizeof(live_entry_t));
-                if (!tmp) {
-                    fprintf(stderr, "[allocator] 压缩失败: entries realloc 失败 (%zu bytes)\n",
-                            entries_cap * sizeof(live_entry_t));
-                    free(entries);
-                    return -1;
+            if (!b->live) {
+                b->live = true;
+                if (count >= entries_cap) {
+                    entries_cap = entries_cap ? entries_cap * 2 : 64;
+                    live_entry_t *tmp = (live_entry_t *)realloc(entries, entries_cap * sizeof(live_entry_t));
+                    if (!tmp) {
+                        fprintf(stderr, "[allocator] 全局压缩失败: entries realloc 失败 (%zu bytes)\n",
+                                entries_cap * sizeof(live_entry_t));
+                        free(entries);
+                        return -1;
+                    }
+                    entries = tmp;
                 }
-                entries = tmp;
+                entries[count].block = b;
+                entries[count].slot = &heap->table->slots[i];
+                count++;
             }
-            entries[count].block = b;
-            entries[count].slot = &heap->table->slots[i];
-            count++;
         }
     }
 
@@ -1135,7 +1144,7 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
                     compact_free_info_t *tmp = (compact_free_info_t *)realloc(
                         before_free, before_free_cap * sizeof(compact_free_info_t));
                     if (!tmp) {
-                        fprintf(stderr, "[allocator] 压缩失败: before_free realloc 失败 (%zu bytes)\n",
+                        fprintf(stderr, "[allocator] 全局压缩失败: before_free realloc 失败 (%zu bytes)\n",
                                 before_free_cap * sizeof(compact_free_info_t));
                         free(entries);
                         free(before_free);
@@ -1173,7 +1182,7 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
 
     am_map_entry_t **primary_slots = (am_map_entry_t **)malloc(count * sizeof(am_map_entry_t *));
     if (!primary_slots) {
-        fprintf(stderr, "[allocator] 压缩失败: primary_slots malloc 失败 (%zu bytes)\n",
+        fprintf(stderr, "[allocator] 全局压缩失败: primary_slots malloc 失败 (%zu bytes)\n",
                 count * sizeof(am_map_entry_t *));
         free(entries);
 #if AM_ALLOCATOR_PRINT_COMPACT_REPORT
@@ -1188,7 +1197,7 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
 
     reloc_entry_t *reloc = (reloc_entry_t *)malloc(count * sizeof(reloc_entry_t));
     if (!reloc) {
-        fprintf(stderr, "[allocator] 压缩失败: reloc malloc 失败 (%zu bytes)\n",
+        fprintf(stderr, "[allocator] 全局压缩失败: reloc malloc 失败 (%zu bytes)\n",
                 count * sizeof(reloc_entry_t));
         free(entries);
         free(primary_slots);
@@ -1223,30 +1232,35 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
         prev_size = sz;
     }
 
-    /* 第二遍：更新非主 slot 中仍指向旧地址的指针。
+    /* 第二遍：更新所有 heap 中非主 slot 中仍指向旧地址的指针。
      * 主 slot 已在移动循环中更新；若其新地址恰好等于某个旧地址，
      * 必须避免在此处被再次更新为另一个对象的新地址。 */
-    for (size_t i = 0; i < cap; i++) {
-        am_value_t key = heap->table->slots[i].key;
-        if (key == AM_MAP_KEY_EMPTY || key == AM_MAP_KEY_TOMBSTONE) continue;
-        am_value_t v = heap->table->slots[i].value;
-        if (!am_value_is_ptr(v)) continue;
+    for (size_t h = 0; h < heap_count; h++) {
+        am_heap_t *heap = heaps[h];
+        if (!heap || !heap->table) continue;
+        size_t cap = heap->table->capacity;
+        for (size_t i = 0; i < cap; i++) {
+            am_value_t key = heap->table->slots[i].key;
+            if (key == AM_MAP_KEY_EMPTY || key == AM_MAP_KEY_TOMBSTONE) continue;
+            am_value_t v = heap->table->slots[i].value;
+            if (!am_value_is_ptr(v)) continue;
 
-        am_map_entry_t *slot = &heap->table->slots[i];
-        am_map_entry_t *slot_key = slot;
-        if (bsearch(&slot_key, primary_slots, count, sizeof(am_map_entry_t *), cmp_slot_ptr) != NULL) {
-            continue;
-        }
+            am_map_entry_t *slot = &heap->table->slots[i];
+            am_map_entry_t *slot_key = slot;
+            if (bsearch(&slot_key, primary_slots, count, sizeof(am_map_entry_t *), cmp_slot_ptr) != NULL) {
+                continue;
+            }
 
-        void *old_ptr = am_value_to_ptr(v);
-        size_t lo = 0, hi = count;
-        while (lo < hi) {
-            size_t mid = (lo + hi) / 2;
-            if (reloc[mid].old_ptr < old_ptr) lo = mid + 1;
-            else hi = mid;
-        }
-        if (lo < count && reloc[lo].old_ptr == old_ptr) {
-            slot->value = am_make_value_of_ptr((am_object_t *)reloc[lo].new_ptr);
+            void *old_ptr = am_value_to_ptr(v);
+            size_t lo = 0, hi = count;
+            while (lo < hi) {
+                size_t mid = (lo + hi) / 2;
+                if (reloc[mid].old_ptr < old_ptr) lo = mid + 1;
+                else hi = mid;
+            }
+            if (lo < count && reloc[lo].old_ptr == old_ptr) {
+                slot->value = am_make_value_of_ptr((am_object_t *)reloc[lo].new_ptr);
+            }
         }
     }
 
@@ -1273,4 +1287,10 @@ int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
     free(primary_slots);
     free(reloc);
     return 0;
+}
+
+int32_t am_allocator_heap_compact(am_allocator_t *heap_alloc, am_heap_t *heap) {
+    if (!heap_alloc || !heap_alloc->state || !heap || !heap->table) return -1;
+    am_heap_t *heaps[1] = {heap};
+    return am_allocator_heap_compact_global(heap_alloc, heaps, 1);
 }
