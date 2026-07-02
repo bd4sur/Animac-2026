@@ -2718,6 +2718,13 @@ int32_t am_runtime_get_memory_stats(am_runtime_t *rt, am_runtime_memory_stats_t 
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+1、修改 @src/runtime.c 中的 am_runtime_output 和 am_runtime_error 两个函数。当前这两个函数往 rt->output_fifo 和 rt->error_fifo 中push的是整个 am_wstring_t 对象，我要求你将其改成逐个push字符串中每个wchar的TPV，即am_value_t类型的value。这样fifo的消费者就可以逐个消费字符，而不是整个ws对象。
+
+2、在 @main.c 中，实现 on_tick 回调函数，该回调函数用于将 am_list_t *(rt->output_fifo) 中收集到的所有字符，一次性全部pop出来，并通过printf打印出来。
+
+无需编写新的测试。保证 @main.c 编译运行正确即可，因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

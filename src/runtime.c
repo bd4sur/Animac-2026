@@ -2101,29 +2101,28 @@ void am_runtime_output(am_runtime_t *rt, const wchar_t *str) {
     wchar_t *unescaped = runtime_unescape_output_string(rt->vm_alloc, str, &output_len);
     const wchar_t *output_str = unescaped ? unescaped : str;
 
-    printf("%ls", output_str);
-    fflush(stdout);
-
-    am_wstring_t *ws = am_wstring_create(rt->vm_alloc, (wchar_t *)output_str, output_len);
-    if (unescaped) am_free(rt->vm_alloc, unescaped);
-
-    if (ws && rt->output_fifo) {
-        am_list_t *new_fifo = am_list_push(rt->vm_alloc, rt->output_fifo,
-                                           am_make_value_of_ptr((am_object_t *)ws));
-        if (new_fifo) rt->output_fifo = new_fifo;
-        else am_wstring_destroy(rt->vm_alloc, ws);
+    if (rt->output_fifo) {
+        for (size_t i = 0; i < output_len; i++) {
+            am_value_t ch = am_make_value_of_wchar((am_wchar_t)output_str[i]);
+            am_list_t *new_fifo = am_list_push(rt->vm_alloc, rt->output_fifo, ch);
+            if (new_fifo) rt->output_fifo = new_fifo;
+        }
     }
+
+    if (unescaped) am_free(rt->vm_alloc, unescaped);
 }
 
 
 void am_runtime_error(am_runtime_t *rt, const wchar_t *str) {
     if (!rt || !str) return;
     fprintf(stderr, "%ls", str);
-    am_wstring_t *ws = am_wstring_create(rt->vm_alloc, (wchar_t *)str, wcslen(str));
-    if (ws && rt->error_fifo) {
-        am_list_t *new_fifo = am_list_push(rt->vm_alloc, rt->error_fifo,
-                                           am_make_value_of_ptr((am_object_t *)ws));
-        if (new_fifo) rt->error_fifo = new_fifo;
-        else am_wstring_destroy(rt->vm_alloc, ws);
+
+    if (rt->error_fifo) {
+        size_t len = wcslen(str);
+        for (size_t i = 0; i < len; i++) {
+            am_value_t ch = am_make_value_of_wchar((am_wchar_t)str[i]);
+            am_list_t *new_fifo = am_list_push(rt->vm_alloc, rt->error_fifo, ch);
+            if (new_fifo) rt->error_fifo = new_fifo;
+        }
     }
 }

@@ -94,9 +94,9 @@ typedef struct am_runtime_t {
     size_t process_poll_counter;  // 进程计数器，也作为下一个 PID
     am_list_t *process_queue;     // 进程队列：List<am_value_t(uint:pid)>
 
-    am_list_t *input_fifo;   // 输入 FIFO（存储 wstring 对象指针）
-    am_list_t *output_fifo;  // 输出 FIFO（存储 wstring 对象指针）
-    am_list_t *error_fifo;   // 错误 FIFO（存储 wstring 对象指针）
+    am_list_t *input_fifo;   // 输入 FIFO（存储 wchar 值）
+    am_list_t *output_fifo;  // 输出 FIFO（存储 wchar 值）
+    am_list_t *error_fifo;   // 错误 FIFO（存储 wchar 值）
 
     void (*callback_on_tick)(am_runtime_t *rt);   // 每个 Tick 结束后触发
     void (*callback_on_event)(am_runtime_t *rt);  // 每个事件循环结束后触发

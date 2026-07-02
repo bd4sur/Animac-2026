@@ -73,6 +73,17 @@ static void on_error(am_runtime_t *rt) {
     test_error_called = 1;
 }
 
+static void on_tick(am_runtime_t *rt) {
+    if (!rt || !rt->output_fifo) return;
+    while (rt->output_fifo->length > 0) {
+        am_value_t v = am_list_shift(rt->vm_alloc, rt->output_fifo);
+        if (am_value_is_wchar(v)) {
+            printf("%lc", (wchar_t)am_value_to_wchar(v));
+        }
+    }
+    fflush(stdout);
+}
+
 
 
 // ===============================================================================
@@ -222,6 +233,7 @@ static void test_runtime_load_from_file(char *path) {
 
     rt->callback_on_halt = on_halt;
     rt->callback_on_error = on_error;
+    rt->callback_on_tick = on_tick;
 
     am_pid_t pid1 = am_load_module(rt, mod_loaded);
     (void)pid1;
