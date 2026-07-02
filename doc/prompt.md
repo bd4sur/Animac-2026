@@ -2758,6 +2758,108 @@ int32_t am_runtime_get_memory_stats(am_runtime_t *rt, am_runtime_memory_stats_t 
 
 ---------------------
 
+写一个交互式网页 @tools/jstoscm.html ，用JavaScript实现一个从JavaScript子集到Scheme子集的翻译器。注意：只是字面上的机械翻译，不要处理语义分析问题。
+
+JavaScript子集的BNF如下：
+
+```
+<program> ::= <expr_seq>
+
+<expr> ::= <block> | <function> | <if_block> | <while_block> | <vardef> | <term> | return <expr> | return | continue | break
+<expr_seq> ::= <expr> ( ; | CRLF ) <expr_seq> | <expr> | eps
+
+<block> ::= { <expr_seq> }
+<if_block> ::= if ( <term> ) <block> <else_block>
+<else_block> ::= else <block> | else <if_block> | eps
+<while_block> ::= while ( <term> ) <block>
+
+<vardef> ::= var <id> | var <id> = <term>
+
+<assignment> ::= <postfix> = <term>
+
+<function> ::= function <id> ( <param_seq> ) <block>
+<lambda> ::= ( <param_seq> ) => <block>
+<param_seq> ::= <id> , <param_seq> | <id> | eps
+
+<term> ::= <assignment> | <ternary>
+<ternary> ::= <term_or> ? <term> : <term> | <term_or>
+
+<term_or> ::= <term_or> || <term_and> | <term_and>
+<term_and> ::= <term_and> && <term_cmp> | <term_cmp>
+
+<term_cmp> ::= <term_cmp> ( > | < | == | <= | >= ) <term_add> | <term_add>
+
+<term_add> ::= <term_add> ( + | - ) <term_mul> | <term_mul>
+<term_mul> ::= <term_mul> ( * | / | % ) <term_exp> | <term_exp>
+
+<term_exp> ::= <unary> ^ <term_exp> | <unary>
+
+<unary> ::= ( ! | - | ++ | -- ) <unary> | <postfix>
+
+<postfix> ::= <primary> 
+            | <postfix> ( <term_seq> ) 
+            | <postfix> [ <term> ] 
+            | <postfix> ++ 
+            | <postfix> --
+
+<primary> ::= <id> | <literal> | <list> | <lambda> | ( <term> )
+
+<term_seq> ::= <term> , <term_seq> | <term> | eps
+
+<list> ::= [ <item_seq> ]
+<item_seq> ::= <item> , <item_seq> | <item> | eps
+<item> ::= <term>
+
+<id> ::= identifier
+<literal> ::= number | <string> | boolvalue | null | undefined
+
+<string> ::= " <string_chars> "
+<string_chars> ::= <string_char> <string_chars> | eps
+<string_char> ::= <any_char_except_quote_and_backslash> | "\" <escape_char>
+<escape_char> ::= " | \ | n | r | t | 0
+```
+
+Scheme子集的BNF如下：
+
+```
+    <SourceCode> ::= ((lambda () <TERM>*)) CRLF
+          <Term> ::= <SList> | <Lambda> | <Quote> | <Unquote> | <Quasiquote> | <Identifier>
+         <SList> ::= ( <SListSeq> )
+      <SListSeq> ::= <Term> <SListSeq> | ε
+        <Lambda> ::= ( lambda <ArgList> <Body> )
+       <ArgList> ::= ( <ArgListSeq> )
+    <ArgListSeq> ::= <ArgIdentifier> <ArgListSeq> | ε
+ <ArgIdentifier> ::= <Identifier>
+          <Body> ::= <BodyTerm> <Body_>
+         <Body_> ::= <BodyTerm> <Body_> | ε
+      <BodyTerm> ::= <Term>
+         <Quote> ::= ' <QuoteTerm> | ( quote <QuoteTerm> )
+       <Unquote> ::= , <UnquoteTerm> | ( unquote <QuoteTerm> )
+    <Quasiquote> ::= ` <QuasiquoteTerm> | ( quasiquote <QuoteTerm> )
+     <QuoteTerm> ::= <Term>
+   <UnquoteTerm> ::= <Term>
+<QuasiquoteTerm> ::= <Term>
+    <Identifier> ::= IDENTIFIER
+```
+
+以下是一些说明、启发式规则或案例：
+
+- 标识符、立即数，基本遵循C语言的规则，但允许中间有“.”。例如，JS的`console.log`视为一整个标识符。
+- identifier应包括负数，也就是说，凡是在JS中被视为带前导负号的数值，例如-1、-3.14、-1e23，翻译成Scheme也应当是一个带负号的整体，而不能翻译成 (- 3.14) 这种。
+- 输入JS支持方括号括起来的列表，但是不支持花括号括起来的字典（哈希表）。
+- 输出Scheme用花括号括起来的列表，是begin表达式的语法糖。
+- `return a;`   →   `a`  也就是直接去掉return关键字，没有外层括号。
+- `var a = b;`    →   `(define a b)`  允许出现在任何位置，不需要调整位置。不支持任何let绑定形式。
+- `a = b;`     →   `(set! a b)`
+- `lst[index] = v;`    →   `(set_item! lst index v)`
+- `(x)=>{a; b;}`    →   `(lambda (x) a b)`
+- `function foo(x) {a; b;}`    →   `(define foo (lambda (x) a b))`  不支持 `(define foo (x) a b)` 这种简化形式
+- 代码块`{a; b;}`    →   `{a b}` 等价于 `(begin a b)`，这是自行设置的语法糖
+- `if (c) {a; b;} else {p; q;}`   →   `(if c {a b} {p q})`
+- `while (c) {a; b;}`   →   `(while c {a b})`  不支持也没有for循环形式
+
+不得修改其他代码。
+
 
 ---------------------
 

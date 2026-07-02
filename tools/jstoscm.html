@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JS → Scheme 机械翻译器</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px;
+    color: #222;
+    background: #fafafa;
+  }
+  h1 { font-size: 1.6rem; margin-bottom: 0.3rem; }
+  p.hint { color: #666; margin-top: 0; font-size: 0.9rem; }
+  .layout {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .panel {
+    flex: 1 1 420px;
+    display: flex;
+    flex-direction: column;
+  }
+  label {
+    font-weight: 600;
+    margin-bottom: 6px;
+    display: block;
+  }
+  textarea, pre#output {
+    width: 100%;
+    min-height: 360px;
+    font-family: "Fira Code", Consolas, Monaco, "Courier New", monospace;
+    font-size: 14px;
+    line-height: 1.45;
+    padding: 12px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    background: #fff;
+    resize: vertical;
+  }
+  pre#output {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow: auto;
+    margin: 0;
+  }
+  .toolbar {
+    margin: 14px 0;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  button {
+    padding: 8px 18px;
+    font-size: 15px;
+    border: 1px solid #bbb;
+    border-radius: 5px;
+    background: #f0f0f0;
+    cursor: pointer;
+  }
+  button.primary {
+    background: #0066cc;
+    color: #fff;
+    border-color: #0066cc;
+  }
+  button:hover { opacity: 0.92; }
+  #error {
+    color: #c00;
+    font-family: Consolas, monospace;
+    white-space: pre-wrap;
+    margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+<h1>JavaScript 子集 → Scheme 子集 机械翻译器</h1>
+<p class="hint">输入符合给定 BNF 的 JavaScript 子集，程序只做字面机械翻译，不处理语义分析。</p>
+
+<div class="layout">
+  <div class="panel">
+    <label for="input">JavaScript</label>
+    <textarea id="input" spellcheck="false" placeholder="在此输入 JS 子集代码...">function factorial(n) {
+  if (n <= 1) {
+    return 1;
+  } else {
+    return n * factorial(n - 1);
+  }
+}
+
+var lst = [1, 2, 3];
+lst[0] = 42;
+
+var f = (x) => { x = x + 1; return x; };
+
+while (lst[0] > 0) {
+  console.log(lst[0]);
+  lst[0] = lst[0] - 1;
+}
+</textarea>
+  </div>
+  <div class="panel">
+    <label for="output">Scheme</label>
+    <pre id="output"></pre>
+  </div>
+</div>
+
+<div class="toolbar">
+  <button id="translate" class="primary">翻译（Ctrl+Enter）</button>
+  <button id="clear">清空</button>
+</div>
+<div id="error"></div>
+
+<script>
+"use strict";
+
+// ---------- Lexer ----------
+
+function tokenize(source) {
+  const tokens = [];
+  let i = 0;
+  let line = 1;
+  let col = 1;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+
+  function addToken(type, value) {
+    tokens.push({ type, value, line, col });
+  }
+
+  function peekChar(offset = 0) {
+    return source[i + offset];
+  }
+
+  function advance() {
+    const ch = source[i++];
+    if (ch === "\n") { line++; col = 1; }
+    else { col++; }
+    return ch;
+  }
+
+  function skipBlockComment() {
+    advance(); // *
+    while (i < source.length) {
+      if (peekChar() === "*" && peekChar(1) === "/") { advance(); advance(); return; }
+      advance();
+    }
+    throw errorAt("未终止的块注释");
+  }
+
+  function skipLineComment() {
+    while (i < source.length && peekChar() !== "\n") advance();
+  }
+
+  function errorAt(msg) {
+    return new Error(`词法错误 @ ${line}:${col}: ${msg}`);
+  }
+
+  while (i < source.length) {
+    const ch = peekChar();
+
+    if (ch === " " || ch === "\t" || ch === "\r") {
+      advance();
+      continue;
+    }
+
+    if (ch === "\n") {
+      advance();
+      // 在顶层或 {} 代码块内，换行作为表达式分隔符
+      if (parenDepth === 0 && bracketDepth === 0) {
+        const last = tokens[tokens.length - 1];
+        if (!last || last.type !== ";") addToken(";", null);
+      }
+      continue;
+    }
+
+    if (ch === "/" && peekChar(1) === "/") { skipLineComment(); continue; }
+    if (ch === "/" && peekChar(1) === "*") { skipBlockComment(); continue; }
+
+    if (/[0-9]/.test(ch) || (ch === "." && /[0-9]/.test(peekChar(1)))) {
+      const startCol = col;
+      let value = "";
+      let hasDigits = false;
+      while (i < source.length && /[0-9]/.test(peekChar())) {
+        value += advance();
+        hasDigits = true;
+      }
+      if (peekChar() === ".") {
+        value += advance();
+        while (i < source.length && /[0-9]/.test(peekChar())) {
+          value += advance();
+          hasDigits = true;
+        }
+      }
+      // 指数部分
+      if (peekChar() === "e" || peekChar() === "E") {
+        const next = peekChar(1);
+        if (/[0-9]/.test(next) || ((next === "+" || next === "-") && /[0-9]/.test(peekChar(2)))) {
+          value += advance(); // e/E
+          if (next === "+" || next === "-") value += advance();
+          while (i < source.length && /[0-9]/.test(peekChar())) value += advance();
+        }
+      }
+      if (!hasDigits) throw errorAt(`非法数字 "${value}"`);
+      addToken("NUM", value, startCol);
+      continue;
+    }
+
+    if (ch === '"') {
+      const startLine = line, startCol = col;
+      advance();
+      let value = "";
+      while (i < source.length && peekChar() !== '"') {
+        if (peekChar() === "\\") {
+          value += advance(); // 保留反斜杠
+          if (i < source.length) value += advance();
+          continue;
+        }
+        value += advance();
+      }
+      if (peekChar() !== '"') throw errorAt("未终止的字符串");
+      advance();
+      addToken("STR", value);
+      continue;
+    }
+
+    if (/[A-Za-z_$]/.test(ch)) {
+      let value = "";
+      while (i < source.length && /[A-Za-z0-9_$.]/.test(peekChar())) value += advance();
+      const kw = {
+        "if": "IF", "else": "ELSE", "while": "WHILE", "var": "VAR",
+        "function": "FUNCTION", "return": "RETURN",
+        "continue": "CONTINUE", "break": "BREAK",
+        "true": "TRUE", "false": "FALSE",
+        "null": "NULL", "undefined": "UNDEFINED"
+      }[value];
+      addToken(kw || "ID", value);
+      continue;
+    }
+
+    // Operators and punctuation
+    const two = ch + peekChar(1);
+    if (two === "==") { advance(); advance(); addToken("==", "=="); continue; }
+    if (two === "=>") { advance(); advance(); addToken("=>", "=>"); continue; }
+    if (two === "<=") { advance(); advance(); addToken("<=", "<="); continue; }
+    if (two === ">=") { advance(); advance(); addToken(">=", ">="); continue; }
+    if (two === "||") { advance(); advance(); addToken("||", "||"); continue; }
+    if (two === "&&") { advance(); advance(); addToken("&&", "&&"); continue; }
+    if (two === "++") { advance(); advance(); addToken("++", "++"); continue; }
+    if (two === "--") { advance(); advance(); addToken("--", "--"); continue; }
+
+    if (ch === "(") { advance(); addToken("(", "("); parenDepth++; continue; }
+    if (ch === ")") { advance(); addToken(")", ")"); parenDepth = Math.max(0, parenDepth - 1); continue; }
+    if (ch === "[") { advance(); addToken("[", "["); bracketDepth++; continue; }
+    if (ch === "]") { advance(); addToken("]", "]"); bracketDepth = Math.max(0, bracketDepth - 1); continue; }
+    if (ch === "{") { advance(); addToken("{", "{"); braceDepth++; continue; }
+    if (ch === "}") { advance(); addToken("}", "}"); braceDepth = Math.max(0, braceDepth - 1); continue; }
+
+    const singles = ";,:?!+-*/%=^<>";
+    if (singles.includes(ch)) { advance(); addToken(ch, ch); continue; }
+
+    throw errorAt(`非法字符 "${ch}"`);
+  }
+
+  addToken("EOF", null);
+  return tokens;
+}
+
+// ---------- Parser ----------
+
+function parse(tokens) {
+  let pos = 0;
+
+  function peek() { return tokens[pos]; }
+  function atEnd() { return peek().type === "EOF"; }
+  function previous() { return tokens[pos - 1]; }
+  function advance() { if (!atEnd()) pos++; return previous(); }
+  function match(...types) {
+    for (const t of types) if (peek().type === t) { pos++; return true; }
+    return false;
+  }
+  function expect(type) {
+    if (peek().type !== type) {
+      const tok = peek();
+      throw new Error(`语法错误 @ ${tok.line}:${tok.col}: 期望 "${type}"，得到 "${tok.type}"`);
+    }
+    return advance();
+  }
+
+  function parseProgram() {
+    const body = parseExprSeq("EOF");
+    expect("EOF");
+    return { type: "program", body };
+  }
+
+  function parseExprSeq(stop) {
+    const body = [];
+    while (peek().type !== stop && peek().type !== "EOF") {
+      // 跳过前导分隔符（空语句、多余分号/换行）
+      if (match(";")) continue;
+      const expr = parseExpr();
+      if (expr) body.push(expr);
+      while (match(";")) {} // 消耗多余分号/换行
+    }
+    return body;
+  }
+
+  function parseExpr() {
+    switch (peek().type) {
+      case "{": return parseBlock();
+      case "FUNCTION": return parseFunction();
+      case "IF": return parseIf();
+      case "WHILE": return parseWhile();
+      case "VAR": return parseVardef();
+      case "RETURN": return parseReturn();
+      case "CONTINUE": advance(); return { type: "continue" };
+      case "BREAK": advance(); return { type: "break" };
+      default: return parseTerm();
+    }
+  }
+
+  function parseBlock() {
+    expect("{");
+    const body = parseExprSeq("}");
+    expect("}");
+    return { type: "block", body };
+  }
+
+  function parseFunction() {
+    advance(); // function
+    const name = expect("ID").value;
+    expect("(");
+    const params = parseParamSeq();
+    expect(")");
+    expect("{");
+    const body = parseExprSeq("}");
+    expect("}");
+    return { type: "funcdef", name, params, body };
+  }
+
+  function parseIf() {
+    advance(); // if
+    expect("(");
+    const cond = parseTerm();
+    expect(")");
+    const thenBranch = parseBlock();
+    let elseBranch = null;
+    // 允许 } 与 else 之间出现换行（词法器把换行转成 ;）
+    while (match(";")) {}
+    if (match("ELSE")) {
+      elseBranch = peek().type === "IF" ? parseIf() : parseBlock();
+    }
+    return { type: "if", cond, thenBranch, elseBranch };
+  }
+
+  function parseWhile() {
+    advance(); // while
+    expect("(");
+    const cond = parseTerm();
+    expect(")");
+    const body = parseBlock();
+    return { type: "while", cond, body };
+  }
+
+  function parseVardef() {
+    advance(); // var
+    const name = expect("ID").value;
+    let value = { type: "undefined" };
+    if (match("=")) value = parseTerm();
+    return { type: "vardef", name, value };
+  }
+
+  function parseReturn() {
+    advance(); // return
+    if (peek().type === ";" || peek().type === "}" || peek().type === "EOF") {
+      return { type: "return", value: null };
+    }
+    return { type: "return", value: parseTerm() };
+  }
+
+  function parseParamSeq() {
+    const params = [];
+    if (peek().type === "ID") {
+      params.push(advance().value);
+      while (match(",")) params.push(expect("ID").value);
+    }
+    return params;
+  }
+
+  function parseTermSeq(stop) {
+    const terms = [];
+    if (peek().type !== stop) {
+      while (true) {
+        terms.push(parseTerm());
+        if (match(",")) continue;
+        break;
+      }
+    }
+    expect(stop);
+    return terms;
+  }
+
+  function parseTerm() {
+    // 一元运算符开头的表达式
+    const t = peek().type;
+    if (t === "!" || t === "-" || t === "++" || t === "--") {
+      const u = parseUnary();
+      return parseTernaryFrom(u);
+    }
+    // 赋值以 postfix 为左值
+    const left = parsePostfix();
+    if (match("=")) {
+      const right = parseTerm();
+      return { type: "assign", left, right };
+    }
+    return parseTernaryFrom(left);
+  }
+
+  function parseTernaryFrom(left) {
+    const cond = parseOrFrom(left);
+    if (match("?")) {
+      const trueBranch = parseTerm();
+      expect(":");
+      const falseBranch = parseTerm();
+      return { type: "ternary", cond, trueBranch, falseBranch };
+    }
+    return cond;
+  }
+
+  function parseOrFrom(left) {
+    let node = parseAndFrom(left);
+    while (match("||")) node = { type: "binary", op: "or", left: node, right: parseAnd() };
+    return node;
+  }
+  function parseAndFrom(left) {
+    let node = parseCmpFrom(left);
+    while (match("&&")) node = { type: "binary", op: "and", left: node, right: parseCmp() };
+    return node;
+  }
+  function parseCmpFrom(left) {
+    let node = parseAddFrom(left);
+    while (match(">", "<", "==", "<=", ">=")) {
+      node = { type: "binary", op: previous().type, left: node, right: parseAdd() };
+    }
+    return node;
+  }
+  function parseAddFrom(left) {
+    let node = parseMulFrom(left);
+    while (match("+", "-")) {
+      node = { type: "binary", op: previous().type, left: node, right: parseMul() };
+    }
+    return node;
+  }
+  function parseMulFrom(left) {
+    let node = parseExpFrom(left);
+    while (match("*", "/", "%")) {
+      const op = previous().type === "%" ? "mod" : previous().type;
+      node = { type: "binary", op, left: node, right: parseExp() };
+    }
+    return node;
+  }
+  function parseExpFrom(left) {
+    if (match("^")) return { type: "binary", op: "pow", left, right: parseExp() };
+    return left;
+  }
+
+  function parseOr() { return parseOrFrom(parseAnd()); }
+  function parseAnd() { return parseAndFrom(parseCmp()); }
+  function parseCmp() { return parseCmpFrom(parseAdd()); }
+  function parseAdd() { return parseAddFrom(parseMul()); }
+  function parseMul() { return parseMulFrom(parseExp()); }
+  function parseExp() { return parseExpFrom(parseUnary()); }
+
+  function parseUnary() {
+    if (match("!")) return { type: "unary", op: "not", expr: parseUnary() };
+    if (match("-")) {
+      const expr = parseUnary();
+      // 负数直接作为一个整体数值输出，如 -1、-3.14、-1e23
+      if (expr.type === "number" && !expr.value.startsWith("-")) {
+        return { type: "number", value: "-" + expr.value };
+      }
+      return { type: "unary", op: "-", expr };
+    }
+    if (match("++")) return { type: "preinc", expr: parseUnary() };
+    if (match("--")) return { type: "predec", expr: parseUnary() };
+    return parsePostfix();
+  }
+
+  function parsePostfix() {
+    let node = parsePrimary();
+    while (true) {
+      if (match("(")) { node = { type: "call", func: node, args: parseTermSeq(")") }; }
+      else if (match("[")) { const idx = parseTerm(); expect("]"); node = { type: "index", obj: node, idx }; }
+      else if (match("++")) { node = { type: "postinc", expr: node }; }
+      else if (match("--")) { node = { type: "postdec", expr: node }; }
+      else break;
+    }
+    return node;
+  }
+
+  function parsePrimary() {
+    const tok = peek();
+    switch (tok.type) {
+      case "ID": advance(); return { type: "id", value: tok.value };
+      case "NUM": advance(); return { type: "number", value: tok.value };
+      case "STR": advance(); return { type: "string", value: tok.value };
+      case "TRUE": advance(); return { type: "bool", value: "true" };
+      case "FALSE": advance(); return { type: "bool", value: "false" };
+      case "NULL": advance(); return { type: "null" };
+      case "UNDEFINED": advance(); return { type: "undefined" };
+      case "[": {
+        advance();
+        const items = peek().type === "]" ? [] : parseTermSeq("]");
+        if (items.length === 0) expect("]");
+        return { type: "list", items };
+      }
+      case "(": return parseParenOrLambda();
+      default:
+        throw new Error(`语法错误 @ ${tok.line}:${tok.col}: 意外的 "${tok.type}"`);
+    }
+  }
+
+  function parseParenOrLambda() {
+    const saved = pos;
+    expect("(");
+    const params = parseParamSeq();
+    if (peek().type === ")" && tokens[pos + 1] && tokens[pos + 1].type === "=>") {
+      advance(); // )
+      advance(); // =>
+      expect("{");
+      const body = parseExprSeq("}");
+      expect("}");
+      return { type: "lambda", params, body };
+    }
+    // 不是 lambda，回退并解析括号表达式
+    pos = saved;
+    expect("(");
+    const expr = parseTerm();
+    expect(")");
+    return expr;
+  }
+
+  return parseProgram();
+}
+
+// ---------- Emitter ----------
+
+function emit(node) {
+  switch (node.type) {
+    case "program": {
+      const terms = node.body.map(emit).filter(s => s !== "");
+      return "((lambda ()" + (terms.length ? "\n  " + terms.join("\n  ") : "") + "))\n";
+    }
+    case "block":
+      if (node.body.length === 0) return "{}";
+      return "{" + node.body.map(emit).filter(s => s !== "").join(" ") + "}";
+    case "id": return node.value;
+    case "number": return node.value;
+    case "string": return '"' + node.value + '"';
+    case "bool": return node.value;
+    case "null": return "null";
+    case "undefined": return "undefined";
+    case "list":
+      if (node.items.length === 0) return "'()";
+      return "'(" + node.items.map(emit).join(" ") + ")";
+    case "call":
+      return "(" + emit(node.func) + (node.args.length ? " " + node.args.map(emit).join(" ") : "") + ")";
+    case "index":
+      return "(get_item " + emit(node.obj) + " " + emit(node.idx) + ")";
+    case "unary":
+      return "(" + node.op + " " + emit(node.expr) + ")";
+    case "binary":
+      return "(" + node.op + " " + emit(node.left) + " " + emit(node.right) + ")";
+    case "ternary":
+      return "(if " + emit(node.cond) + " " + emit(node.trueBranch) + " " + emit(node.falseBranch) + ")";
+    case "assign": {
+      const rhs = emit(node.right);
+      if (node.left.type === "index") {
+        return "(set_item! " + emit(node.left.obj) + " " + emit(node.left.idx) + " " + rhs + ")";
+      }
+      return "(set! " + emit(node.left) + " " + rhs + ")";
+    }
+    case "vardef":
+      return "(define " + node.name + " " + emit(node.value) + ")";
+    case "funcdef":
+      return "(define " + node.name + " (lambda (" + node.params.join(" ") + ")" +
+        (node.body.length ? " " + node.body.map(emit).filter(s => s !== "").join(" ") : "") + "))";
+    case "lambda":
+      return "(lambda (" + node.params.join(" ") + ")" +
+        (node.body.length ? " " + node.body.map(emit).filter(s => s !== "").join(" ") : "") + ")";
+    case "if": {
+      let s = "(if " + emit(node.cond) + " " + emit(node.thenBranch);
+      if (node.elseBranch) s += " " + emit(node.elseBranch);
+      return s + ")";
+    }
+    case "while":
+      return "(while " + emit(node.cond) + " " + emit(node.body) + ")";
+    case "return":
+      return node.value ? emit(node.value) : "";
+    case "continue": return "continue";
+    case "break": return "break";
+    case "preinc":
+    case "postinc":
+      return "(set! " + emit(node.expr) + " (+ " + emit(node.expr) + " 1))";
+    case "predec":
+    case "postdec":
+      return "(set! " + emit(node.expr) + " (- " + emit(node.expr) + " 1))";
+    default:
+      return "";
+  }
+}
+
+// ---------- UI ----------
+
+function translate(source) {
+  const tokens = tokenize(source);
+  const ast = parse(tokens);
+  return emit(ast);
+}
+
+const inputEl = document.getElementById("input");
+const outputEl = document.getElementById("output");
+const errorEl = document.getElementById("error");
+const translateBtn = document.getElementById("translate");
+const clearBtn = document.getElementById("clear");
+
+function doTranslate() {
+  errorEl.textContent = "";
+  try {
+    outputEl.textContent = translate(inputEl.value);
+  } catch (e) {
+    outputEl.textContent = "";
+    errorEl.textContent = e.message;
+  }
+}
+
+translateBtn.addEventListener("click", doTranslate);
+clearBtn.addEventListener("click", () => {
+  inputEl.value = "";
+  outputEl.textContent = "";
+  errorEl.textContent = "";
+});
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.ctrlKey) doTranslate();
+});
+
+doTranslate();
+</script>
+</body>
+</html>
