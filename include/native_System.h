@@ -35,6 +35,10 @@ int32_t am_native_System_clear_interval(am_runtime_t *rt, am_process_t *proc);
 // (System.timestamp) : Number
 int32_t am_native_System_timestamp(am_runtime_t *rt, am_process_t *proc);
 
+// (System.memstat) : List
+// 返回 '(vm_capacity vm_used heap_capacity heap_used)，单位 bytes。
+int32_t am_native_System_memstat(am_runtime_t *rt, am_process_t *proc);
+
 // (System.test x:any) : String
 int32_t am_native_System_test(am_runtime_t *rt, am_process_t *proc);
 

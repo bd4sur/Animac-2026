@@ -1898,6 +1898,62 @@ int32_t am_runtime_tick(am_runtime_t *rt, uint32_t timeslice) {
 }
 
 
+/* 获取运行时内存统计快照。
+ * 通过 allocator 提供的抽象查询接口获取数据，与 allocator 内部实现策略无关。 */
+int32_t am_runtime_get_memory_stats(am_runtime_t *rt, am_runtime_memory_stats_t *out) {
+    (void)rt;
+    if (!out) return -1;
+
+    am_allocator_pool_t *pool = am_allocator_pool_current();
+    if (!pool) return -1;
+
+    size_t total_size = am_allocator_pool_total_size(pool);
+    size_t heap_cap   = am_allocator_pool_heap_capacity(pool);
+
+    out->vm_capacity   = (total_size > heap_cap) ? (total_size - heap_cap) : 0;
+    out->vm_used       = am_allocator_pool_vm_used(pool);
+    out->heap_capacity = heap_cap;
+    out->heap_used     = am_allocator_pool_heap_used(pool);
+    return 0;
+}
+
+
+/* 打印运行时内存总体使用状况（VM 工作区 + 用户堆区）。
+ * 通过 allocator 提供的抽象查询接口获取数据，与 allocator 内部实现策略无关。 */
+void am_runtime_print_memory_stats(am_runtime_t *rt) {
+    am_runtime_memory_stats_t stats;
+    if (am_runtime_get_memory_stats(rt, &stats) != 0) {
+        fprintf(stderr, "[MemoryStats] 当前内存池信息不可用\n");
+        return;
+    }
+
+    size_t total_size = stats.vm_capacity + stats.heap_capacity;
+
+    fprintf(stderr, "\n========== 运行时内存使用状况 ==========\n");
+    fprintf(stderr, "  内存池总容量: %zu bytes (%.2f MB)\n",
+            total_size, (double)total_size / (1024.0 * 1024.0));
+    fprintf(stderr, "\n");
+    fprintf(stderr, "  VM 工作区:\n");
+    fprintf(stderr, "    容量=%zu bytes\n", stats.vm_capacity);
+    fprintf(stderr, "    已用=%zu bytes\n", stats.vm_used);
+    fprintf(stderr, "    空闲=%zu bytes\n", stats.vm_capacity - stats.vm_used);
+    if (stats.vm_capacity > 0) {
+        fprintf(stderr, "    使用率=%.2f%%\n",
+                100.0 * (double)stats.vm_used / (double)stats.vm_capacity);
+    }
+    fprintf(stderr, "\n");
+    fprintf(stderr, "  用户堆区:\n");
+    fprintf(stderr, "    容量=%zu bytes\n", stats.heap_capacity);
+    fprintf(stderr, "    已用=%zu bytes\n", stats.heap_used);
+    fprintf(stderr, "    空闲=%zu bytes\n", stats.heap_capacity - stats.heap_used);
+    if (stats.heap_capacity > 0) {
+        fprintf(stderr, "    使用率=%.2f%%\n",
+                100.0 * (double)stats.heap_used / (double)stats.heap_capacity);
+    }
+    fprintf(stderr, "========================================\n\n");
+}
+
+
 int32_t am_runtime_event_handler(am_runtime_t *rt) {
     if (!rt) return AM_VM_STATE_IDLE;
 

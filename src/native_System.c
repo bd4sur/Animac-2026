@@ -679,6 +679,41 @@ int32_t am_native_System_timestamp(am_runtime_t *rt, am_process_t *proc) {
 }
 
 
+// (System.memstat) : List
+// 返回一个包含四项的列表：'(vm_capacity vm_used heap_capacity heap_used)，单位 bytes。
+int32_t am_native_System_memstat(am_runtime_t *rt, am_process_t *proc) {
+    if (!rt || !proc || !proc->heap) return -1;
+
+    am_runtime_memory_stats_t stats;
+    if (am_runtime_get_memory_stats(rt, &stats) != 0) return -1;
+
+    am_list_t *lst = am_list_create(proc->heap_alloc, 4, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    if (!lst) return -1;
+
+    lst = am_list_push(proc->heap_alloc, lst, am_make_value_of_uint((am_uint_t)stats.vm_capacity));
+    if (!lst) return -1;
+    lst = am_list_push(proc->heap_alloc, lst, am_make_value_of_uint((am_uint_t)stats.vm_used));
+    if (!lst) return -1;
+    lst = am_list_push(proc->heap_alloc, lst, am_make_value_of_uint((am_uint_t)stats.heap_capacity));
+    if (!lst) return -1;
+    lst = am_list_push(proc->heap_alloc, lst, am_make_value_of_uint((am_uint_t)stats.heap_used));
+    if (!lst) return -1;
+
+    am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
+    if (hd == AM_HANDLE_NULL) return -1;
+
+    if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, hd,
+                    am_make_value_of_ptr((am_object_t *)lst)) != 0) {
+        am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
+        return -1;
+    }
+
+    if (am_process_push_operand(proc, am_make_value_of_handle(hd)) != 0) return -1;
+    am_process_step(proc);
+    return 0;
+}
+
+
 // (System.fork) : Number
 // 深度复制当前进程，保留除 pid 和 parent_pid 外的全部状态。
 // 亲进程返回子进程 pid，子进程返回 0。
@@ -746,6 +781,7 @@ static const am_native_func_entry_t am_native_System_funcs[] = {
     { L"clear_timeout",am_native_System_clear_timeout },
     { L"clear_interval",am_native_System_clear_interval },
     { L"timestamp",    am_native_System_timestamp },
+    { L"memstat",      am_native_System_memstat },
     { L"fork",         am_native_System_fork },
     { L"test",         am_native_System_test },
 };

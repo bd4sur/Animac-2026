@@ -179,6 +179,26 @@ void am_runtime_start(am_runtime_t *rt);
 
 
 ///////////////////////////////////////////
+// 内存统计
+///////////////////////////////////////////
+
+// 运行时内存统计快照（与 allocator 实现策略无关的抽象结构）。
+typedef struct {
+    size_t vm_capacity;   // VM 工作区容量（bytes）
+    size_t vm_used;       // VM 工作区已用（bytes）
+    size_t heap_capacity; // 用户堆区容量（bytes）
+    size_t heap_used;     // 用户堆区已用（bytes）
+} am_runtime_memory_stats_t;
+
+// 获取运行时内存统计快照。成功返回 0，失败返回 -1。
+int32_t am_runtime_get_memory_stats(am_runtime_t *rt, am_runtime_memory_stats_t *out);
+
+// 打印运行时内存总体使用状况（VM 工作区 + 用户堆区）。
+// 可在运行时任意时刻调用，接口与 allocator 实现策略无关。
+void am_runtime_print_memory_stats(am_runtime_t *rt);
+
+
+///////////////////////////////////////////
 // 控制台输入输出
 ///////////////////////////////////////////
 

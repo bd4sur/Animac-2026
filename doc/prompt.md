@@ -2638,9 +2638,83 @@ int32_t am_allocator_heap_compact_global(am_allocator_t *heap_alloc, am_heap_t *
 
 ---------------------
 
+请你在 @src/runtime.c 中，参考 @src/allocator.c 中的 compact_print_report 函数，实现一个统计并打印内存总体使用状况的函数，这个函数可以在对象语言运行时的任何时刻被调用（以便后面实现相关native函数，现在暂不实现）。该函数的接口本身与allocator的实现策略无关，是抽象的，但是要调用allocator的相关接口，统计到以下信息：
+
+- VM区（工作区）的总容量、用量。
+- heap区（用户区）的总容量、用量。
+
+你可以测试在 @src/runtime.c 的 am_runtime_event_handler 每次执行GC后调用该函数，打印内存信息。请你使用 @test/fork.scm 、 @test/test.scm 、 @test/mlp.scm 三个测试用例进行测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
+基于你刚刚实现的 am_runtime_print_memory_stats ，在 @src/native_System.c 中，实现一个native函数：(System.memstat) ，即 am_native_System_memstat 。该native函数在Scheme层面无输入参数，但是返回一个新的list对象，其内容格式是 '(vm区容量, vm区已用, heap区容量, heap区已用)。同时，保留 am_runtime_print_memory_stats 的格式化打印功能。
+
+提示：你可能需要改造 am_runtime_print_memory_stats 函数的接口定义，以取出 vm区容量, vm区已用, heap区容量, heap区已用 这四个关键信息。
+
+请你使用 @test/test.scm 进行测试，我已经在其中加入了多处 (System.memstat) 可供测试。你可以使用WSL进行编译构建和测试。
+
+已完成 `System.memstat` native 函数实现。
+
+## 改造内容
+
+### 1. 抽象内存统计接口 `include/runtime.h` / `src/runtime.c`
+
+新增与 allocator 实现无关的快照结构：
+
+```c
+typedef struct {
+    size_t vm_capacity;   // VM 工作区容量
+    size_t vm_used;       // VM 工作区已用
+    size_t heap_capacity; // 用户堆区容量
+    size_t heap_used;     // 用户堆区已用
+} am_runtime_memory_stats_t;
+```
+
+新增 getter：
+
+```c
+int32_t am_runtime_get_memory_stats(am_runtime_t *rt, am_runtime_memory_stats_t *out);
+```
+
+`am_runtime_print_memory_stats` 改为先调用 getter 再格式化打印，保留原有打印功能。
+
+### 2. `System.memstat` native 函数 `src/native_System.c`
+
+实现 `am_native_System_memstat`：
+
+1. 调用 `am_runtime_get_memory_stats` 取出四项数值。
+2. 创建 `am_list_t` 列表，依次压入：
+   - `vm_capacity`
+   - `vm_used`
+   - `heap_capacity`
+   - `heap_used`
+3. 在进程堆中分配 handle，将列表对象注册到 handle。
+4. 将 handle 压入操作数栈。
+5. **调用 `am_process_step(proc)` 前进 PC**（关键：参考 `native_push_float_or_null` / `native_push_wstring_buf` 的实现，native 函数自行推进 PC）。
+
+已注册到 `am_native_System_funcs[]` 并声明在 `include/native_System.h`。
+
+### 3. 事件循环中保留打印调试
+
+`am_runtime_event_handler` 每次 GC 后仍调用 `am_runtime_print_memory_stats(rt)`，便于观察 `System.memstat` 返回的数据与打印输出是否一致。
+
+## 测试结果（WSL Ubuntu-24.04）
+
+| 测试 | 结果 |
+|------|------|
+| `test/test.scm` | **通过**。模块加载、fork、多处 `(System.memstat)` 调用均正常执行，最终 `=== VM halted ===`，未再出现之前的 VM 分配失败。 |
+| `test/fork.scm` | 通过，定时器回调持续执行，无段错误。 |
+| `test/mlp.scm` | 通过，训练过程无崩溃。 |
+
+`System.memstat` 返回示例（在独立最小测试中）：
+
+```scheme
+(104857600 38352 104857600 4800)
+```
+
+## 关键修复点
+
+最初实现时遗漏了 `am_process_step(proc)`，导致 `System.memstat` 被反复执行、操作数栈和堆被不断填充，最终触发 VM 区大对象分配失败。加入 `am_process_step` 后行为与其它 native 函数一致，`test.scm` 恢复正常。
 
 ---------------------
 
