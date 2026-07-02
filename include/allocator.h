@@ -55,7 +55,7 @@ static inline void am_free(am_allocator_t *alloc, void *ptr) {
 
 
 #ifndef AM_ALLOCATOR_PRINT_COMPACT_REPORT
-#define AM_ALLOCATOR_PRINT_COMPACT_REPORT (1)
+#define AM_ALLOCATOR_PRINT_COMPACT_REPORT (0)
 #endif
 
 ///////////////////////////////////////////
@@ -65,7 +65,7 @@ static inline void am_free(am_allocator_t *alloc, void *ptr) {
 // 每经历 AM_HEAP_COMPACT_INTERVAL 次 GC 后触发一次标记-压缩。
 // 设为 0 表示不在 GC 时自动触发压缩（可手动调用 am_allocator_heap_compact）。
 #ifndef AM_HEAP_COMPACT_INTERVAL
-#define AM_HEAP_COMPACT_INTERVAL (10)
+#define AM_HEAP_COMPACT_INTERVAL (1)
 #endif
 
 // 动态边界调整相关阈值与限制。
@@ -112,6 +112,7 @@ void am_allocator_pool_reset_heap(am_allocator_pool_t *pool);
 size_t am_allocator_pool_total_size(const am_allocator_pool_t *pool);
 size_t am_allocator_pool_vm_used(const am_allocator_pool_t *pool);
 size_t am_allocator_pool_heap_used(const am_allocator_pool_t *pool);
+size_t am_allocator_pool_heap_capacity(const am_allocator_pool_t *pool);
 
 // 对堆区执行标记-压缩：移动 heap 中所有被 handle 引用的对象到堆区前端，
 // 更新 heap 表中的指针，并在尾部重建一个空闲块。必须在 GC 安全点调用。

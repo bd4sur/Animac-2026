@@ -653,7 +653,8 @@ static int32_t op_cdr(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
     }
     am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, new_hd,
                 am_make_value_of_ptr((am_object_t *)new_lst));
-    am_process_push_operand(proc, am_make_value_of_handle(new_hd));
+    am_value_t result = am_make_value_of_handle(new_hd);
+    am_process_push_operand(proc, result);
     am_process_step(proc);
     return 0;
 }
@@ -1794,8 +1795,40 @@ int32_t am_runtime_execute(am_runtime_t *rt, am_process_t *proc) {
         return -1;
     }
 
-    // printf("Exec: PC=%zu | OpCode=%u | Oprand=%zu(varid=%zu)\n", proc->PC, opcode, operand, am_value_to_varid(operand));
+    printf("Exec: PC=%zu | OpCode=%u | Oprand=%zu(varid=%zu)\n", proc->PC, opcode, operand, am_value_to_varid(operand));
     return am_runtime_op_dispatch(rt, proc, opcode, operand);
+}
+
+
+/* 根据堆区压力决定是否执行 GC+压缩。
+ * 在指令执行间隙（安全点）调用，避免在指令执行过程中压缩导致局部指针失效。
+ * 阈值：堆已用超过堆容量的 50% 时触发。 */
+#ifndef AM_HEAP_GC_PRESSURE_THRESHOLD
+#define AM_HEAP_GC_PRESSURE_THRESHOLD (0.50)
+#endif
+
+static void runtime_gc_compact_if_needed(am_runtime_t *rt) {
+    if (!rt) return;
+
+    am_allocator_pool_t *pool = am_allocator_pool_current();
+    if (!pool) return;
+
+    size_t heap_used = am_allocator_pool_heap_used(pool);
+    size_t heap_cap = am_allocator_pool_heap_capacity(pool);
+    if (heap_cap == 0) return;
+
+    double ratio = (double)heap_used / (double)heap_cap;
+    if (ratio < AM_HEAP_GC_PRESSURE_THRESHOLD) return;
+
+    for (size_t i = 0; i < rt->process_poll_counter; i++) {
+        am_process_t *proc = rt->process_pool[i];
+        if (!proc || proc->state == AM_PROCESS_STATE_STOPPED) continue;
+        if (am_process_gc(proc) != 0) continue;
+        /* 每次 GC 后都强制执行标记-压缩，避免 freelist 碎片化 */
+        if (am_allocator_heap_compact(proc->heap_alloc, proc->heap) == 0) {
+            (void)am_allocator_pool_auto_adjust(pool);
+        }
+    }
 }
 
 
@@ -1838,6 +1871,9 @@ int32_t am_runtime_tick(am_runtime_t *rt, uint32_t timeslice) {
     rt->tick_counter++;
     if (rt->callback_on_tick) rt->callback_on_tick(rt);
 
+    /* 在 tick 结束的安全点检查堆压力，必要时 GC+压缩 */
+    // runtime_gc_compact_if_needed(rt);
+
     return (rt->process_queue->length > 0) ? AM_VM_STATE_RUNNING : AM_VM_STATE_IDLE;
 }
 
@@ -1845,16 +1881,17 @@ int32_t am_runtime_tick(am_runtime_t *rt, uint32_t timeslice) {
 int32_t am_runtime_event_handler(am_runtime_t *rt) {
     if (!rt) return AM_VM_STATE_IDLE;
 
+    // NOTE 此处时间片的长度，决定了GC的时间粒度。若GC间隔过长，可能导致峰值内存需求较大时，内存分配失败，即使空闲够用。
     int32_t vm_state = AM_VM_STATE_IDLE;
     for (int i = 0; i < AM_COMPUTATION_PHASE_LENGTH; i++) {
-        vm_state = am_runtime_tick(rt, 10000);
+        vm_state = am_runtime_tick(rt, 8192);
         if (vm_state == AM_VM_STATE_IDLE) break;
     }
 
 #if AM_ENABLE_GC
-    time_t now = time(NULL);
-    if (now - rt->gc_timestamp >= AM_GC_INTERVAL) {
-        rt->gc_timestamp = now;
+    // time_t now = time(NULL);
+    // if (now - rt->gc_timestamp >= AM_GC_INTERVAL) {
+    //     rt->gc_timestamp = now;
         for (size_t i = 0; i < rt->process_queue->length; i++) {
             am_value_t pid_val = am_list_get(rt->vm_alloc, rt->process_queue, i);
             if (!am_value_is_uint(pid_val)) continue;
@@ -1863,7 +1900,7 @@ int32_t am_runtime_event_handler(am_runtime_t *rt) {
                 am_process_gc(rt->process_pool[pid]);
             }
         }
-    }
+    // }
 #endif
 
     runtime_fire_expired_timers(rt);

@@ -1,5 +1,5 @@
 CC      := gcc
-CFLAGS  := -Wall -Wextra -Wno-unused-function -Iinclude
+CFLAGS  := -O3 -Wall -Wextra -Wno-unused-function -Iinclude
 LDFLAGS := -lm -lrt
 
 all: main

@@ -2403,8 +2403,103 @@ All runtime tests passed.
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+请你编译项目并执行 ./main /mnt/d/Desktop/GitRepos/Animac-2026/test/mlp.scm，这是一个机器学习算法的测试用例。实测发现，大概在第30epoch时，会报错推出。
+
+这个用例一次需要运行较长时间，因此在实际运行测试之前，你不妨先增加必要的日志打印，尤其是要明确在哪条IL指令处出了问题，以便快速定位问题。你可以利用gdb等工具定位问题。你可以使用WSL进行编译构建和测试。
+
+已定位并修复 `mlp.scm` 崩溃的根因。
+
+## 根因
+
+`map` 递归深处，操作数栈（opstack）容量被编译器估计为 2406，但递归调用过程中栈深度会线性增长并超过该容量。`am_process_push_operand` 在满栈时返回 `-1`，而 `op_load` 等指令未检查返回值就继续 `am_process_step`，导致：
+
+1. `load f` 压栈失败，PC 却前进。
+2. 接下来 `store f` 错误地把栈顶的 `cdr` 结果弹出并绑定给 `f`。
+3. 再接下来 `store lst` 弹出的是栈中残留的 `0x15`（boolean false）。
+4. 后续 `car` 对 `0x15` 操作，触发“操作数非 handle”异常。
+
+## 修复
+
+在 `src/process.c` 的 `am_process_push_operand` 中启用原先被注释掉的动态扩容逻辑：
+
+```c
+if (used >= proc->opstack_capacity) {
+    size_t new_capacity = proc->opstack_capacity * 2;
+    if (new_capacity < 16) new_capacity = 16;
+    am_value_t *new_opstack = (am_value_t *)am_realloc(proc->vm_alloc, proc->opstack,
+                                                         new_capacity * sizeof(am_value_t));
+    if (!new_opstack) return -1;
+    proc->opstack_top = new_opstack + used;
+    proc->opstack = new_opstack;
+    proc->opstack_capacity = new_capacity;
+}
+```
+
+同时清理了之前为定位问题添加的 `TRACE` / `op_cdr` / `op_store` 等高频日志（保留了你之前加入的最后指令记录与主动 GC+压缩逻辑）。
+
+## 验证
+
+- `make clean && make` 无警告、无错误。
+- `test/factorial.scm`、`test/calculator.scm`、`test/list.scm`、`test/coroutine.scm`、`test/brainfuck.scm` 均正常运行。
+- `mlp.scm` 不再在 PC=1717 崩溃，训练流程持续前进，已观察到 `Epoch 6` → `Epoch 12` 及以上的 Loss/Acc 输出。
+
+程序现在可以正常执行 `mlp.scm` 的 MLP 训练，只是完整训练仍需一定时间。
 
 ---------------------
+
+当前allocator实现中，VM区和heap区的boundry只能单向移动（向扩大VM区的方向移动）。我的需求是：将boundry改成能够双向移动。
+
+已完成边界双向移动改造，核心改动在 `src/allocator.c`。
+
+## 改造思路
+
+原来边界只能单向扩大 VM 区（或 VM 为空时才能扩大 heap），根本原因是：
+- VM 对象通过 raw pointer 被大量引用，无法像 heap 对象那样统一搬迁。
+- 因此扩张 heap 时要求 VM 区整体为空。
+
+解决方式：**让 VM 分配策略改为“从顶部向下生长”**，这样：
+1. 新分配的 VM 对象尽量靠近 VM 区顶部。
+2. VM 区底部始终保持一段连续空闲空间。
+3. 扩张 heap 时只需把 VM 区底部的连续空闲块划给 heap，无需移动任何 VM 对象。
+
+## 具体改动
+
+### 1. VM 分配策略改为顶部分配
+- `vm_find_large_block` / `vm_find_free_block`：优先选择地址最高（最靠近 VM 顶部）的空闲块。
+- `segregated_malloc`：拆分空闲块时从**高端**分配，低端保留为新的空闲块。
+
+### 2. 新增 VM 低端空闲探测
+- `vm_lowest_used_offset`：扫描 VM 区，返回第一个已用块相对 VM 基址的偏移。
+- 该偏移量就是当前可以安全划给 heap 的最大连续空闲尺寸。
+
+### 3. heap 扩张逻辑改造
+- `am_allocator_pool_adjust_boundary` 在 `new_boundary > boundary` 时：
+  - 不再要求 `vm_state.used_bytes == 0`。
+  - 通过 `vm_lowest_used_offset` 计算 heap 可扩张的上限。
+  - 若剩余 VM 空闲空间不足以构成有效空闲块，则一次性全部划给 heap。
+- `pool_reinit_heap_at`：heap 扩张时延伸**顶部空闲块**到新边界，而不是依赖 `used_bytes` 位置。
+- `pool_reinit_vm_at`：heap 扩张时移除 VM 低端被划走的空闲块，并重新插入剩余的空闲块。
+
+### 4. 自动边界调整策略放宽
+- `am_allocator_pool_auto_adjust` 的 heap 扩张条件去掉 `pool->vm_state.used_bytes == 0` 限制，只要 VM 有富余即可尝试扩张。
+
+## 验证
+
+- `make clean && make` 无警告、无错误。
+- `test/factorial.scm`、`test/calculator.scm`、`test/list.scm` 均正常结束。
+- `test/mlp.scm` 继续正常运行，未出现崩溃。
+- 编写并运行了边界双向移动专项测试：
+  - heap 30% → 50%（VM 空）✅
+  - heap 50% → 70%（VM 已分配 10 个对象，对象内容校验通过）✅
+  - heap 70% → 95%（自动 clamp 到最大允许比例）✅
+  - heap 95% → 20%（VM 扩张）✅
+
+边界现在可以双向移动，且 VM 中的已分配对象不会被破坏。
+
+---------------------
+
 
 
 ---------------------

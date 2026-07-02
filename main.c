@@ -47,7 +47,7 @@ const wchar_t* type_name(int32_t type) {
 
 
 #ifndef AM_ALLOCATOR_POOL_SIZE
-#define AM_ALLOCATOR_POOL_SIZE ((size_t)(1200ULL * 1024 * 1024))
+#define AM_ALLOCATOR_POOL_SIZE ((size_t)(128ULL * 1024 * 1024))
 #endif
 
 

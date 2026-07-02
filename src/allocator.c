@@ -93,6 +93,23 @@ static inline am_vm_block_header_t *vm_block_prev(const am_segregated_state_t *s
     return (am_vm_block_header_t *)((uint8_t *)b - ps);
 }
 
+/* 扫描 VM 区，返回第一个已用块相对于 VM 基址的偏移。
+ * 若 VM 为空或全部空闲，返回 VM 区总容量。
+ * 用于判断边界能否向 heap 方向移动：只要新边界不超过第一个已用块地址，
+ * 低端空闲空间就可以安全地划归 heap。 */
+static size_t vm_lowest_used_offset(const am_segregated_state_t *s) {
+    if (!s || s->base >= s->end) return 0;
+    if (s->used_bytes == 0) return (size_t)(s->end - s->base);
+
+    uint8_t *p = s->base;
+    while (p < s->end) {
+        am_vm_block_header_t *b = (am_vm_block_header_t *)p;
+        if (vm_block_is_used(b)) return (size_t)(p - s->base);
+        p += vm_block_real_size(b);
+    }
+    return (size_t)(s->end - s->base);
+}
+
 /* 根据块大小返回 size class 索引；若超过所有桶则返回 SIZE_MAX */
 static size_t vm_size_to_class_index(size_t size) {
     if (size <= 512) {
@@ -167,14 +184,15 @@ static void vm_coalesce_and_insert(am_segregated_state_t *s, am_vm_block_header_
     vm_bucket_insert(s, b);
 }
 
-/* 在 large list 中查找 best-fit（最小足够）的空闲块 */
+/* 在 large list 中查找足够大的空闲块，优先返回地址最高（最靠近 VM 区顶部）的块，
+ * 使已用块尽量向 VM 区顶部聚集，低端留出连续空闲空间供边界向 heap 方向移动。 */
 static am_vm_block_header_t *vm_find_large_block(am_segregated_state_t *s, size_t min_size) {
     am_vm_block_header_t *best = NULL;
     am_vm_block_header_t *best_prev = NULL;
     am_vm_block_header_t *prev = NULL;
     for (am_vm_block_header_t *cur = s->large_free_head; cur; cur = cur->next_free) {
         if (vm_block_real_size(cur) >= min_size) {
-            if (!best || vm_block_real_size(cur) < vm_block_real_size(best)) {
+            if (!best || cur > best) {
                 best = cur;
                 best_prev = prev;
             }
@@ -190,9 +208,9 @@ static am_vm_block_header_t *vm_find_large_block(am_segregated_state_t *s, size_
     return best;
 }
 
-/* 从指定 class 开始向上查找足够大的空闲块（bucket 内按 best-fit）。
- * 注意：同一 bucket 中可能包含小于 alloc_size 的块（由 large block 拆分产生），
- * 因此必须逐个检查大小。 */
+/* 从指定 class 开始向上查找足够大的空闲块。
+ * 在每个 size class 内部选择地址最高（最靠近 VM 区顶部）的块，
+ * 配合“从高端拆分”策略，使已用块向 VM 区顶部聚集。 */
 static am_vm_block_header_t *vm_find_free_block(am_segregated_state_t *s, size_t class_idx, size_t alloc_size) {
     for (size_t i = class_idx; i < AM_VM_N_CLASSES; i++) {
         am_vm_block_header_t *prev = NULL;
@@ -201,10 +219,9 @@ static am_vm_block_header_t *vm_find_free_block(am_segregated_state_t *s, size_t
         for (am_vm_block_header_t *cur = s->buckets[i]; cur; cur = cur->next_free) {
             size_t cur_sz = vm_block_real_size(cur);
             if (cur_sz >= alloc_size) {
-                if (!best || cur_sz < vm_block_real_size(best)) {
+                if (!best || cur > best) {
                     best = cur;
                     best_prev = prev;
-                    if (cur_sz == am_vm_size_classes[i]) break; /* 找到精确匹配 */
                 }
             }
             prev = cur;
@@ -244,15 +261,20 @@ static void *segregated_malloc(void *state, size_t size) {
 
     size_t block_sz = vm_block_real_size(b);
 
-    /* 拆分：如果块比所需大出一个最小块以上 */
+    /* 拆分：从块的高端分配，低端保留为空闲。这样已用块尽量向 VM 区顶部聚集，
+     * 低端形成连续空闲区，便于在需要时把边界向 heap 方向移动。 */
     if (block_sz >= alloc_size + AM_VM_MIN_BLOCK_SIZE) {
-        am_vm_block_header_t *split = (am_vm_block_header_t *)((uint8_t *)b + alloc_size);
         size_t split_size = block_sz - alloc_size;
-        vm_block_set_size(split, split_size, false);
-        split->prev_size = alloc_size;
-        am_vm_block_header_t *split_next = vm_block_next(s, split);
-        if (split_next) split_next->prev_size = split_size;
-        vm_bucket_insert(s, split);
+        am_vm_block_header_t *freeb = b;                       // 低端：保持空闲
+        am_vm_block_header_t *usedb = (am_vm_block_header_t *)((uint8_t *)b + split_size); // 高端：分配出去
+        vm_block_set_size(freeb, split_size, false);
+        // freeb->prev_size 继承原 b 的 prev_size
+        vm_block_set_size(usedb, alloc_size, true);
+        usedb->prev_size = split_size;
+        am_vm_block_header_t *next = vm_block_next(s, usedb);
+        if (next) next->prev_size = alloc_size;
+        vm_bucket_insert(s, freeb);
+        b = usedb;
         block_sz = alloc_size;
     }
 
@@ -630,6 +652,11 @@ size_t am_allocator_pool_heap_used(const am_allocator_pool_t *pool) {
     return pool->heap_state.used_bytes;
 }
 
+size_t am_allocator_pool_heap_capacity(const am_allocator_pool_t *pool) {
+    if (!pool) return 0;
+    return pool->boundary;
+}
+
 am_allocator_pool_t *am_allocator_pool_current(void) {
     return g_current_pool;
 }
@@ -647,11 +674,41 @@ static size_t pool_prev_block_size(const am_freelist_state_t *s, const uint8_t *
     return last_size;
 }
 
+/* 返回 heap 区顶部（紧贴 capacity）的连续空闲块大小。若顶部不是空闲块则返回 0。 */
+static size_t heap_top_free_size(const am_freelist_state_t *s) {
+    am_heap_block_header_t *top_free = NULL;
+    uint8_t *p = s->base;
+    while (p < s->base + s->capacity) {
+        am_heap_block_header_t *b = (am_heap_block_header_t *)p;
+        if (!block_is_used(b)) top_free = b;
+        p += block_real_size(b);
+    }
+    if (!top_free) return 0;
+    size_t free_start = (size_t)((uint8_t *)top_free - s->base);
+    size_t free_size = block_real_size(top_free);
+    if (free_start + free_size != s->capacity) return 0;
+    return free_size;
+}
+
 /* 在不移动 heap 对象的前提下，按新的 boundary 重新初始化 heap 空闲链表。
- * 调用前必须保证所有已用对象都位于 [base, base+new_boundary) 内。 */
+ * - 收缩时（new_boundary <= capacity）假设 heap 已压缩：已用块集中在底部，
+ *   空闲块从 used_bytes 开始延伸到新边界。
+ * - 扩张时（new_boundary > capacity）要求 heap 顶部存在连续空闲块，
+ *   并将其延伸到新边界。 */
 static int32_t pool_reinit_heap_at(am_allocator_pool_t *pool, size_t new_boundary) {
     am_freelist_state_t *s = &pool->heap_state;
     if (new_boundary < s->used_bytes) return -1;
+
+    if (new_boundary > s->capacity) {
+        // heap 扩张：延伸顶部空闲块
+        size_t top_free = heap_top_free_size(s);
+        if (top_free == 0) return -1;
+        size_t free_start = s->capacity - top_free;
+        am_heap_block_header_t *freeb = (am_heap_block_header_t *)(s->base + free_start);
+        s->capacity = new_boundary;
+        block_set_size(freeb, new_boundary - free_start, false);
+        return 0;
+    }
 
     size_t free_size = new_boundary - s->used_bytes;
     if (free_size != 0 && free_size < AM_BLOCK_MIN_SIZE) return -1;
@@ -676,7 +733,8 @@ static int32_t pool_reinit_heap_at(am_allocator_pool_t *pool, size_t new_boundar
  * - 若 VM 为空（used_bytes == 0），允许边界向任意方向移动。
  * - 若边界左移（VM 扩张），保留现有 VM 对象，把新增区域 [new_base, old_base)
  *   作为空闲块加入。
- * - 若边界右移（heap 扩张），调用前必须确保 VM 已为空。 */
+ * - 若边界右移（heap 扩张），调用前必须保证 [old_base, new_base) 内没有已用块，
+ *   即低端空闲块可以全部划归 heap。 */
 static void pool_reinit_vm_at(am_allocator_pool_t *pool, size_t new_boundary) {
     am_segregated_state_t *s = &pool->vm_state;
     uint8_t *new_base = pool->base + new_boundary;
@@ -698,12 +756,15 @@ static void pool_reinit_vm_at(am_allocator_pool_t *pool, size_t new_boundary) {
             b->prev_size = 0;
             vm_bucket_insert(s, b);
         }
-    } else {
-        // VM 非空：只能左移（VM 扩张），且不能丢弃已有对象
-        uint8_t *old_base = s->base;
-        s->base = new_base;
-        s->end = pool->base + pool->total_size;
+        return;
+    }
 
+    uint8_t *old_base = s->base;
+    s->base = new_base;
+    s->end = pool->base + pool->total_size;
+
+    if (new_base <= old_base) {
+        // VM 扩张（边界左移）：新增低端空间
         size_t added = (size_t)(old_base - new_base);
         if (added >= AM_VM_MIN_BLOCK_SIZE) {
             am_vm_block_header_t *b = (am_vm_block_header_t *)new_base;
@@ -713,6 +774,28 @@ static void pool_reinit_vm_at(am_allocator_pool_t *pool, size_t new_boundary) {
             am_vm_block_header_t *next = vm_block_next(s, b);
             if (next) next->prev_size = added;
             vm_coalesce_and_insert(s, b);
+        }
+    } else {
+        // VM 收缩（边界右移，heap 扩张）：把 [old_base, new_base) 移出 VM，
+        // 保留 [new_base, vm_used_low) 作为新的低端空闲块。
+        size_t removed = (size_t)(new_base - old_base);
+        am_vm_block_header_t *first = (am_vm_block_header_t *)old_base;
+        size_t first_sz = vm_block_real_size(first);
+        if (removed > first_sz) removed = first_sz; // 防御性截断，理论上不会发生
+        vm_bucket_remove(s, first);
+
+        size_t remaining = first_sz - removed;
+        if (remaining >= AM_VM_MIN_BLOCK_SIZE) {
+            am_vm_block_header_t *freeb = (am_vm_block_header_t *)new_base;
+            vm_block_set_size(freeb, remaining, false);
+            freeb->prev_size = 0;
+            am_vm_block_header_t *next = vm_block_next(s, freeb);
+            if (next) next->prev_size = remaining;
+            vm_bucket_insert(s, freeb);
+        } else {
+            // remaining 为 0：第一个已用块直接位于 VM 区首
+            am_vm_block_header_t *next = vm_block_next(s, first);
+            if (next) next->prev_size = 0;
         }
     }
 }
@@ -735,8 +818,20 @@ int32_t am_allocator_pool_adjust_boundary(am_allocator_pool_t *pool, double rati
     if (new_boundary == pool->boundary) return 0;
 
     if (new_boundary > pool->boundary) {
-        // heap 扩张：必须保证 VM 工作区为空，否则无法安全搬迁 VM 对象
-        if (pool->vm_state.used_bytes != 0) return -1;
+        // heap 扩张：要求 VM 区低端有足够连续空闲空间
+        size_t vm_free_bottom = vm_lowest_used_offset(&pool->vm_state);
+        size_t vm_used_low = pool->boundary + vm_free_bottom;
+        size_t max_new_boundary = vm_used_low;
+        if (max_new_boundary > max_boundary) max_new_boundary = max_boundary;
+        if (new_boundary > max_new_boundary) new_boundary = max_new_boundary;
+        // 若剩余 VM 空闲空间太小无法构成有效空闲块，则全部让给 heap
+        if (new_boundary < vm_used_low) {
+            size_t remaining = vm_used_low - new_boundary;
+            if (remaining > 0 && remaining < AM_VM_MIN_BLOCK_SIZE) {
+                new_boundary = vm_used_low;
+            }
+        }
+        if (new_boundary == pool->boundary) return 0;
         if (pool_reinit_heap_at(pool, new_boundary) != 0) return -1;
         pool->boundary = new_boundary;
         pool_reinit_vm_at(pool, new_boundary);
@@ -787,10 +882,9 @@ int32_t am_allocator_pool_auto_adjust(am_allocator_pool_t *pool) {
         return ret;
     }
 
-    // heap 压力大且 VM 为空：把边界让给 heap（增大 heap 比例）
+    // heap 压力大且 VM 有富余：把边界让给 heap（增大 heap 比例）
     if (heap_ratio > AM_POOL_HEAP_EXPAND_THRESHOLD &&
-        vm_ratio < AM_POOL_VM_SLACK_THRESHOLD &&
-        pool->vm_state.used_bytes == 0) {
+        vm_ratio < AM_POOL_VM_SLACK_THRESHOLD) {
         double target = current_ratio + AM_POOL_BOUNDARY_ADJ_STEP;
         int32_t ret = am_allocator_pool_adjust_boundary(pool, target);
         if (ret == 0 && pool->boundary != old_boundary) {
@@ -896,22 +990,24 @@ static void compact_print_heap_section(const am_freelist_state_t *s,
     fprintf(stderr, "  容量=%zu bytes\n", s->capacity);
     fprintf(stderr, "  压缩前: 已用=%zu 空闲=%zu\n",
             used_before, s->capacity - used_before);
-    fprintf(stderr, "  压缩前空闲块:\n");
-    if (before_free_count == 0) {
-        fprintf(stderr, "    (无空闲块)\n");
-    } else {
-        for (size_t i = 0; i < before_free_count; i++) {
-            fprintf(stderr, "    起始=%p 结束=%p 大小=%zu\n",
-                    (void *)before_free[i].start,
-                    (void *)(before_free[i].start + before_free[i].size),
-                    before_free[i].size);
-        }
-    }
+    fprintf(stderr, "  压缩前空闲块: %zu个\n", before_free_count);
+    (void)before_free;
+    // if (before_free_count == 0) {
+    //     fprintf(stderr, "    (无空闲块)\n");
+    // } else {
+    //     for (size_t i = 0; i < before_free_count; i++) {
+    //         fprintf(stderr, "    起始=%p 结束=%p 大小=%zu\n",
+    //                 (void *)before_free[i].start,
+    //                 (void *)(before_free[i].start + before_free[i].size),
+    //                 before_free[i].size);
+    //     }
+    // }
 
     fprintf(stderr, "  压缩后: 已用=%zu 空闲=%zu\n",
             s->used_bytes, s->capacity - s->used_bytes);
     compact_print_free_blocks(s, "  压缩后空闲块:");
     fprintf(stderr, "  存活对象: %zu 个, 共 %zu bytes\n", live_count, s->used_bytes);
+    fprintf(stderr, "  使用率: %.2f%%\n", 100.0 * (double)s->used_bytes / (double)s->capacity);
 }
 
 /* 打印一次完整的压缩报告。调用时压缩已完成，before_* 参数记录压缩前状态。 */

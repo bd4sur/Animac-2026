@@ -268,18 +268,21 @@ int32_t am_process_destroy(am_process_t *proc) {
 int32_t am_process_push_operand(am_process_t *proc, am_value_t v) {
     if (!proc || !proc->opstack || !proc->opstack_top) return -1;
     size_t used = (size_t)(proc->opstack_top - proc->opstack);
-    if (used >= proc->opstack_capacity) return -1;
-    // 注：以下是opstack深度估计不准或者无估计时的权宜之计
     // if (used >= proc->opstack_capacity) {
-    //     size_t new_capacity = proc->opstack_capacity * 2;
-    //     if (new_capacity < 16) new_capacity = 16;
-    //     am_value_t *new_opstack = (am_value_t *)am_realloc(proc->vm_alloc, proc->opstack,
-    //                                                          new_capacity * sizeof(am_value_t));
-    //     if (!new_opstack) return -1;
-    //     proc->opstack_top = new_opstack + used;
-    //     proc->opstack = new_opstack;
-    //     proc->opstack_capacity = new_capacity;
+    //     fprintf(stderr, "[Process] am_process_push_operand OPSTACK容量不足\n");
+    //     return -1;
     // }
+    // 注：以下是opstack深度估计不准或者无估计时的权宜之计
+    if (used >= proc->opstack_capacity) {
+        size_t new_capacity = proc->opstack_capacity * 2;
+        if (new_capacity < 16) new_capacity = 16;
+        am_value_t *new_opstack = (am_value_t *)am_realloc(proc->vm_alloc, proc->opstack,
+                                                             new_capacity * sizeof(am_value_t));
+        if (!new_opstack) return -1;
+        proc->opstack_top = new_opstack + used;
+        proc->opstack = new_opstack;
+        proc->opstack_capacity = new_capacity;
+    }
     *proc->opstack_top++ = v;
     return 0;
 }

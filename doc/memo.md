@@ -1,5 +1,7 @@
 TODO 所有代码文件加am_前缀
 
+TODO opstack深度估计还是有问题，可能跟表达式压栈和begin的pop问题有关。因此在 am_process_push_operand 暂且加入扩容逻辑，但这是不合适的。未来要解决。
+
 TODO Symbol的eq必须用字符串去比较。symbol不能根据id比较，symbol的唯一性应该是宇宙级的，而不是进程级的。symbol必须根据字面内容进行比较。
 
 TODO uint/int/float数值类型的自动转换→装箱
@@ -31,8 +33,6 @@ TODO 长远：不许使用系统malloc
 TODO 改进TPV格式：利用NaN
 
 TODO 虚拟机中央switch性能优化（计算跳转、基于profiling的优化等）
-
-TODO 表达式压栈和begin的pop问题
 
 TODO parser创建wstring对象时要先去掉两端的双引号
 
