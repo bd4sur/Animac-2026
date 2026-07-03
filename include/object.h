@@ -274,6 +274,7 @@ static inline am_value_t am_make_value_of_float(am_float_t x) {
 #define AM_OBJECT_TYPE_VOCAB        (0x0C)  // 词典（字符串集合）
 #define AM_OBJECT_TYPE_MODULE       (0x0D)  // 模块
 #define AM_OBJECT_TYPE_PROCESS      (0x0E)  // 进程
+#define AM_OBJECT_TYPE_STRINDEX     (0x0F)  // 字符串索引（多值哈希表，用于字符串驻留）
 
 
 // Object基类（公共头）
