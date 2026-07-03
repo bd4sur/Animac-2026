@@ -3259,6 +3259,35 @@ else if (obj_type == AM_OBJECT_TYPE_MAP) {
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个非标准Scheme解释器。请你阅读 test 目录中的测试用Scheme代码，理解其语法，并将 @test/deadlock.scm 改写成符合 @test/fork.scm 的形式。注意，现有的 @test/deadlock.scm 所使用的fork是旧版的，其实际语义更类似于spawn。而 @test/fork.scm 中fork的用法是现行的，其语义类似于Linux的fork系统调用。
+
+仅允许修改 @test/deadlock.scm 一个文件，无需测试。
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
+
+---------------------
+
 - (Table.make)  →  {}
 - (Table.set tbl key value)  →  tbl[key] = value  ;; key可以是数值、符号、字符串，value可以是任何值
 - (Table.get tbl key)  →  tbl[key]
@@ -3266,30 +3295,6 @@ else if (obj_type == AM_OBJECT_TYPE_MAP) {
 - (Table.contains tbl key)  →  Table.contains(tbl, key)
 - (Table.delete tbl key)  →  Table.delete(tbl, key)
 - (Table.length tbl)  →  Table.length(tbl)
-
----------------------
-
-
----------------------
-
-
----------------------
-
-
----------------------
-
-
----------------------
-
-
----------------------
-
-
----------------------
-
-
----------------------
-
 
 ---------------------
 
