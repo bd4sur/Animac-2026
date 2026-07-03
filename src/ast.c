@@ -147,6 +147,7 @@ am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_
     ast->var_type = am_list_create(alloc, 64, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
     ast->nodes = am_heap_create(alloc, alloc, 1024);
     ast->node_token_mapping = am_map_create(alloc, 64);
+    ast->strindex = am_strindex_create(alloc, 1024);
     ast->scopes = am_map_create(alloc, 64);
     ast->var_arn_mapping = am_map_create(alloc, 64);
     ast->lambda_handles = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
@@ -156,7 +157,7 @@ am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_
     ast->natives = am_map_create(alloc, 16);
 
     if (!ast->symbol_vocab || !ast->var_vocab || !ast->var_type || !ast->nodes ||
-        !ast->node_token_mapping || !ast->scopes || !ast->var_arn_mapping ||
+        !ast->node_token_mapping || !ast->strindex || !ast->scopes || !ast->var_arn_mapping ||
         !ast->lambda_handles || !ast->tailcall_handles || !ast->var_top ||
         !ast->dependencies || !ast->natives) {
         am_ast_destroy(ast);
@@ -179,6 +180,7 @@ int32_t am_ast_destroy(am_ast_t *ast) {
     if (ast->var_type) am_list_destroy(alloc, ast->var_type);
     if (ast->nodes) am_heap_destroy(alloc, alloc, ast->nodes);
     if (ast->node_token_mapping) am_map_destroy(alloc, ast->node_token_mapping);
+    if (ast->strindex) am_strindex_destroy(alloc, ast->strindex);
     if (ast->scopes) am_map_destroy(alloc, ast->scopes);
     if (ast->var_arn_mapping) am_map_destroy(alloc, ast->var_arn_mapping);
     if (ast->lambda_handles) am_list_destroy(alloc, ast->lambda_handles);
@@ -215,6 +217,7 @@ am_ast_t *am_ast_copy(am_ast_t *ast) {
     copy->var_type = ast->var_type ? am_list_copy(ast->alloc, ast->var_type) : NULL;
     copy->nodes = ast->nodes ? am_heap_copy(ast->alloc, ast->alloc, ast->nodes) : NULL;
     copy->node_token_mapping = ast->node_token_mapping ? am_map_copy(ast->alloc, ast->node_token_mapping) : NULL;
+    copy->strindex = ast->strindex ? am_strindex_copy(ast->alloc, ast->strindex) : NULL;
     copy->scopes = ast->scopes ? am_map_copy(ast->alloc, ast->scopes) : NULL;
     copy->var_arn_mapping = ast->var_arn_mapping ? am_map_copy(ast->alloc, ast->var_arn_mapping) : NULL;
     copy->lambda_handles = ast->lambda_handles ? am_list_copy(ast->alloc, ast->lambda_handles) : NULL;
@@ -224,7 +227,7 @@ am_ast_t *am_ast_copy(am_ast_t *ast) {
     copy->natives = ast->natives ? am_map_copy(ast->alloc, ast->natives) : NULL;
 
     if (!copy->symbol_vocab || !copy->var_vocab || !copy->var_type || !copy->nodes ||
-        !copy->node_token_mapping || !copy->scopes || !copy->var_arn_mapping ||
+        !copy->node_token_mapping || !copy->strindex || !copy->scopes || !copy->var_arn_mapping ||
         !copy->lambda_handles || !copy->tailcall_handles || !copy->var_top ||
         !copy->dependencies || !copy->natives) {
         am_ast_destroy(copy);
@@ -603,6 +606,30 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
     }
 
     // =============================================================================
+    // 第2.5步：合并 strindex（机械合并：把 importee 的 hash/handle 映射后插入 importer）
+    // =============================================================================
+    if (importee->strindex && importee->strindex->length > 0) {
+        for (size_t i = 0; i < importee->strindex->capacity; i++) {
+            uint32_t hash = importee->strindex->slots[i].hash;
+            if (hash == AM_STRINDEX_KEY_EMPTY || hash == AM_STRINDEX_KEY_TOMBSTONE) continue;
+
+            am_value_t old_h_val = importee->strindex->slots[i].value;
+            if (!am_value_is_handle(old_h_val)) continue;
+
+            am_value_t new_h_val = am_map_get(importer->alloc, handle_merge_mapping, old_h_val);
+            if (!am_value_is_handle(new_h_val)) continue;
+
+            am_strindex_t *new_si = am_strindex_set_raw(importer->alloc, importer->strindex,
+                                                         hash, new_h_val);
+            if (!new_si) {
+                free(node_ctx.entries);
+                return -1;
+            }
+            importer->strindex = new_si;
+        }
+    }
+
+    // =============================================================================
     // 第3步：将 importee 的顶级节点嫁接到 importer 的顶层作用域
     // =============================================================================
 
@@ -970,37 +997,91 @@ am_handle_t am_ast_make_slist_node(am_ast_t *ast, am_handle_t parent, int32_t ty
 
 
 // 功能描述：创建WString对象，返回其在AST->nodes堆中的把柄。
+// 实现说明：基于全局字符串驻留索引 strindex 实现同值复用。先查索引，若存在相同内容
+//         的字符串则复用其 handle；否则新建对象并登记到 strindex。
 am_handle_t am_ast_make_wstring_node(am_ast_t *ast, am_token_t *str_token) {
-    if (!ast || !ast->nodes || !str_token) return AM_HANDLE_NULL;
-
-    am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->alloc, ast->nodes);
-    if (handle == AM_HANDLE_NULL) return AM_HANDLE_NULL;
+    if (!ast || !ast->nodes || !ast->strindex || !str_token) return AM_HANDLE_NULL;
 
     // 从token指示的位置截取字符串（去掉两侧引号）
     size_t len = str_token->length;
     if (len >= 2) len -= 2;
     wchar_t *text = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
-    if (!text) {
-        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
-        return AM_HANDLE_NULL;
-    }
+    if (!text) return AM_HANDLE_NULL;
     wcsncpy(text, &ast->code[str_token->index + 1], len);
     text[len] = L'\0';
 
-    am_wstring_t *ws = am_wstring_create(ast->alloc, text, len);
-    free(text);
-    if (!ws) {
-        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
+    uint32_t hash = am_strindex_hash_string(text);
+
+    // 在 strindex 中查找候选 handle
+    size_t n_candidates = am_strindex_get_all(ast->alloc, ast->strindex, text, NULL, 0);
+    if (n_candidates > 0) {
+        am_value_t *candidates = (am_value_t *)malloc(n_candidates * sizeof(am_value_t));
+        if (!candidates) {
+            free(text);
+            return AM_HANDLE_NULL;
+        }
+        size_t got = am_strindex_get_all(ast->alloc, ast->strindex, text, candidates, n_candidates);
+
+        for (size_t i = 0; i < got; i++) {
+            am_handle_t cand_h = am_value_to_handle(candidates[i]);
+            am_value_t cand_val = am_heap_get(ast->alloc, ast->alloc, ast->nodes, cand_h);
+            if (!am_value_is_ptr(cand_val)) continue;
+            am_object_t *obj = am_value_to_ptr(cand_val);
+            if (obj->type != AM_OBJECT_TYPE_WSTRING) continue;
+            am_wstring_t *ws = (am_wstring_t *)obj;
+
+            // 先比长度，再比内容
+            if (ws->length != len) continue;
+            bool match = true;
+            for (size_t j = 0; j < len; j++) {
+                am_wchar_t wc = am_value_to_wchar(ws->content[j]);
+                if (wc != (am_wchar_t)text[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                free(candidates);
+                free(text);
+                return cand_h;
+            }
+        }
+        free(candidates);
+    }
+
+    // 不存在可复用的字符串，新建对象
+    am_handle_t handle = am_heap_alloc_handle(ast->alloc, ast->alloc, ast->nodes);
+    if (handle == AM_HANDLE_NULL) {
+        free(text);
         return AM_HANDLE_NULL;
     }
+
+    am_wstring_t *ws = am_wstring_create(ast->alloc, text, len);
+    if (!ws) {
+        am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
+        free(text);
+        return AM_HANDLE_NULL;
+    }
+
+    // 缓存 hash 到对象头，便于后续快速判等
+    ws->base.hash = hash;
 
     if (am_heap_set(ast->alloc, ast->alloc, ast->nodes, handle, am_make_value_of_ptr((am_object_t *)ws)) != 0) {
         // 注：am_wstring_t 的 content 是柔性数组，am_free 即可释放整个对象
         am_free(ast->alloc, ws);
         am_heap_free_handle(ast->alloc, ast->alloc, ast->nodes, handle);
+        free(text);
         return AM_HANDLE_NULL;
     }
 
+    // 登记到 strindex。注意 strindex_set 可能扩容并改变指针。
+    am_strindex_t *new_si = am_strindex_set(ast->alloc, ast->strindex, text, am_make_value_of_handle(handle));
+    if (new_si) {
+        ast->strindex = new_si;
+    }
+    // 即使 strindex 登记失败，字符串对象已经创建并绑定到 heap，仍返回 handle。
+
+    free(text);
     return handle;
 }
 

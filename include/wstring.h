@@ -80,6 +80,13 @@ typedef struct am_strindex_t {
 } am_strindex_t;
 
 // ===============================================================================
+// 哈希函数
+// ===============================================================================
+
+// 计算 wchar_t 字符串的 FNV-1a 32-bit 哈希值
+uint32_t am_strindex_hash_string(const wchar_t *str);
+
+// ===============================================================================
 // 构造函数
 // ===============================================================================
 
@@ -136,6 +143,11 @@ size_t am_strindex_get_all(am_allocator_t *alloc, am_strindex_t *obj, wchar_t *s
 // 当负载因子（含墓碑）超过 75% 时自动扩容。
 // 返回新的对象指针；失败返回 NULL。调用者必须使用返回的指针替换原有指针。
 am_strindex_t *am_strindex_set(am_allocator_t *alloc, am_strindex_t *obj, wchar_t *str, am_value_t value);
+
+// 按已知 hash 直接插入 (hash, value)，不重新计算字符串 hash。
+// 当负载因子（含墓碑）超过 75% 时自动扩容。
+// 返回新的对象指针；失败返回 NULL。调用者必须使用返回的指针替换原有指针。
+am_strindex_t *am_strindex_set_raw(am_allocator_t *alloc, am_strindex_t *obj, uint32_t hash, am_value_t value);
 
 // 删除指定 value（handle）所在的条目。按 value 的位模式精确匹配；删除成功返回 0；未找到返回 -1。
 int32_t am_strindex_delete(am_allocator_t *alloc, am_strindex_t *obj, am_value_t value);

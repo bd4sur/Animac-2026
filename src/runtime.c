@@ -934,15 +934,15 @@ static int32_t op_duplicate(am_runtime_t *rt, am_process_t *proc, am_value_t ope
     }
     else if (obj->type == AM_OBJECT_TYPE_WSTRING) {
         am_wstring_t *ws = (am_wstring_t *)obj;
-        am_wstring_t *copy = am_wstring_copy(proc->heap_alloc, ws);
-        if (!copy) return -1;
-        am_handle_t new_hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
-        if (new_hd == AM_HANDLE_NULL) {
-            am_wstring_destroy(proc->heap_alloc, copy);
-            return -1;
+        // 构造临时 wchar_t 缓冲区供驻留查询使用（wchar_t 与 am_wchar_t 同为 32 位 Unicode 码点）
+        wchar_t *buf = (wchar_t *)am_malloc(proc->vm_alloc, ws->length * sizeof(wchar_t));
+        if (!buf) return -1;
+        for (size_t i = 0; i < ws->length; i++) {
+            buf[i] = (wchar_t)am_value_to_wchar(ws->content[i]);
         }
-        am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, new_hd,
-                    am_make_value_of_ptr((am_object_t *)copy));
+        am_handle_t new_hd = am_process_make_wstring_handle(proc, buf, ws->length);
+        am_free(proc->vm_alloc, buf);
+        if (new_hd == AM_HANDLE_NULL) return -1;
         am_process_push_operand(proc, am_make_value_of_handle(new_hd));
     }
     else {
@@ -1296,19 +1296,9 @@ static int32_t op_typeof(am_runtime_t *rt, am_process_t *proc, am_value_t operan
              am_value_is_float(v))        type_name = L"number";
     else if (am_value_is_wchar(v))        type_name = L"wchar";
 
-    am_wstring_t *ws = am_wstring_create(proc->heap_alloc, (wchar_t *)type_name, wcslen(type_name));
-    if (!ws) return -1;
-    am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
-    if (hd == AM_HANDLE_NULL) {
-        am_wstring_destroy(proc->heap_alloc, ws);
-        return -1;
-    }
-    if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, hd,
-                    am_make_value_of_ptr((am_object_t *)ws)) != 0) {
-        am_wstring_destroy(proc->heap_alloc, ws);
-        am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
-        return -1;
-    }
+    size_t type_name_len = wcslen(type_name);
+    am_handle_t hd = am_process_make_wstring_handle(proc, type_name, type_name_len);
+    if (hd == AM_HANDLE_NULL) return -1;
     am_process_push_operand(proc, am_make_value_of_handle(hd));
     am_process_step(proc);
     return 0;

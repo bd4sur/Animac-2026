@@ -79,21 +79,8 @@ static int32_t native_push_float_or_null(am_process_t *proc, am_float_t result) 
 // 从 wchar_t 缓冲区创建字符串对象并压回操作数栈。
 // 成功返回 0，失败返回 -1。
 static int32_t native_push_wstring_buf(am_process_t *proc, const wchar_t *buf, size_t len) {
-    am_wstring_t *ws = am_wstring_create(proc->heap_alloc, (wchar_t *)buf, len);
-    if (!ws) return -1;
-
-    am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
-    if (hd == AM_HANDLE_NULL) {
-        am_wstring_destroy(proc->heap_alloc, ws);
-        return -1;
-    }
-
-    if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, hd,
-                    am_make_value_of_ptr((am_object_t *)ws)) != 0) {
-        am_wstring_destroy(proc->heap_alloc, ws);
-        am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
-        return -1;
-    }
+    am_handle_t hd = am_process_make_wstring_handle(proc, buf, len);
+    if (hd == AM_HANDLE_NULL) return -1;
 
     if (am_process_push_operand(proc, am_make_value_of_handle(hd)) != 0) return -1;
     am_process_step(proc);

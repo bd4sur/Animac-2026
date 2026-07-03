@@ -15,6 +15,7 @@ extern "C" {
 #include "heap.h"
 #include "map.h"
 #include "list.h"
+#include "wstring.h"
 
 
 // 全局内置变量
@@ -55,6 +56,7 @@ typedef struct am_ast_t {
     am_allocator_t *alloc;       // 编译阶段AST专用的内存分配器
     am_heap_t *nodes;            // AST临时堆，保存编译阶段所有数据对象（包括SList也就是AST节点、词法作用域、var/sym表等）的临时堆，它们之间都是通过handle互相引用，建立起树结构
     am_map_t *node_token_mapping; // 记录AST节点把柄与token索引的映射关系（对应TS的nodeIndexes）
+    am_strindex_t *strindex;     // 用于全局字符串驻留的多值哈希表，检查某个字符串（的哈希值）是否已存在于nodes
 
     am_map_t *scopes;            // 词法作用域：Map<handle(lambda), handle(scope)>
     am_map_t *var_arn_mapping;   // 变量ARN（Alpha-renaming）前后的映射：Map<varid, varid>，key是ARN后的新varid，value是ARN前的旧varid

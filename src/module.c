@@ -46,6 +46,7 @@ typedef struct {
     size_t   lambda_handles_offset;
     size_t   tailcall_handles_offset;
     size_t   var_top_offset;
+    size_t   strindex_offset;
 } module_header_t;
 #pragma pack(pop)
 
@@ -69,6 +70,7 @@ static void module_free_ast(am_allocator_t *container_alloc,
         if (ast->lambda_handles)   am_list_destroy(obj_alloc, ast->lambda_handles);
         if (ast->tailcall_handles) am_list_destroy(obj_alloc, ast->tailcall_handles);
         if (ast->var_top)          am_list_destroy(obj_alloc, ast->var_top);
+        if (ast->strindex)         am_strindex_destroy(obj_alloc, ast->strindex);
     }
 
     if (ast->nodes) {
@@ -194,6 +196,14 @@ size_t am_module_dump(am_allocator_t *container_alloc,
         off = MODULE_ALIGN_UP(off + sz);
     }
 
+    /* strindex */
+    if (ast->strindex) {
+        hdr.strindex_offset = off - offset;
+        size_t sz = am_strindex_dump(ast->alloc, ast->strindex, NULL, 0);
+        if (sz == SIZE_MAX) return SIZE_MAX;
+        off = MODULE_ALIGN_UP(off + sz);
+    }
+
     hdr.total_size = off - offset;
 
     if (buffer != NULL && offset != SIZE_MAX) {
@@ -253,6 +263,10 @@ size_t am_module_dump(am_allocator_t *container_alloc,
         if (hdr.var_top_offset) {
             am_list_dump(ast->alloc, ast->var_top,
                          buffer, offset + hdr.var_top_offset);
+        }
+        if (hdr.strindex_offset) {
+            am_strindex_dump(ast->alloc, ast->strindex,
+                             buffer, offset + hdr.strindex_offset);
         }
     }
 
@@ -380,6 +394,12 @@ am_module_t *am_module_load(am_allocator_t *container_alloc,
         ast->var_top = am_list_load(obj_alloc, buffer,
                                     offset + hdr->var_top_offset);
         if (!ast->var_top) goto fail;
+    }
+
+    if (hdr->strindex_offset) {
+        ast->strindex = am_strindex_load(obj_alloc, buffer,
+                                         offset + hdr->strindex_offset);
+        if (!ast->strindex) goto fail;
     }
 
     return mod;

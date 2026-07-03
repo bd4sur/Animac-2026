@@ -113,6 +113,104 @@ static int32_t gc_root_helper(
 
 
 // ===============================================================================
+// 字符串驻留
+// ===============================================================================
+
+// 功能说明：根据 wchar_t 缓冲区和长度创建/复用字符串堆对象，并返回其 handle。
+// 实现说明：当 len <= AM_PROCESS_STRINDEX_MAX_LEN 时，会先查询 proc->strindex；
+//         若已存在内容相同的字符串则复用其 handle，否则新建并登记。
+//         超过阈值的字符串直接新建，不参与驻留。
+//         失败返回 AM_HANDLE_NULL。
+am_handle_t am_process_make_wstring_handle(am_process_t *proc, const wchar_t *str, size_t len) {
+    if (!proc || !proc->heap || !proc->heap_alloc || !str) return AM_HANDLE_NULL;
+
+    // 构造以 L'\0' 结尾的临时缓冲区，供 hash 计算和 strindex 查询使用
+    wchar_t *tmp = (wchar_t *)am_malloc(proc->vm_alloc, (len + 1) * sizeof(wchar_t));
+    if (!tmp) return AM_HANDLE_NULL;
+    if (len > 0) {
+        memcpy(tmp, str, len * sizeof(wchar_t));
+    }
+    tmp[len] = L'\0';
+
+    uint32_t hash = am_strindex_hash_string(tmp);
+    am_handle_t result = AM_HANDLE_NULL;
+
+    if (proc->strindex && len <= AM_PROCESS_STRINDEX_MAX_LEN) {
+        size_t n_candidates = am_strindex_get_all(proc->vm_alloc, proc->strindex, tmp, NULL, 0);
+        if (n_candidates != SIZE_MAX && n_candidates > 0) {
+            am_value_t *candidates = (am_value_t *)am_malloc(proc->vm_alloc,
+                                                              n_candidates * sizeof(am_value_t));
+            if (candidates) {
+                size_t got = am_strindex_get_all(proc->vm_alloc, proc->strindex, tmp,
+                                                 candidates, n_candidates);
+                for (size_t i = 0; i < got; i++) {
+                    am_handle_t cand_h = am_value_to_handle(candidates[i]);
+                    am_value_t cand_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, cand_h);
+                    if (!am_value_is_ptr(cand_val)) continue;
+                    am_object_t *obj = am_value_to_ptr(cand_val);
+                    if (obj->type != AM_OBJECT_TYPE_WSTRING) continue;
+                    am_wstring_t *ws = (am_wstring_t *)obj;
+                    if (ws->length != len) continue;
+
+                    bool match = true;
+                    for (size_t j = 0; j < len; j++) {
+                        am_wchar_t wc = am_value_to_wchar(ws->content[j]);
+                        if (wc != (am_wchar_t)tmp[j]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        result = cand_h;
+                        break;
+                    }
+                }
+                am_free(proc->vm_alloc, candidates);
+            }
+        }
+    }
+
+    if (result == AM_HANDLE_NULL) {
+        am_wstring_t *ws = am_wstring_create(proc->heap_alloc, tmp, len);
+        if (!ws) {
+            am_free(proc->vm_alloc, tmp);
+            return AM_HANDLE_NULL;
+        }
+        ws->base.hash = hash;
+
+        am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
+        if (hd == AM_HANDLE_NULL) {
+            am_wstring_destroy(proc->heap_alloc, ws);
+            am_free(proc->vm_alloc, tmp);
+            return AM_HANDLE_NULL;
+        }
+
+        if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, hd,
+                        am_make_value_of_ptr((am_object_t *)ws)) != 0) {
+            am_wstring_destroy(proc->heap_alloc, ws);
+            am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
+            am_free(proc->vm_alloc, tmp);
+            return AM_HANDLE_NULL;
+        }
+
+        result = hd;
+
+        // 短字符串登记到 strindex
+        if (proc->strindex && len <= AM_PROCESS_STRINDEX_MAX_LEN) {
+            am_strindex_t *new_si = am_strindex_set(proc->vm_alloc, proc->strindex, tmp,
+                                                     am_make_value_of_handle(hd));
+            if (new_si) {
+                proc->strindex = new_si;
+            }
+        }
+    }
+
+    am_free(proc->vm_alloc, tmp);
+    return result;
+}
+
+
+// ===============================================================================
 // 生命周期
 // ===============================================================================
 
@@ -180,12 +278,16 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
     // 将拷贝进来的AST节点全部标记为静态对象，避免被GC回收
     am_heap_iter(vm_alloc, heap_alloc, proc->heap, set_all_heap_objects_static, NULL);
 
+    // 拷贝 strindex（用于运行时字符串驻留）
+    proc->strindex = am_strindex_copy(proc->vm_alloc, mod->ast->strindex);
+
     // 拷贝符号表
     proc->var_vocab = am_vocab_copy(proc->vm_alloc, mod->ast->var_vocab);
     proc->symbol_vocab = am_vocab_copy(proc->vm_alloc, mod->ast->symbol_vocab);
     proc->var_type = am_list_copy(proc->vm_alloc, mod->ast->var_type);
     proc->natives = am_map_copy(proc->vm_alloc, mod->ast->natives);
-    if (!proc->var_vocab || !proc->symbol_vocab || !proc->var_type || !proc->natives) {
+    if (!proc->strindex || !proc->var_vocab || !proc->symbol_vocab || !proc->var_type || !proc->natives) {
+        if (proc->strindex) am_strindex_destroy(proc->vm_alloc, proc->strindex);
         if (proc->var_vocab) am_vocab_destroy(proc->vm_alloc, proc->var_vocab);
         if (proc->symbol_vocab) am_vocab_destroy(proc->vm_alloc, proc->symbol_vocab);
         if (proc->var_type) am_list_destroy(proc->vm_alloc, proc->var_type);
@@ -249,6 +351,10 @@ int32_t am_process_destroy(am_process_t *proc) {
     if (proc->natives) {
         am_map_destroy(proc->vm_alloc, proc->natives);
         proc->natives = NULL;
+    }
+    if (proc->strindex) {
+        am_strindex_destroy(proc->vm_alloc, proc->strindex);
+        proc->strindex = NULL;
     }
     if (proc->heap) {
         am_heap_destroy(proc->vm_alloc, proc->heap_alloc, proc->heap);
@@ -827,6 +933,21 @@ int32_t am_process_gc_root(am_process_t *proc, am_list_t **gcroots) {
                        proc->opstack, opstack_length,
                        proc->fstack, fstack_length) != 0) {
         return -1;
+    }
+
+    // 将 strindex 中所有有效 handle 加入 GC 根，防止驻留字符串被回收后产生悬空引用
+    if (proc->strindex) {
+        for (size_t i = 0; i < proc->strindex->capacity; i++) {
+            uint32_t hash = proc->strindex->slots[i].hash;
+            if (hash == AM_STRINDEX_KEY_EMPTY || hash == AM_STRINDEX_KEY_TOMBSTONE) continue;
+
+            am_value_t h_val = proc->strindex->slots[i].value;
+            if (!am_value_is_handle(h_val)) continue;
+
+            am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots, h_val);
+            if (!new_roots) return -1;
+            *gcroots = new_roots;
+        }
     }
 
     // 分析所有已保存的续体环境中的GC根

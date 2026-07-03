@@ -2863,9 +2863,273 @@ Scheme子集的BNF如下：
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个Scheme解释器。为实现全局字符串驻留（string interning）和更严谨的基于内容的symbol相等性比较，我要求你在 @src/wstring.c 和 @include/wstring.h 中，实现一对多映射的多值哈希表数据结构及其API。
+
+你可以使用WSL进行编译构建和测试。在实现这个需求之前，你需要评估我给出的方案是否合理，先给出你的判断，然后问我是否继续。得到我的批准之后，你才能开始编写代码实现需求。
+
+详细要求如下：
+
+1、背景。为实现全局字符串驻留，计划后续在编译时和运行时，实现基于全局字符串驻留的字符串对象延迟创建和同值复用。因此，我计划实现“多个string→单个hash→多个handle”的映射表strindex，用于检查某个特定字符串是否已经存在于strindex，进而判断这个字符串对应的内容是不存在（含哈希冲突）还是存在，进而实现内容相同的字符串对象对应唯一的堆handle（am_value_t的handle）。
+
+2、具体需求。请你参考 @src/map.c 和 @include/map.h 中定义的一对一哈希表（am_value_t → am_value_t），参考其基于柔性数组的数据结构、哈希函数和接口格式，实现基于开放寻址+线性探测+一对多映射的多值哈希表： am_strindex_t 。其key为uint32_t类型的hash值，也就是将key用作 hash tag，当然地允许重复，允许一个key(hash)对应多个value。其value仍为am_value_t。插入(key=hash,handle)时，直接根据hash找到对应的桶，如果被占用，则往后寻找第一个空桶插入。通过hash作为key查询时，则还是用线性探测方式，把所有(hash,*)的entry都捞出来，返回所有的handle。这样，给定一个待查找的字符串，计算它的hash，就可能捞出来0个或多个handle，进而确定是冲突还是已存在还是不存在。支持以下操作：
+
+```
+// 以初始容量新建多值哈希表。capacity 会被向上取整为不小于它的最小 2 的幂。
+// 所有 key 初始化为 AM_MAP_KEY_EMPTY，value 初始化为 AM_VALUE_NULL。
+am_strindex_t *am_strindex_create(am_allocator_t *alloc, size_t capacity);
+
+// 彻底销毁
+int32_t am_strindex_destroy(am_allocator_t *alloc, am_strindex_t *obj);
+
+// 深拷贝：创建并返回一个与原 strindex 内容完全一致的新对象。所有 key/value 按位拷贝。
+am_strindex_t *am_strindex_copy(am_allocator_t *alloc, am_strindex_t *obj);
+
+// 功能说明：计算对象所占用的实际字节数（考虑结构体填充和对齐问题）
+// 成功返回字节数，失败返回SIZE_MAX
+size_t am_strindex_size(am_allocator_t *alloc, am_strindex_t *obj);
+
+// 功能说明：将表对象序列化成二进制序列，并转储到buffer[offset]
+// 实现说明：offset是写入buffer的起点offset。成功则返回向buffer新增字节数，失败则返回SIZE_MAX。
+// 注意：若buffer设为NULL，或者offset设为SIZE_MAX，则仅计算转储后的二进制序列的字节数，不实际写入buffer。
+//       压缩对象，将capacity压缩到跟length一致，丢弃墓碑和空闲槽位。
+size_t am_strindex_dump(am_allocator_t *alloc, am_strindex_t *obj, uint8_t *buffer, size_t offset);
+
+// 功能说明：转储（dump）操作的逆操作。从二进制字节序列buffer[offset]开始，读取转储的对象，构造对象并返回其指针。
+// 实现说明：offset是读取buffer的起点offset。成功则返回加载后am_strindex_t对象的指针，失败则返回NULL。
+am_strindex_t *am_strindex_load(am_allocator_t *alloc, uint8_t *buffer, size_t offset);
+
+// 查找：输入一个wchar_t字符串，计算其uint32_t哈希值，得到所有对应的value的列表（values由调用者管理），返回值为列表长度；若不存在，则返回0；若出错，则返回SIZE_MAX。注：二次比较不是这个接口需要做的事情，现阶段不实现，放到后面再实现。am_strindex_t 的接口只负责把hash匹配的所有可能的value全部查询出来。
+size_t am_strindex_get_all(am_allocator_t *alloc, am_strindex_t *obj, wchar_t *str, am_value_t *values, size_t n_values);
+
+// 插入新键值对。对输入的字符串计算hash，插入(key=hash,handle)时，直接根据hash找到对应的桶，如果被占用，则往后寻找第一个空桶插入。
+// 当负载因子（含墓碑）超过 75% 时自动扩容。
+// 返回新的对象指针；失败返回 NULL。调用者必须使用返回的指针替换原有指针。
+am_strindex_t *am_strindex_set(am_allocator_t *alloc, am_strindex_t *obj, wchar_t *str, am_value_t value);
+
+// 当前有效键值对数量
+size_t am_strindex_length(am_allocator_t *alloc, am_strindex_t *obj);
+
+// 物理槽位数
+size_t am_strindex_capacity(am_allocator_t *alloc, am_strindex_t *obj);
+```
+
+3、补充要点：①可以补充 am_strindex_delete 接口，按照handle（value）进行查询和删除。②以 UINT32_MAX 为 EMPTY；以 (UINT32_MAX-1) 为 TOMBSTONE。③字符串哈希算法使用 FNV-1a。
+
+4、测试。你可以使用WSL进行编译构建和测试。编写一个单独的 @test_strindex.c 文件以执行单元测试。
+
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个Scheme解释器。为实现编译阶段的全局字符串驻留（string interning），我要求你在 @src/ast.c 中，基于刚刚实现的 am_strindex_t 数据结构，实现基于全局字符串驻留的字符串对象延迟创建和同值复用。我已经手工在 @include/ast.h 的 am_ast_t 结构体中增加了 strindex 成员。
+
+这个需求比较复杂。在实现这个需求之前，你需要先评估我给出的方案是否合理，先给出你的判断，然后问我是否继续。得到我的批准之后，你才能开始编写代码实现需求。
+
+具体需求如下：
+
+0、请特别注意： am_strindex_t 是可变长容器，因此对其进行写操作之后务必注意检查和更新容器的指针。
+
+1、修改AST对象的构造、初始化和析构等函数，增加 strindex 成员的构造、初始化和析构。初始容量定为1024。
+
+2、修改 @src/ast.c 中的 am_ast_make_wstring_node ，为其增加字符串对象的同值复用机制，具体是：
+
+- 首先在strindex中检查str是否存在（通过 am_strindex_get_all ）。
+- 如果不存在，说明确实是新字符串，则向heap申请一个handle，构造字符串对象，写入堆，最后 am_strindex_set ，登记这个新str的hash，以便后续查重。
+- 如果存在，则有已存在和碰撞两种可能。首先通过 am_strindex_get_all 取出所有待查 value(转为handle)，再将其字符串对象逐个从heap中取出，按照“先比长度、再比内容”的方式，高效确定str是存在还是碰撞。如果存在（长度和内容相同），就不用新建字符串对象了，直接返回内容重复的str对象的handle；如果是碰撞（长度不同，或者长度同但内容不同），就申请handle新建堆对象。
+
+3、修改 @src/ast.c 中的 am_ast_merge 函数，实现 strindex 成员的合并和值handle的更新。
+
+4、测试。你可以使用WSL进行编译构建和测试。无需编写新的测试。保证 @main.c 编译运行正确即可，因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
+
+## 方案评估
+
+我已阅读 `@doc/AGENTS.md`、`@include/ast.h`、`@src/ast.c` 以及相关的 `heap.h`/`wstring.h`。当前 `am_ast_t` 结构体中确实已增加 `strindex` 成员，`ast.c` 中尚未使用。
+
+### 合理且可取的部分
+
+1. **整体方向正确**：编译期字符串驻留能显著减少重复字符串对象，`am_strindex_t` 的 hash-tag + 候选 handle 列表设计适合作为查重索引。
+2. **二级判定合理**：先 hash 初筛，再逐个从 heap 取对象做"长度+内容"比较，是处理 hash 冲突的标准做法。
+3. **可变长容器指针更新提醒到位**：`am_strindex_set` 扩容后会返回新指针，`ast->strindex` 必须及时更新，否则会出现 use-after-free。
+4. **初始容量 1024 合理**：与 `ast->nodes` 初始 1024 对齐，符合编译期规模预期。
+
+### 我认为需要明确的问题
+
+按影响程度排序：
+
+| # | 问题 | 说明 |
+|---|------|------|
+| 1 | **`am_ast_merge` 中 strindex 合并的粒度** | 这是最关键的实现决策。 |
+| 2 | **`am_ast_copy` 中 strindex 的处理** | 当前 `am_heap_copy` 是浅拷贝，strindex 可直接按位拷贝。 |
+| 3 | **是否需要新增 `am_strindex_set_raw` 内部接口** | merge 时我们已知 hash，不想从 wstring 反向提取字符串再算一次 hash。 |
+| 4 | **Windows `wchar_t` 16 位与 `am_wchar_t` 32 位差异** | 内容比较时需要确定按什么语义比较。 |
+
+### 问题 1：merge 策略（最关键）
+
+当前 `am_ast_merge` 对 importee 的 WSTRING 节点是**无条件深拷贝**到 importer（`merge_copy_wstring`），并给每个节点分配新的 handle。若要在 merge 后仍保持"全局驻留"，有两种方案：
+
+**方案 A：机械合并（实现简单，但非完全驻留）**
+- 遍历 `importee->strindex` 中的每个 `(hash, old_handle)`。
+- 通过 `handle_merge_mapping` 查到 `new_handle`。
+- 把 `(hash, new_handle)` 插入 `importer->strindex`。
+- **优点**：改动小，与现有 merge 流程兼容。
+- **缺点**：如果 importer 和 importee 原本都有相同内容的字符串，merge 后 importer 中会出现两个内容相同但 handle 不同的字符串对象，没有真正实现跨模块驻留。
+
+**方案 B：完全去重（实现复杂，但真正实现全局驻留）**
+- 在深拷贝 WSTRING 节点**之前**，先查 `importer->strindex`：
+  - 若 importer 已存在相同内容字符串，则把 `handle_merge_mapping[old_handle]` 直接设为该已有 handle，**不创建新对象、不分配新 handle**。
+  - 若不存在，则分配新 handle、深拷贝对象，并登记到 `importer->strindex`。
+- **优点**：merge 后真正全局唯一。
+- **缺点**：需要调整 merge 中"预先为所有节点分配 handle"的流程；WSTRING 节点需要单独预处理；还要释放因复用而多余的 handle。
+
+**我的建议**：如果你的目标是"编译阶段全局字符串驻留"，方案 B 更彻底。但方案 A 是先落地、后迭代的稳妥选择。
+
+### 问题 2：`am_ast_copy` 中 strindex 的处理
+
+当前 `am_heap_copy` 是**浅拷贝**（按位拷贝指针），`am_ast_copy` 中 copy 出的 AST 与源 AST 共享 `nodes` 中的对象。因此 `copy->strindex` 可以直接用 `am_strindex_copy` 按位拷贝，handles 仍然有效。这个处理是合理的。
+
+### 问题 3：是否需要新增内部接口
+
+`am_strindex_set` 的签名要求传入 `wchar_t *str` 以计算 hash。但在 `am_ast_merge` 中，我们只有 `hash` 和 `new_handle`，对应的字符串对象已经存在。为避免从 wstring 反向提取字符串再算一次 hash，我计划在 `wstring.h` 中新增一个内部接口：
+
+```c
+// 按已知 hash 直接插入 (hash, value)，不重新计算字符串 hash。
+// 成功返回新的 strindex 指针；失败返回 NULL。调用者必须更新指针。
+am_strindex_t *am_strindex_set_raw(am_allocator_t *alloc, am_strindex_t *obj,
+                                   uint32_t hash, am_value_t value);
+```
+
+如果你不接受新增接口，我也可以在 merge 中从 wstring content 反向构造 `wchar_t*` 再调用 `am_strindex_set`，但效率较低且跨平台编码处理麻烦。
+
+### 问题 4：`wchar_t` 与 `am_wchar_t` 的语义
+
+Windows 上 `wchar_t` 是 16 位（UTF-16 码元），Linux 上是 32 位（Unicode 码点），而 `am_wchar_t` 固定为 `uint32_t`。现有 `am_wstring_create` 是逐 `wchar_t` 转换（`(am_wchar_t)str[i]`），并未处理 surrogate pair。
+
+我计划在内容比较时**与 `am_wstring_create` 的行为保持一致**：逐 `wchar_t` 比较 `wstring->content[i]` 与 token 文本。这样在同一平台上结果一致，且不引入新的编码转换逻辑。如果你有跨平台严格语义需求，则需要另行设计。
+
+我的答复：
+
+1、merge 策略选择方案A：机械合并。不完全的跨模块驻留是可以接受的。
+
+2、允许新增set_raw内部接口。
+
+3、wchar_t 与 am_wchar_t 都是 32 位Unicode 码点，实质上是 uint32_t。不考虑Windows。
+
+4、在新建wstring对象之后，你需要立即更新对象base头中的hash字段，作为hash缓存，这样有利于后面快速判等。
+
+---
+
+## 请确认
+
+1. **`am_ast_merge` 采用方案 A 还是方案 B？**（推荐方案 B 以实现真正全局驻留，但实现更复杂）
+2. **是否允许在 `wstring.h` 中新增 `am_strindex_set_raw` 内部接口？**（推荐允许）
+3. **内容比较是否按现有 `am_wstring_create` 的逐 `wchar_t` 语义进行？**（推荐是）
+4. **是否确认继续按此方案编码？**
+
+得到你的批准后，我将开始修改 `@src/ast.c`（必要时微调 `@include/wstring.h`）。
+
+
+
+---------------------
+
+基于前面新增的全局字符串驻留相关功能（am_ast_t 结构体中增加了 strindex 成员、修改了 am_ast_make_wstring_node 、am_ast_merge 等），增加新需求，继续完整实现全局字符串驻留相关功能。
+
+在实现以下需求之前，你需要先评估我给出的方案是否合理，先给出你的判断，然后问我是否继续。得到我的批准之后，你才能开始编写代码实现需求。
+
+具体需求如下：
+
+1、修改 @src/module.c 中的 am_module_dump 和 am_module_load 函数，增加对于ast的 strindex 成员的dump和load。确保模块转储和加载过程适配了strindex字段。
+
+2、修改 @src/process.c 中的 am_process_load_from_module ，将 mod->ast->strindex 复制到 process->strindex 。确保process适配了strindex字段。
+
+3、以下是一个复杂需求。请你阅读并理解 @src/runtime.c 、 @src/process.c 和 @src/native_String.c 中有关创建字符串对象（am_wstring_t）的逻辑，完成以下两个任务：一是将“创建字符串堆对象并返回其handle”这一过程抽象出来，抽象成 am_process_xxx 这个格式的接口，这个接口需要参照你刚才改过的 am_ast_make_wstring_node 函数进行修改，通过查阅 proc->strindex ，实现增加字符串对象的同值复用机制，并在  @src/process.c 和  @include/process.h 中实现。注意：同值复用查询仅针对长度不超过32的字符串启用。你需要把这个长度阈值做成宏定义，以便修改调整。二是找到 @src/runtime.c 、 @src/process.c 和 @src/native_String.c 等源码中有关创建字符串堆对象的过程，整理出来，先给我确认。我来选择哪些地方需要换成你刚刚实现的这个字符串对象创建接口，然后你再实现。
+
+4、测试。你可以使用WSL进行编译构建和测试。无需编写新的测试。保证 @main.c 编译运行正确即可（使用 @test/test.scm 作为输入），因为这是全流程的测试。你可以使用WSL进行编译构建和测试。
+
+## 方案评估
+
+我已阅读 `@src/module.c`、`@src/process.c`、`@src/runtime.c`、`@src/native_String.c`、`@src/native_LLM.c`、`@src/native_System.c`、`@include/process.h` 和 `@include/module.h`。
+
+### 合理且可取的部分
+
+1. **module dump/load 增加 strindex**：模块持久化需要完整保存 AST，strindex 作为 AST 成员必须参与序列化。由于 `am_heap_dump/load` 保持 handle 值不变，strindex 中存储的 handle 在加载后仍然有效，方案可行。
+2. **process 复制 strindex**：`am_process_load_from_module` 通过 `am_heap_deep_dump/deep_load` 将 `mod->ast->nodes` 复制到 `proc->heap`，handle 值保持不变，因此可以直接用 `am_strindex_copy` 复制 `mod->ast->strindex`。
+3. **抽象运行时字符串创建接口**：将散落的 `am_wstring_create + am_heap_alloc_handle + am_heap_set` 抽象为 `am_process_xxx` 接口是合理的，能减少重复代码并统一驻留逻辑。
+4. **短字符串阈值驻留**：仅对长度 ≤32 的字符串启用驻留是常见优化，阈值做成宏便于调整。
+
+### 我认为需要明确的关键问题
+
+按重要性排序：
+
+| # | 问题 | 说明 |
+|---|------|------|
+| 1 | **GC 与 strindex 的集成** | 这是最关键的问题。`proc->strindex` 中的 handle 如果只是作为"索引"存在，而没有被加入 GC 根，那么当堆中某个字符串对象不再被任何 GC 根引用时，`am_process_gc_sweep` 会回收该对象及其 handle。此后 `strindex` 中保留的 handle 将变成悬空引用，下次查询时从 heap 取出的指针无效。 |
+| 2 | **哪些创建字符串的地方需要替换** | 我会列出所有调用点。其中 `op_duplicate`、`string-copy`、`substring` 等语义上是"创建副本"，替换为驻留接口后会变成"可能复用同一对象"。虽然 `am_wstring_t` 不可变，共享安全，但会影响 `eq?`（handle 级相等）的结果。 |
+| 3 | **模块文件格式兼容性** | 在 `module_header_t` 中新增 `strindex_offset` 会改变模块文件格式，旧模块文件将无法加载。 |
+
+### 问题 1：GC 与 strindex 集成（必须解决）
+
+当前 `am_process_gc_root` 收集的根包括：当前闭包、操作数栈、函数调用栈、continuation。如果 strindex 不参与 GC，那么：
+
+- `op_typeof` 创建的 `"string"` 等短字符串，在不再被 opstack 引用后会被 GC。
+- 下次 `op_typeof` 再次需要 `"string"` 时，`strindex` 中仍有 handle，但对象已释放。
+
+**建议方案**：在 `am_process_gc_root` 中把 `proc->strindex` 中所有有效 handle 加入 GC 根列表。这样 strindex 引用的字符串对象会一直保持存活。
+
+如果你同意，我会在实现 `am_process_make_wstring_handle` 的同时修改 `am_process_gc_root`。
+
+### 问题 2：所有运行时创建字符串对象的调用点
+
+通过搜索 `am_wstring_create`，运行时（除 ast.c 外）共有以下 5 处：
+
+1. **`src/runtime.c:935-946`** — `op_duplicate` 指令中 WSTRING 的深拷贝。
+2. **`src/runtime.c:1299-1311`** — `op_typeof` 指令中创建类型名字符串（如 `"list"`, `"string"`, `"number"` 等）。
+3. **`src/native_String.c:81-101`** — `native_push_wstring_buf` 内部辅助函数。被以下 native 函数调用：
+   - `am_native_String_atom_to_string`
+   - `am_native_String_number_to_string`
+   - `am_native_String_symbol_to_string`
+   - `am_native_String_wchar_to_string`
+   - `am_native_String_string_copy`（语义为副本）
+   - `am_native_String_substring`（语义为子串/新字符串）
+   - `am_native_String_char_at`
+4. **`src/native_LLM.c:154-169`** — `am_llm_push_wstring_buf` 内部辅助函数。
+5. **`src/native_System.c:122-138`** — `native_push_wstring_buf` 内部辅助函数。
+
+**我的建议**：
+- 必须替换：**`op_typeof`**（类型名字符串短且重复极高）、**`native_String.c` 的 `native_push_wstring_buf`**（覆盖大量字符串构造）。
+- 谨慎替换：**`op_duplicate`** 中的 WSTRING 复制、**`string-copy`**、**`substring`**。这些语义上是"新字符串"，但由于 `am_wstring_t` 不可变，返回同一对象也是安全的，只是会让 `eq?` 从 `#f` 变成 `#t`。如果你希望保留"副本"语义，这些可以暂不替换。
+- 可替换：**`native_LLM.c`** 和 **`native_System.c`** 的辅助函数。
+
+### 问题 3：模块文件格式兼容性
+
+在 `module_header_t` 中新增 `strindex_offset` 会破坏旧模块文件格式。由于当前项目没有版本兼容要求，这是可以接受的。我会在 `MODULE_VERSION` 不变的情况下新增字段。
+
+---
+
+## 请确认
+
+1. **是否同意在 `am_process_gc_root` 中将 `proc->strindex` 的有效 handle 全部加入 GC 根？**（推荐同意，否则驻留对象会被 GC 回收导致悬空 handle）
+2. **对上述 5 处创建字符串的调用点，你希望哪些替换为新的驻留接口？**
+   - 推荐至少替换：`op_typeof`、`native_String.c 的 native_push_wstring_buf`、`native_LLM.c 的 am_llm_push_wstring_buf`、`native_System.c 的 native_push_wstring_buf`
+   - 可选替换：`op_duplicate` 中的 WSTRING 复制
+   - 可选保留：`string-copy`、`substring`（若你希望保留副本语义）
+3. **是否确认继续按此方案编码？**
+
+得到你的批准后，我将开始实现：
+- `include/process.h`：新增 `AM_PROCESS_STRINDEX_MAX_LEN` 宏、`am_process_make_wstring_handle` 声明。
+- `src/process.c`：实现 `am_process_make_wstring_handle`、在 `am_process_load_from_module` 中复制 strindex、在 `am_process_destroy` 中释放 strindex、在 `am_process_gc_root` 中把 strindex 加入 GC 根。
+- `src/module.c`：增加 `strindex_offset` 字段和 dump/load 逻辑。
+- 根据你的选择替换相应调用点。
+
+我的答复：
+
+1、在 am_process_gc_root 中把 proc->strindex 中所有有效 handle 加入 GC 根列表。
+
+2、完全同意你关于调用点替换的建议。替换：必须替换的和可替换的。谨慎替换的，不替换。保留副本语义。
+
+3、模块文件格式兼容性问题，可以接受不兼容（因现在处于开发状态，尚未固化标准），但必须保证模块dump/load过程正确。MODULE_VERSION 不变。
 
 ---------------------
 

@@ -14,6 +14,7 @@ extern "C" {
 #include "heap.h"
 #include "closure.h"
 #include "continuation.h"
+#include "wstring.h"
 #include "compiler.h"
 #include "ast.h"
 #include "list.h"
@@ -60,6 +61,8 @@ typedef struct am_process_t {
 
     am_heap_t *heap;   // 进程私有堆（由堆内存专用allocator管理）
 
+    am_strindex_t *strindex;  // 用于全局字符串驻留的多值哈希表，检查某个字符串（的哈希值）是否已存在于heap
+
     am_vocab_t *var_vocab;    // 变量词表
     am_vocab_t *symbol_vocab; // 符号词表
     am_list_t *var_type;      // 变量类型表（内容同AST，用于运行时判断变量类型，尤其是native_ref）
@@ -80,6 +83,23 @@ typedef struct am_process_t {
     am_value_t *fstack_top; // fstack栈顶指针，注意每次操作加减2个元素
     size_t fstack_capacity; // fstack容量（am_value_t元素个数）
 } am_process_t;
+
+
+///////////////////////////////////////////
+// 字符串驻留相关
+///////////////////////////////////////////
+
+// 运行时字符串驻留长度阈值：仅对长度不超过该值的字符串启用同值复用
+#ifndef AM_PROCESS_STRINDEX_MAX_LEN
+#define AM_PROCESS_STRINDEX_MAX_LEN (32)
+#endif
+
+// 功能说明：根据 wchar_t 缓冲区和长度创建/复用字符串堆对象，并返回其 handle。
+// 实现说明：当 len <= AM_PROCESS_STRINDEX_MAX_LEN 时，会先查询 proc->strindex；
+//         若已存在内容相同的字符串则复用其 handle，否则新建并登记。
+//         超过阈值的字符串直接新建，不参与驻留。
+//         失败返回 AM_HANDLE_NULL。
+am_handle_t am_process_make_wstring_handle(am_process_t *proc, const wchar_t *str, size_t len);
 
 
 ///////////////////////////////////////////

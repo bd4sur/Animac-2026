@@ -129,7 +129,7 @@ am_wstring_t *am_wstring_load(am_allocator_t *alloc, uint8_t *buffer, size_t off
 #define AM_FNV1A_PRIME        ((uint32_t)0x01000193u)
 
 // 计算 wchar_t 字符串的 FNV-1a 32-bit 哈希值
-static uint32_t am_strindex_hash(const wchar_t *str) {
+uint32_t am_strindex_hash_string(const wchar_t *str) {
     uint32_t hash = AM_FNV1A_OFFSET_BASIS;
     while (*str != L'\0') {
         hash ^= (uint32_t)(*str);
@@ -137,6 +137,11 @@ static uint32_t am_strindex_hash(const wchar_t *str) {
         str++;
     }
     return hash;
+}
+
+// 内部静态别名，保持现有代码风格
+static uint32_t am_strindex_hash(const wchar_t *str) {
+    return am_strindex_hash_string(str);
 }
 
 // 将容量向上取整为不小于它的最小 2 的幂
@@ -433,6 +438,31 @@ am_strindex_t *am_strindex_set(am_allocator_t *alloc, am_strindex_t *obj, wchar_
     if (!alloc || !obj || !str) return NULL;
 
     uint32_t hash = am_strindex_hash(str);
+
+    // 负载因子超过 75% 时扩容
+    if ((obj->length + obj->tombstones + 1) * 4 > obj->capacity * 3) {
+        am_strindex_t *new_si = am_strindex_resize(alloc, obj, obj->capacity * 2);
+        if (!new_si) return NULL;
+        obj = new_si;
+    }
+
+    size_t idx = am_strindex_find_insert_slot(obj, hash);
+    if (obj->slots[idx].hash == AM_STRINDEX_KEY_TOMBSTONE) {
+        obj->tombstones--;
+    }
+    obj->slots[idx].hash = hash;
+    obj->slots[idx].value = value;
+    obj->length++;
+
+    return obj;
+}
+
+// 按已知 hash 直接插入 (hash, value)，不重新计算字符串 hash。
+// 当负载因子（含墓碑）超过 75% 时自动扩容。
+// 返回新的对象指针；失败返回 NULL。调用者必须使用返回的指针替换原有指针。
+am_strindex_t *am_strindex_set_raw(am_allocator_t *alloc, am_strindex_t *obj, uint32_t hash, am_value_t value) {
+    if (!alloc || !obj) return NULL;
+    if (hash == AM_STRINDEX_KEY_EMPTY || hash == AM_STRINDEX_KEY_TOMBSTONE) return NULL;
 
     // 负载因子超过 75% 时扩容
     if ((obj->length + obj->tombstones + 1) * 4 > obj->capacity * 3) {
