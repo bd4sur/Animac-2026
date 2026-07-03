@@ -3133,9 +3133,139 @@ Windows 上 `wchar_t` 是 16 位（UTF-16 码元），Linux 上是 32 位（Unic
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个Scheme解释器。在刚刚完成的需求中，已经实现了运行期对于较短字符串的全局字符串驻留（string interning）。
+
+基于此，我要求你在 @src/native_Table.c 和 @include/native_Table.h 中，实现“Table”本地宿主函数库。这个native库的功能是为本Scheme解释器提供通用哈希表功能。哈希表的key可以是number、symbol、wstring，而value可以是任何东西。Scheme层面的接口定义如下：
+
+```
+;; 创建哈希表对象。无参数，将新建的哈希表对象的handle压栈。
+;; 实现说明：其本质是 am_map_t 对象，即<am_value_t, am_value_t>一对一映射的哈希表。
+(Table.make)
+
+;; 根据key设置value。其中tbl是已经make的哈希表对象，key是number、symbol或wstring，value可以是任何东西，包括lambda、#null、#undefined。如果value是#undefined，则语义上相当于删除entry。无返回值（压栈#undefined）。
+;; 实现提示：如果key是字符串，则仅接受长度不大于AM_PROCESS_STRINDEX_MAX_LEN的字符串，因只有短于此阈值的字符串对象会被全局驻留，进而可以用它的handle作为am_map_t的唯一key。字符串驻留机制充当了确保唯一性的预先哈希。symbol则直接以其值为判等依据。
+(Table.set tbl key value)
+
+;; 根据key获取value。如果key不存在，则返回#undefined。
+(Table.get tbl key)
+
+;; 返回tbl中所有key的列表。无需排序。如果是空table，则返回'()，即空表。
+(Table.keys tbl)
+
+;; 检查table是否有某个key。存在返回#t，不存在返回#f。
+(Table.contains tbl key)
+
+;; 删除table的某个key。无返回值（压栈#undefined）。
+(Table.delete tbl key)
+
+;; 返回table中有多少个有效的entry。返回am_float_t（封装起来的am_value_t）
+(Table.length tbl)
+```
+
+这个需求比较复杂。在实现这个需求之前，你需要先评估我给出的需求是否合理，先给出你的思路、判断、问题，然后问我是否继续。得到我的批准之后，你才能开始编写代码实现需求。
+
+具体的实现方式，你可以参考 @src/map.c 、以及 @src/native_String.c 等native函数实现。务必注意每个函数实现的“套路”，也就是出栈入栈、TPV（am_value_t）与具体值类型的转化、堆对象的存取和增删改、handle机制、调用step函数以PC++等机制。这些机制有的被封装在工具函数中了，你要注意发现它们，不要遗漏。你的实现需要对Scheme程序员屏蔽诸如handle、扩容与再分配、GC等实现细节，同时要注意优雅降级，操作失败尽量不崩溃，而是回落到合理的降级行为。
+
+你可以使用WSL进行编译构建和测试。你需要阅读 @test/shudu.scm 、 @test/mlp.scm 等测试用Scheme代码，了解其语法，并编写一个测试以上所有Table接口的Scheme测试代码，全面验证Table功能。你需要保证 @main.c 编译运行正确（使用你写的Scheme测试代码作为输入）。你可以使用WSL进行编译构建和测试。
+
+## 方案评估
+
+我已阅读 `@doc/AGENTS.md`、`@src/map.c`、`@include/map.h`、`@src/native_String.c`、`@src/native.c`、`@src/runtime.c` 以及 `@test/shudu.scm`、`@test/mlp.scm`，并确认了 native 库的注册机制。
+
+### 合理且可取的部分
+
+1. **复用 `am_map_t` 合理**：项目已有成熟的一对一哈希表实现，直接作为 Table 底层非常自然。
+2. **字符串驻留充当 key 唯一性设计巧妙**：利用 `am_process_make_wstring_handle` 保证相同内容的短字符串得到相同 handle，从而可以直接用 handle 作为 `am_map_t` 的 key。
+3. **接口设计清晰**：make/set/get/keys/contains/delete/length 覆盖了哈希表的基本用法。
+4. **参考实现充分**：`native_String.c`、`native_Math.c` 已经展示了完整的 native 函数"弹出参数→处理→压回结果→step"的套路。
+
+### 我的实现思路
+
+1. 新增 `include/native_Table.h` / `src/native_Table.c`。
+2. 在 `src/native_Table.c` 中定义 `am_native_Table_funcs` 函数表和 `am_native_Table_lib` 库表项。
+3. 每个函数遵循以下套路：
+   - 从操作数栈按逆序弹出参数（最后压栈的参数最先弹出）。
+   - 对 table handle 做类型检查，取出 `am_map_t*`。
+   - 对 key 做类型检查：number（int/uint/float）、symbol、wstring handle；wstring 长度超过 `AM_PROCESS_STRINDEX_MAX_LEN` 时拒绝。
+   - 调用 `am_map_*` 接口操作。
+   - **`am_map_set` 可能扩容并返回新指针，必须调用 `am_heap_set` 更新 handle 绑定。**
+   - 将结果压回操作数栈，调用 `am_process_step(proc)`。
+4. 在 `main.c` 和 `repl.c` 中注册 `am_native_Table_lib`。
+5. 编写 Scheme 测试代码，覆盖所有接口。
+
+### 我发现的关键问题
+
+| # | 问题 | 说明 |
+|---|------|------|
+| 1 | **运行时 GC 不支持 `AM_OBJECT_TYPE_MAP`** | 这是最关键的问题。当前 `am_process_gc_mark` 只处理 LIST/WSTRING/CLOSURE/CONTINUATION，不认识 MAP。运行时创建的 Table（map）对象本身不会被递归标记其 key/value；如果某个 value 是 handle 且仅被 map 引用，GC sweep 会回收该对象，导致 map 中出现悬空 handle。 |
+| 2 | **wstring key 长度超限如何处理** | 需求要求仅接受 ≤`AM_PROCESS_STRINDEX_MAX_LEN` 的字符串。如果用户传入长字符串，是返回 -1 让 native 调用失败，还是静默忽略？ |
+| 3 | **number key 的等价性** | `am_map_t` 按位比较 key。`1`（int）和 `1.0`（float）是不同的 `am_value_t`，会成为两个不同的 key。这是符合"底层位模式"的，但需要明确这是否是预期语义。 |
+| 4 | **Table.keys 返回的列表类型** | 用 `AM_LIST_TYPE_DEFAULT` 即可，无需是 lambda。 |
+| 5 | **value 为 `#undefined` 时删除 entry** | 可以直接调用 `am_map_delete`，因为 `#undefined` 是立即数，不会释放指针。 |
+
+### 问题 1 的详细说明与建议
+
+当前 `am_process_gc_mark`（`src/process.c`）没有 `AM_OBJECT_TYPE_MAP` 分支。如果实现 Table native 库，运行时会出现 `am_map_t` 堆对象：
+
+- map 对象如果被 Scheme 变量引用，会通过闭包变量绑定进入 GC 根，map 对象本身不会被回收。
+- 但 map 内部的 value handle（例如指向 lambda、list、wstring 等）如果没有被其他地方引用，GC 不会从 map 出发递归标记它们，因此这些 value 对象会被 sweep 回收。
+- 下次 `Table.get` 时，从 map 取出的 value handle 已经悬空。
+
+**建议**：在实现 Table 库的同时，在 `am_process_gc_mark` 中增加对 `AM_OBJECT_TYPE_MAP` 的处理：
+```c
+else if (obj_type == AM_OBJECT_TYPE_MAP) {
+    am_object_set_alive(obj, 0);
+    am_map_t *m = (am_map_t *)obj;
+    for (size_t i = 0; i < m->capacity; i++) {
+        if (m->slots[i].key == AM_MAP_KEY_EMPTY || m->slots[i].key == AM_MAP_KEY_TOMBSTONE) continue;
+        if (am_value_is_handle(m->slots[i].key)) ret += am_process_gc_mark(proc, m->slots[i].key);
+        if (am_value_is_handle(m->slots[i].value)) ret += am_process_gc_mark(proc, m->slots[i].value);
+    }
+}
+```
+
+这是保证 Table 功能正确性的必要补丁。
+
+---
+
+## 请确认
+
+1. **是否同意我在实现 Table native 库的同时，在 `am_process_gc_mark` 中增加对 `AM_OBJECT_TYPE_MAP` 的递归标记？**（强烈推荐同意，否则 Table 中存储的 handle value 可能被 GC 回收导致悬空引用）
+2. **wstring key 长度超过 `AM_PROCESS_STRINDEX_MAX_LEN` 时如何处理？**
+   - 方案 A：返回 -1，native 调用失败（严格按需求）。
+   - 方案 B：不接受该 key，但返回 0 并压入 `#undefined`（静默失败）。
+   - 我推荐方案 A。
+3. **number key 是否按底层位模式区分 int/float？**（即 `(Table.set t 1 "a")` 和 `(Table.set t 1.0 "b")` 是两个 entry）我推荐按当前 `am_map_t` 行为，即位模式区分。
+4. **是否确认继续按此方案编码？**
+
+得到你的批准后，我将开始实现：
+- `include/native_Table.h`
+- `src/native_Table.c`
+- 修改 `src/process.c` 的 `am_process_gc_mark` 增加 MAP 支持
+- 修改 `main.c` 和 `repl.c` 注册 Table 库
+- 编写 Scheme 测试代码并验证 `main.c` 编译运行正确
+
+我的答复：
+
+1、关于map堆对象的GC问题，完全采纳你的建议，即在GC的标记、清除、移动等诸环节中，增加对 AM_OBJECT_TYPE_MAP 的处理。
+
+2、wstring key 长度超过 AM_PROCESS_STRINDEX_MAX_LEN 时，返回 -1，native 调用失败。
+
+3、关于 number key 的判等问题，要把整型（int和uint）和float区别开来。但是int和uint统一处理，即，对于非负数，int和uint按值比较；负数和uint自然不相等。
+
+可以开始开发。
 
 ---------------------
 
+- (Table.make)  →  {}
+- (Table.set tbl key value)  →  tbl[key] = value  ;; key可以是数值、符号、字符串，value可以是任何值
+- (Table.get tbl key)  →  tbl[key]
+- (Table.keys tbl)  →  Table.keys(tbl)
+- (Table.contains tbl key)  →  Table.contains(tbl, key)
+- (Table.delete tbl key)  →  Table.delete(tbl, key)
+- (Table.length tbl)  →  Table.length(tbl)
 
 ---------------------
 

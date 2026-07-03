@@ -20,6 +20,7 @@
 #include "native_System.h"
 #include "native_Math.h"
 #include "native_String.h"
+#include "native_Table.h"
 
 #ifndef AM_ALLOCATOR_POOL_SIZE
 #define AM_ALLOCATOR_POOL_SIZE ((size_t)(128ULL * 1024 * 1024))
@@ -331,6 +332,7 @@ static int32_t am_repl_run(const wchar_t *code) {
     am_runtime_register_native_lib(rt, &am_native_System_lib);
     am_runtime_register_native_lib(rt, &am_native_Math_lib);
     am_runtime_register_native_lib(rt, &am_native_String_lib);
+    am_runtime_register_native_lib(rt, &am_native_Table_lib);
 
     rt->callback_on_tick = am_repl_on_tick;
     rt->callback_on_halt = am_repl_on_halt;

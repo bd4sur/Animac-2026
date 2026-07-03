@@ -20,6 +20,7 @@
 #include "native_Math.h"
 #include "native_String.h"
 #include "native_LLM.h"
+#include "native_Table.h"
 
 // 打印 token 类型名称
 const wchar_t* type_name(int32_t type) {
@@ -232,6 +233,7 @@ static void test_runtime_load_from_file(char *path) {
     am_runtime_register_native_lib(rt, &am_native_Math_lib);
     am_runtime_register_native_lib(rt, &am_native_String_lib);
     am_runtime_register_native_lib(rt, &am_native_LLM_lib);
+    am_runtime_register_native_lib(rt, &am_native_Table_lib);
 
     rt->callback_on_halt = on_halt;
     rt->callback_on_error = on_error;

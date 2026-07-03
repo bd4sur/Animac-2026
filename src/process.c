@@ -1037,6 +1037,17 @@ int32_t am_process_gc_mark(am_process_t *proc, am_value_t v) {
     else if (obj_type == AM_OBJECT_TYPE_WSTRING) {
         am_object_set_alive(obj, 0);
     }
+    else if (obj_type == AM_OBJECT_TYPE_MAP) {
+        am_object_set_alive(obj, 0);
+        am_map_t *m = (am_map_t *)obj;
+        for (size_t i = 0; i < m->capacity; i++) {
+            am_value_t k = m->slots[i].key;
+            if (k == AM_MAP_KEY_EMPTY || k == AM_MAP_KEY_TOMBSTONE) continue;
+            if (am_value_is_handle(k)) ret += am_process_gc_mark(proc, k);
+            am_value_t v = m->slots[i].value;
+            if (am_value_is_handle(v)) ret += am_process_gc_mark(proc, v);
+        }
+    }
     else if (obj_type == AM_OBJECT_TYPE_CLOSURE) {
         am_object_set_alive(obj, 0);
 
@@ -1094,6 +1105,7 @@ int32_t am_process_gc_sweep(am_process_t *proc) {
 
         int32_t obj_type = obj->type;
         if (obj_type == AM_OBJECT_TYPE_LIST ||
+            obj_type == AM_OBJECT_TYPE_MAP ||
             obj_type == AM_OBJECT_TYPE_WSTRING ||
             obj_type == AM_OBJECT_TYPE_CLOSURE ||
             obj_type == AM_OBJECT_TYPE_CONTINUATION) {

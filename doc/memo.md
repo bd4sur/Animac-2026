@@ -1,5 +1,9 @@
 TODO 所有代码文件加am_前缀
 
+TODO REPL对于有副作用的表达式的判定有问题。例如(Table.set tbl key value)显然是有副作用的。
+
+TODO 现在实现的Table本地宿主函数库，其字符串key强烈依赖于字符串驻留机制，这可能不够合理。比如将同一个key复制了一份，复制是反驻留的，这就会导致Table失效。另外对于不驻留的长字符串，Table也会失效。
+
 TODO opstack深度估计还是有问题，可能跟表达式压栈和begin的pop问题有关。因此在 am_process_push_operand 暂且加入扩容逻辑，但这是不合适的。未来要解决。
 
 TODO Symbol的eq必须用字符串去比较。symbol不能根据id比较，symbol的唯一性应该是宇宙级的，而不是进程级的。symbol必须根据字面内容进行比较。
