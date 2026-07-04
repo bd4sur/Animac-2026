@@ -27,7 +27,7 @@ extern "C" {
 
 // 堆数据结构
 typedef struct am_heap_t {
-    size_t   capacity; // 初始化时即固定大小，不可扩容
+    size_t   capacity; // 当前 table 的物理槽位数（随 table 扩容同步更新）
     am_map_t *table;
     am_map_t *metadata;
     am_handle_t handle_counter; // 简单的自增计数器

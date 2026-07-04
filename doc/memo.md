@@ -1,5 +1,7 @@
 TODO 所有代码文件加am_前缀
 
+TODO ast->node无法扩容？am_heap_set实现似乎有问题，为什么不调用map现成接口？
+
 TODO REPL对于有副作用的表达式的判定有问题。例如(Table.set tbl key value)显然是有副作用的。
 
 TODO 现在实现的Table本地宿主函数库，其字符串key强烈依赖于字符串驻留机制，这可能不够合理。比如将同一个key复制了一份，复制是反驻留的，这就会导致Table失效。另外对于不驻留的长字符串，Table也会失效。

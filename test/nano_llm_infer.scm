@@ -647,19 +647,418 @@
     })
 
     ;; 阶段2：前向传播与采样
-    (define sorted '())
+    (define sorted (new_buffer max_seq_len))
+    (define sorted_len 0)
     (set! pos 0)
     (while (< pos max_seq_len) {
       (set! logits (llm_forward (get_item ids pos) pos max_seq_len #f))
       (set! new_token (sample_argmax logits vocab_size))
       (define tk (LLM.decode new_token))
-      (push sorted (String.parseNumber tk))
+      (set_item! sorted sorted_len (String.parseNumber tk))
+      (set! sorted_len (+ sorted_len 1))
       ;(display tk)
       (set! pos (+ pos 1))
     })
 
     sorted
   ))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; 六路归并排序（基于 ai_sort）
+
+;; 复制列表
+(define copy_list
+  (lambda (lst)
+    (define len (length lst))
+    (define result (new_buffer len))
+    (define i 0)
+    (while (< i len) {
+      (set_item! result i (get_item lst i))
+      (set! i (+ i 1))
+    })
+    result))
+
+;; 去掉列表末尾的 0
+(define trim_trailing_zeros
+  (lambda (lst)
+    (define len (length lst))
+    (while (and (> len 0) (== (get_item lst (- len 1)) 0)) {
+      (set! len (- len 1))
+    })
+    (define result (new_buffer len))
+    (define i 0)
+    (while (< i len) {
+      (set_item! result i (get_item lst i))
+      (set! i (+ i 1))
+    })
+    result))
+
+;; 比较两个列表是否逐项相等
+(define lists_equal?
+  (lambda (a b)
+    (if (not (== (length a) (length b)))
+        #f
+        {
+          (define i 0)
+          (define equal #t)
+          (while (and (< i (length a)) equal) {
+            (if (not (== (get_item a i) (get_item b i))) {
+              (set! equal #f)
+            })
+            (set! i (+ i 1))
+          })
+          equal
+        })))
+
+;; 将列表补 0 到 6 个元素
+(define pad_to_6
+  (lambda (lst)
+    (define len (length lst))
+    (define result (new_buffer 6))
+    (define i 0)
+    (while (< i len) {
+      (set_item! result i (get_item lst i))
+      (set! i (+ i 1))
+    })
+    (while (< i 6) {
+      (set_item! result i 0)
+      (set! i (+ i 1))
+    })
+    result))
+
+;; 将列表切分为每组最多 6 个元素的若干组
+(define split_into_groups
+  (lambda (lst)
+    (define temp_groups (new_buffer 6))
+    (define groups_len 0)
+    (define current (new_buffer 6))
+    (define current_len 0)
+    (define i 0)
+    (define len (length lst))
+    (while (< i len) {
+      (set_item! current current_len (get_item lst i))
+      (set! current_len (+ current_len 1))
+      (if (== current_len 6) {
+        (set_item! temp_groups groups_len current)
+        (set! groups_len (+ groups_len 1))
+        (set! current (new_buffer 6))
+        (set! current_len 0)
+      })
+      (set! i (+ i 1))
+    })
+    (if (> current_len 0) {
+      (define trimmed (new_buffer current_len))
+      (define j 0)
+      (while (< j current_len) {
+        (set_item! trimmed j (get_item current j))
+        (set! j (+ j 1))
+      })
+      (set_item! temp_groups groups_len trimmed)
+      (set! groups_len (+ groups_len 1))
+    })
+    (define groups (new_buffer groups_len))
+    (define k 0)
+    (while (< k groups_len) {
+      (set_item! groups k (get_item temp_groups k))
+      (set! k (+ k 1))
+    })
+    groups))
+
+;; 对 6 个有序列表执行六路归并
+(define merge6
+  (lambda (groups)
+    (define positions (new_buffer 6))
+    (define result (new_buffer 36))
+    (define result_len 0)
+    (define active 6)
+    (while (> active 0) {
+      (define min_val 10)
+      (define min_idx -1)
+      (define i 0)
+      (while (< i 6) {
+        (define pos (get_item positions i))
+        (define group (get_item groups i))
+        (if (< pos (length group)) {
+          (define val (get_item group pos))
+          (if (< val min_val) {
+            (set! min_val val)
+            (set! min_idx i)
+          })
+        })
+        (set! i (+ i 1))
+      })
+      (if (>= min_idx 0) {
+        (set_item! result result_len min_val)
+        (set! result_len (+ result_len 1))
+        (define new_pos (+ (get_item positions min_idx) 1))
+        (set_item! positions min_idx new_pos)
+        (if (== new_pos (length (get_item groups min_idx))) {
+          (set! active (- active 1))
+        })
+      } {
+        (set! active 0)
+      })
+    })
+    (define trimmed (new_buffer result_len))
+    (define k 0)
+    (while (< k result_len) {
+      (set_item! trimmed k (get_item result k))
+      (set! k (+ k 1))
+    })
+    trimmed))
+
+;; 将若干有序组合并为 1 个；若组数不足 6 路则补全 0 组
+(define merge_groups
+  (lambda (groups)
+    (define n (length groups))
+    (define padded (new_buffer 6))
+    (define i 0)
+    (while (< i n) {
+      (set_item! padded i (get_item groups i))
+      (set! i (+ i 1))
+    })
+    (while (< i 6) {
+      (set_item! padded i '(0 0 0 0 0 0))
+      (set! i (+ i 1))
+    })
+    (merge6 padded)))
+
+;; 对单组（<=6 个元素）先补 0 再调用 ai_sort
+(define sort_group
+  (lambda (group)
+    (ai_sort (pad_to_6 group) 6)))
+
+;; 列表反转
+(define reverse_list
+  (lambda (lst)
+    (define iter
+      (lambda (src result)
+        (if (null? src)
+            result
+            (iter (cdr src) (cons (car src) result)))))
+    (iter lst '())))
+
+;; 多组六路归并排序（使用 cons 避免 set_item! ai_sort 结果导致的问题）
+(define ai_merge_sort_multi
+  (lambda (groups groups_len)
+    (define sorted_groups '())
+    (define i 0)
+    (while (< i groups_len) {
+      (set! sorted_groups (cons (sort_group (get_item groups i)) sorted_groups))
+      (set! i (+ i 1))
+    })
+    (set! sorted_groups (reverse_list sorted_groups))
+    (while (> (length sorted_groups) 1) {
+      (define new_groups '())
+      (set! i 0)
+      (define n (length sorted_groups))
+      (while (< i n) {
+        (define chunk '())
+        (define j 0)
+        (while (and (< i n) (< j 6)) {
+          (set! chunk (cons (get_item sorted_groups i) chunk))
+          (set! i (+ i 1))
+          (set! j (+ j 1))
+        })
+        (set! chunk (reverse_list chunk))
+        (set! new_groups (cons (merge_groups chunk) new_groups))
+      })
+      (set! sorted_groups (reverse_list new_groups))
+    })
+    (if (not (null? sorted_groups))
+        (car sorted_groups)
+        '(0 0 0 0 0 0))))
+
+;; 六路归并排序主函数
+(define ai_merge_sort
+  (lambda (lst)
+    (define groups (split_into_groups lst))
+    (define groups_len (length groups))
+    (if (== groups_len 1)
+        (sort_group (get_item groups 0))
+        (ai_merge_sort_multi groups groups_len))))
+
+;; 去掉列表前导的 count 个元素
+(define trim_leading
+  (lambda (lst count)
+    (define len (length lst))
+    (define result_len (- len count))
+    (define result (new_buffer result_len))
+    (define i 0)
+    (while (< i result_len) {
+      (set_item! result i (get_item lst (+ i count)))
+      (set! i (+ i 1))
+    })
+    result))
+
+;; 验证 AI 排序结果：去掉前置补充的 0 后应与参考结果一致
+(define verify_sort
+  (lambda (ai_result ref_result)
+    (define ai_len (length ai_result))
+    (define ref_len (length ref_result))
+    (define padding (- ai_len ref_len))
+    (if (< padding 0)
+        #f
+        (lists_equal? (trim_leading ai_result padding) ref_result))))
+
+;; 测试函数
+(define run_tests
+  (lambda ()
+    (define test_lengths '(0 1 2 5 6 7 11 12 13 35 36))
+    (define i 0)
+    (define all_passed #t)
+    (display "========== 六路归并排序测试 ==========\n")
+    (while (< i (length test_lengths)) {
+      (define len (get_item test_lengths i))
+      (define test_list (make_random_list len))
+      (define ai_result (ai_merge_sort test_list))
+      (define ref_result (copy_list test_list))
+      (List.bubble_sort ref_result >)
+      (display "长度 ") (display len) (display "：\n")
+      (display "   输入 ") (display test_list) (newline)
+      (display "   输出 ") (display (trim_leading ai_result (- (length ai_result) len))) (newline)
+      (display "   参考 ") (display ref_result) (newline)
+      (define ai_trim (trim_leading ai_result (- (length ai_result) len)))
+      (define norm_kt (normalized_kendall_tau_distance ref_result ai_trim))
+      (define dl_dist (damerau_levenshtein_distance ref_result ai_trim))
+      (define norm_dl (if (== len 0) 0.0 (/ dl_dist len)))
+      (display "   KT距离 ") (display (Math.to_fixed norm_kt 4))
+      (display " | DL距离 ") (display dl_dist)
+      (display " (") (display (Math.to_fixed norm_dl 4)) (display ")") (newline)
+      (if (verify_sort ai_result ref_result) {
+        (display "   PASS\n")
+      } {
+        (display "   FAIL（可能由 ai_sort 模型误差导致）\n")
+        (set! all_passed #f)
+      })
+      (set! i (+ i 1))
+    })
+    (display "======================================\n")
+    (if all_passed {
+      (display "所有测试通过。\n")
+    } {
+      (display "存在测试失败。\n")
+    })
+    all_passed))
+
+;; Kendall Tau 距离：统计 GT 与输出序列中相对顺序不一致的元素对数
+;; 忽略相等元素的对
+(define kendall_tau_distance
+  (lambda (gt output)
+    (define n (length gt))
+    (define dist 0)
+    (define i 0)
+    (define j 0)
+    (while (< i n) {
+      (set! j (+ i 1))
+      (while (< j n) {
+        (define gi (get_item gt i))
+        (define gj (get_item gt j))
+        (define oi (get_item output i))
+        (define oj (get_item output j))
+        (if (and (not (== gi gj)) (not (== oi oj))) {
+          (if (< (* (- gi gj) (- oi oj)) 0) {
+            (set! dist (+ dist 1))
+          })
+        })
+        (set! j (+ j 1))
+      })
+      (set! i (+ i 1))
+    })
+    dist))
+
+;; 归一化 Kendall Tau 距离，范围 [0, 1]，0 表示完全一致
+(define normalized_kendall_tau_distance
+  (lambda (gt output)
+    (define n (length gt))
+    (define total_pairs (/ (* n (- n 1)) 2))
+    (if (== total_pairs 0)
+        0.0
+        (/ (kendall_tau_distance gt output) total_pairs))))
+
+;; Damerau-Levenshtein 距离：允许插入、删除、替换和相邻交换
+;; 返回将序列 a 转换为序列 b 所需的最少编辑次数
+(define damerau_levenshtein_distance
+  (lambda (a b)
+    (define n (length a))
+    (define m (length b))
+    (define cols (+ m 1))
+    (define dp_len (* (+ n 1) cols))
+    (define dp (new_buffer dp_len))
+    (define i 0)
+    (define j 0)
+    (while (<= i n) {
+      (set_item! dp (* i cols) i)
+      (set! i (+ i 1))
+    })
+    (set! j 0)
+    (while (<= j m) {
+      (set_item! dp j j)
+      (set! j (+ j 1))
+    })
+    (set! i 1)
+    (while (<= i n) {
+      (set! j 1)
+      (while (<= j m) {
+        (define ai (- i 1))
+        (define bj (- j 1))
+        (define cost (if (== (get_item a ai) (get_item b bj)) 0 1))
+        (define idx (+ (* i cols) j))
+        (define deletion (+ (get_item dp (- idx cols)) 1))
+        (define insertion (+ (get_item dp (- idx 1)) 1))
+        (define substitution (+ (get_item dp (- (- idx cols) 1)) cost))
+        (define best (if (< deletion insertion) deletion insertion))
+        (if (< substitution best) (set! best substitution))
+        (if (and (> i 1) (> j 1)
+                 (== (get_item a ai) (get_item b (- j 2)))
+                 (== (get_item a (- i 2)) (get_item b bj))) {
+          (define transposition (+ (get_item dp (- (- idx (* 2 cols)) 2)) 1))
+          (if (< transposition best) (set! best transposition))
+        })
+        (set_item! dp idx best)
+        (set! j (+ j 1))
+      })
+      (set! i (+ i 1))
+    })
+    (get_item dp (- dp_len 1))))
+
+;; 长度36压测：统计平均 KT 距离与 DL 距离
+(define benchmark_length36
+  (lambda (rounds)
+    (define LEN 36)
+    (define total_kt 0.0)
+    (define total_dl 0)
+    (define total_norm_dl 0.0)
+    (define i 0)
+    (display "========== 长度36归并排序压测 ==========\n")
+    (while (< i rounds) {
+      (display "第") (display (+ i 1)) (display "轮测试：\n")
+      (define test_list (make_random_list LEN))
+      (define ai_result (ai_merge_sort test_list))
+      (define ref_result (copy_list test_list))
+      (List.bubble_sort ref_result >)
+      (define ai_trim (trim_leading ai_result (- (length ai_result) LEN)))
+      (define kt (normalized_kendall_tau_distance ref_result ai_trim))
+      (define dl (damerau_levenshtein_distance ref_result ai_trim))
+      (define norm_dl (/ dl LEN))
+      (display "   输入 ") (display test_list) (newline)
+      (display "   输出 ") (display (trim_leading ai_result (- (length ai_result) LEN))) (newline)
+      (display "   参考 ") (display ref_result) (newline)
+      (display "   KT距离 ") (display (Math.to_fixed kt 4))
+      (display " | DL距离 ") (display dl)
+      (display " (") (display (Math.to_fixed norm_dl 4)) (display ")") (newline)
+      (set! total_kt (+ total_kt kt))
+      (set! total_dl (+ total_dl dl))
+      (set! total_norm_dl (+ total_norm_dl norm_dl))
+      (set! i (+ i 1))
+    })
+    (display "总次数：") (display rounds) (newline)
+    (display "平均 KT距离：") (display (Math.to_fixed (/ total_kt rounds) 4)) (newline)
+    (display "平均 DL距离：") (display (/ (* 1.0 total_dl) rounds)) (newline)
+    (display "平均归一化 DL距离：") (display (Math.to_fixed (/ total_norm_dl rounds) 4)) (newline)
+    (display "========================================\n")
+    (/ total_norm_dl rounds)))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; 程序入口
@@ -672,6 +1071,10 @@
   (display "\n  排序后：")
   (display (ai_sort rlist 6))
   (display "\n\n")
+  (run_tests)
+  (display "\n")
+  (benchmark_length36 10)
+  (display "\n")
 } {
   (display "自回归文本生成\n")
   (generate "人类的本质是" 256 1.0 1.05 0.5 0)

@@ -122,10 +122,10 @@ am_heap_t *am_heap_copy(am_allocator_t *container_alloc, am_allocator_t *obj_all
     am_heap_t *copy = (am_heap_t *)am_malloc(container_alloc, sizeof(am_heap_t));
     if (!copy) return NULL;
 
-    copy->capacity = heap->capacity;
     copy->handle_counter = heap->handle_counter;
     copy->table = heap->table ? am_map_copy(container_alloc, heap->table) : NULL;
     copy->metadata = heap->metadata ? am_map_copy(container_alloc, heap->metadata) : NULL;
+    copy->capacity = copy->table ? copy->table->capacity : heap->capacity;
 
     if ((heap->table && !copy->table) || (heap->metadata && !copy->metadata)) {
         // copy 与源堆共享指针对象，失败时只释放 map 容器本身，不得释放对象
@@ -246,7 +246,6 @@ am_heap_t *am_heap_load(am_allocator_t *container_alloc, am_allocator_t *obj_all
     am_heap_t *heap = (am_heap_t *)am_malloc(container_alloc, sizeof(am_heap_t));
     if (!heap) return NULL;
 
-    heap->capacity = dump->capacity;
     heap->handle_counter = dump->handle_counter;
 
     // table/metadata偏移量以heap dump起点为基准
@@ -258,6 +257,7 @@ am_heap_t *am_heap_load(am_allocator_t *container_alloc, am_allocator_t *obj_all
         am_free(container_alloc, heap);
         return NULL;
     }
+    heap->capacity = heap->table->capacity;
 
     if (metadata_offset != 0) {
         heap->metadata = am_map_load(container_alloc, buffer, offset + metadata_offset);
@@ -331,6 +331,7 @@ size_t am_heap_deep_dump(am_allocator_t *container_alloc, am_allocator_t *obj_al
         }
         temp_heap.table = m;
     }
+    temp_heap.capacity = temp_heap.table->capacity;
 
     // 计算heap对象本身的dump大小
     size_t heap_map_size = am_heap_dump(container_alloc, obj_alloc, &temp_heap, NULL, 0);
@@ -498,6 +499,7 @@ am_handle_t am_heap_alloc_handle(am_allocator_t *container_alloc, am_allocator_t
     am_map_t *new_table = am_map_set(container_alloc, heap->table, handle_val, AM_VALUE_NULL);
     if (!new_table) return AM_HANDLE_NULL;
     heap->table = new_table;
+    heap->capacity = new_table->capacity;
 
     return handle;
 }
@@ -575,7 +577,9 @@ int32_t am_heap_set(am_allocator_t *container_alloc, am_allocator_t *obj_alloc, 
         return -1;
     }
 
-    // 取出旧指针值并清空槽位，避免 am_map_set 用 container_alloc 释放对象
+    // 取出旧指针值并清空槽位，避免 map 接口用 container_alloc 释放对象
+    //（堆中对象由 obj_alloc 分配，所有权语义与 container_alloc 不同，
+    //  因此必须先取出旧指针，再交给 am_map_set_stable 替换，最后由 obj_alloc 释放）。
     am_value_t old_ptr = AM_VALUE_NULL;
     size_t idx;
     if (am_heap_find_slot(heap->table, handle_val, &idx) >= 0) {
@@ -586,9 +590,9 @@ int32_t am_heap_set(am_allocator_t *container_alloc, am_allocator_t *obj_alloc, 
         }
     }
 
-    am_map_t *new_table = am_map_set(container_alloc, heap->table, handle_val, value);
-    if (!new_table) {
-        // map_set 失败，恢复旧指针值，不释放对象
+    // 把柄已存在，仅做 value 替换，无需扩容；使用 am_map_set_stable 保证指针稳定。
+    if (am_map_set_stable(container_alloc, heap->table, handle_val, value) != 0) {
+        // 设置失败，恢复旧指针值，不释放对象
         if (am_value_is_ptr(old_ptr)) {
             size_t idx2;
             if (am_heap_find_slot(heap->table, handle_val, &idx2) >= 0) {
@@ -597,7 +601,6 @@ int32_t am_heap_set(am_allocator_t *container_alloc, am_allocator_t *obj_alloc, 
         }
         return -1;
     }
-    heap->table = new_table;
 
     if (am_value_is_ptr(old_ptr)) {
         am_free(obj_alloc, am_value_to_ptr(old_ptr));
