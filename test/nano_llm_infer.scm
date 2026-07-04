@@ -27,6 +27,32 @@
     (display "    用户区已用：") (display (* 100 (/ heap_use heap_cap))) (display "%") (newline)
     (display "=================================\n")))
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; 辅助函数
+
+(define make_random_list
+  (lambda (len)
+    (define mkranlst_iter
+      (lambda (lst idx)
+        (if (== idx 0)
+          lst
+          (mkranlst_iter (cons (Math.floor (* 10 (Math.random))) lst) (- idx 1))
+        )))
+    (mkranlst_iter '() len)))
+
+(define list_to_str
+  (lambda (lst)
+    (define str "")
+    (define count 0)
+    (define len (length lst))
+    (while (< count len) {
+      (set! str (String.concat str (String.atom_to_string (get_item lst count))))
+      (set! count (+ count 1))
+    })
+    str))
+
+
 ;;; 用于支持多个任务的外层函数：开始 ;;;
 (define LLM_RUN (lambda (task)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -603,8 +629,9 @@
   ))
 
 (define ai_sort
-  (lambda (input max_seq_len)
-    (define ids (LLM.encode input))
+  (lambda (input_list max_seq_len)
+    (define input_str (list_to_str input_list))
+    (define ids (LLM.encode input_str))
     (define new_token 0)
     (define logits #f)
     (define pos 0)
@@ -620,35 +647,30 @@
     })
 
     ;; 阶段2：前向传播与采样
+    (define sorted '())
     (set! pos 0)
     (while (< pos max_seq_len) {
       (set! logits (llm_forward (get_item ids pos) pos max_seq_len #f))
       (set! new_token (sample_argmax logits vocab_size))
-      (display (LLM.decode new_token))
+      (define tk (LLM.decode new_token))
+      (push sorted (String.parseNumber tk))
+      ;(display tk)
       (set! pos (+ pos 1))
     })
+
+    sorted
   ))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; 程序入口
 
-(define make_random_list
-  (lambda (len)
-    (define randstr "")
-    (define count 0)
-    (while (< count len) {
-      (set! randstr (String.concat randstr (String.atom_to_string (Math.floor (* 10 (Math.random))))))
-      (set! count (+ count 1))
-    })
-    randstr))
-
 (if (== task 0) {
   (display "序列生成任务：用LLM解决排序问题\n")
-  (define input_seq (make_random_list 6))
+  (define rlist (make_random_list 6))
   (display "  排序前：")
-  (display input_seq)
+  (display rlist)
   (display "\n  排序后：")
-  (ai_sort input_seq 6)
+  (display (ai_sort rlist 6))
   (display "\n\n")
 } {
   (display "自回归文本生成\n")
