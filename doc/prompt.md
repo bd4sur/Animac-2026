@@ -3298,6 +3298,11 @@ else if (obj_type == AM_OBJECT_TYPE_MAP) {
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个非标准Scheme解释器。其中 @src/module.c 实现了程序编译为模块的dump/load过程。为了减小模块dump得到的字节流的尺寸，我希望你在 @src/module.c 和 @include/module.h 中，实现一个基于 PackBits 算法的压缩和解压函数，对dump得到的字节流进行压缩和解压，并且在 @main.c 的 test_runtime_load_from_file 函数中，调用这个函数进行压缩解压测试，统计并显示压缩率（压缩前字节数、压缩后字节数）。
+
+你可以使用WSL进行编译构建和测试。不得修改无关代码。无需编写新的测试。保证 @main.c 编译运行正确即可。你可以使用 @test/test.scm 作为测试输入。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

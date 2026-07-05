@@ -12,8 +12,8 @@
 #include "list.h"
 #include "map.h"
 
-#define MODULE_MAGIC     "AMMOD\0\0\0"
-#define MODULE_VERSION   (1ULL)
+#define MODULE_MAGIC     "BD4SURAM"
+#define MODULE_VERSION   (202607ULL)
 #define MODULE_ALIGNMENT (8)
 
 #define MODULE_ALIGN_UP(x) (((x) + MODULE_ALIGNMENT - 1) & ~(MODULE_ALIGNMENT - 1))
@@ -410,4 +410,85 @@ fail:
     am_free(container_alloc, mod->ilcode);
     am_free(container_alloc, mod);
     return NULL;
+}
+
+// =============================================================
+// PackBits 压缩/解压
+// =============================================================
+
+size_t am_packbits_compress(uint8_t *src, size_t src_len, uint8_t *dst) {
+    if (!src) return SIZE_MAX;
+
+    size_t i = 0;
+    size_t out_pos = 0;
+
+    while (i < src_len) {
+        // 探测从当前位置开始的重复字节游程
+        size_t run_end = i + 1;
+        while (run_end < src_len &&
+               src[run_end] == src[i] &&
+               run_end - i < 128) {
+            run_end++;
+        }
+        size_t run_len = run_end - i;
+
+        // 重复 3 次及以上才编码为游程，否则并入字面量
+        if (run_len >= 3) {
+            if (dst) dst[out_pos] = (uint8_t)(257 - run_len);
+            out_pos++;
+            if (dst) dst[out_pos] = src[i];
+            out_pos++;
+            i = run_end;
+        } else {
+            // 编码字面量游程
+            size_t lit_start = i;
+            while (i < src_len) {
+                // 遇到 3 个及以上重复字节时结束字面量
+                if (i + 2 < src_len &&
+                    src[i] == src[i + 1] &&
+                    src[i] == src[i + 2]) {
+                    break;
+                }
+                i++;
+                if (i - lit_start >= 128) break;
+            }
+            size_t lit_len = i - lit_start;
+            if (dst) dst[out_pos] = (uint8_t)(lit_len - 1);
+            out_pos++;
+            if (dst) memcpy(dst + out_pos, src + lit_start, lit_len);
+            out_pos += lit_len;
+        }
+    }
+
+    return out_pos;
+}
+
+size_t am_packbits_decompress(uint8_t *src, size_t src_len, uint8_t *dst) {
+    if (!src) return SIZE_MAX;
+
+    size_t i = 0;
+    size_t out_pos = 0;
+
+    while (i < src_len) {
+        int8_t ctrl = (int8_t)src[i++];
+
+        if (ctrl >= 0) {
+            // 0..127：复制接下来的 ctrl+1 个字节
+            size_t count = (size_t)ctrl + 1;
+            if (i + count > src_len) return SIZE_MAX;
+            if (dst) memcpy(dst + out_pos, src + i, count);
+            out_pos += count;
+            i += count;
+        } else if (ctrl != -128) {
+            // -127..-1：将下一个字节重复 -ctrl+1 次
+            size_t count = (size_t)(-ctrl + 1);
+            if (i >= src_len) return SIZE_MAX;
+            if (dst) memset(dst + out_pos, src[i], count);
+            out_pos += count;
+            i++;
+        }
+        // ctrl == -128 为无操作
+    }
+
+    return out_pos;
 }

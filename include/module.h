@@ -48,6 +48,16 @@ am_module_t *am_module_load(am_allocator_t *container_alloc,
                             uint8_t *buffer,
                             size_t offset);
 
+// 使用 PackBits 算法压缩字节流。
+// dst == NULL 时仅计算压缩后字节数。
+// 成功返回压缩后字节数，失败返回 SIZE_MAX。
+size_t am_packbits_compress(uint8_t *src, size_t src_len, uint8_t *dst);
+
+// 使用 PackBits 算法解压字节流。
+// dst == NULL 时仅计算解压后字节数。
+// 成功返回解压后字节数，失败返回 SIZE_MAX。
+size_t am_packbits_decompress(uint8_t *src, size_t src_len, uint8_t *dst);
+
 
 #ifdef __cplusplus
 }

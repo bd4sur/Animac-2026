@@ -207,7 +207,52 @@ static void test_runtime_load_from_file(char *path) {
     printf("Module dumped: %zu bytes\n", dump_size);
 
     /* =============================================================
-     * 2. 彻底清空 VM 工作区，为 runtime 腾出空间
+     * 2. 使用 PackBits 压缩/解压转储后的字节流并验证
+     * ============================================================= */
+    size_t compressed_size = am_packbits_compress(module_buffer, dump_size, NULL);
+    assert(compressed_size != SIZE_MAX);
+
+    uint8_t *compressed_buffer = (uint8_t *)malloc(compressed_size);
+    assert(compressed_buffer != NULL);
+
+    size_t compressed_written = am_packbits_compress(module_buffer, dump_size, compressed_buffer);
+    assert(compressed_written == compressed_size);
+
+    size_t decompressed_size = am_packbits_decompress(compressed_buffer, compressed_size, NULL);
+    assert(decompressed_size == dump_size);
+
+    uint8_t *decompressed_buffer = (uint8_t *)malloc(decompressed_size);
+    assert(decompressed_buffer != NULL);
+
+    size_t decompressed_written = am_packbits_decompress(compressed_buffer, compressed_size, decompressed_buffer);
+    assert(decompressed_written == decompressed_size);
+    assert(memcmp(module_buffer, decompressed_buffer, dump_size) == 0);
+
+    printf("Module compressed: %zu bytes -> %zu bytes (%.2f%%)\n",
+           dump_size, compressed_size,
+           dump_size > 0 ? 100.0 * (double)compressed_size / (double)dump_size : 0.0);
+
+    // 将压缩后的模块字节流保存到 main 所在目录的 module.bin
+    if (0) {
+        char bin_path[512];
+        snprintf(bin_path, sizeof(bin_path), "%s/module.bin", base_dir);
+
+        FILE *bin_file = fopen(bin_path, "wb");
+        assert(bin_file != NULL);
+        size_t bin_written = fwrite(compressed_buffer, 1, compressed_size, bin_file);
+        fclose(bin_file);
+        assert(bin_written == compressed_size);
+
+        printf("Module compressed binary saved to: %s (%zu bytes)\n", bin_path, bin_written);
+    }
+
+    // 将解压后的数据写回原始缓冲区，使模块中的绝对指针保持有效
+    memcpy(module_buffer, decompressed_buffer, dump_size);
+    free(compressed_buffer);
+    free(decompressed_buffer);
+
+    /* =============================================================
+     * 3. 彻底清空 VM 工作区，为 runtime 腾出空间
      *    （原始 AST、module、ilcode 均在 vm_alloc 中，转储后已不需要）
      * ============================================================= */
     am_allocator_pool_reset_vm(g_pool);
@@ -217,7 +262,7 @@ static void test_runtime_load_from_file(char *path) {
     _mbstowcs(base_dir_w_reload, base_dir, 256);
 
     /* =============================================================
-     * 3. 从转储缓冲区加载模块，然后创建 runtime 并运行
+     * 4. 从转储缓冲区加载模块，然后创建 runtime 并运行
      * ============================================================= */
     am_module_t *mod_loaded = am_module_load(vm_alloc, heap_alloc, module_buffer, 0);
     assert(mod_loaded != NULL);
