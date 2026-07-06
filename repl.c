@@ -263,7 +263,7 @@ static int32_t am_repl_run(const wchar_t *code) {
     pos += name_len;
     module_path[pos] = L'\0';
 
-    am_ast_t *ast = am_parse(vm_alloc, full_code, module_path);
+    am_ast_t *ast = am_parse(vm_alloc, full_code, module_path, 0);
     if (!ast) {
         fwprintf(stderr, L"[REPL Error] 解析失败\n");
         fflush(stderr);
@@ -279,7 +279,7 @@ static int32_t am_repl_run(const wchar_t *code) {
         return -1;
     }
 
-    am_module_t *mod = am_compile(linked);
+    am_module_t *mod = am_compile(linked, 0, 0);
     if (!mod) {
         fwprintf(stderr, L"[REPL Error] 编译失败\n");
         fflush(stderr);

@@ -57,6 +57,8 @@ typedef struct parser_ctx_t {
     size_t special_app_stack_capacity;
     size_t special_app_stack_length;
 
+    int32_t is_keep_free; // 为 1 时，将未定义变量视为全局自由变量
+
     int error;
     wchar_t error_msg[256];
 } parser_ctx_t;
@@ -1424,6 +1426,13 @@ static void arn_rename_varid(parser_ctx_t *ctx, am_handle_t node_handle, am_list
         if (var_str && is_global_builtin_variable(var_str)) {
             return;
         }
+        // 若启用 is_keep_free，将未定义变量标记为全局自由变量
+        if (ctx->is_keep_free) {
+            if (am_list_set(ast->alloc, ast->var_type, (size_t)old_varid,
+                            am_make_value_of_uint(AM_VAR_TYPE_GLOBAL_FREE)) != 0) {
+                parser_set_error(ctx, L"failed to set global free var type");
+            }
+        }
         return;
     }
 
@@ -1943,7 +1952,7 @@ int32_t am_parser_tail_call_analysis(am_ast_t *ast) {
 // 解析器入口
 // ===============================================================================
 
-am_ast_t *am_parse(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path) {
+am_ast_t *am_parse(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path, int32_t is_keep_free) {
     if (!alloc || !code || !absolute_path) return NULL;
 
     // 词法分析
@@ -1974,6 +1983,7 @@ am_ast_t *am_parse(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path)
     ctx.ast = ast;
     ctx.tokens = tokens;
     ctx.token_count = (size_t)count;
+    ctx.is_keep_free = is_keep_free;
 
     // 初始栈：顶部为 TOP_NODE_HANDLE（已是编码后的 am_value_t）
     node_stack_push(&ctx, am_make_value_of_handle(AM_TOP_NODE_HANDLE));

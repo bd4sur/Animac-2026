@@ -9,6 +9,11 @@
 #include <time.h>
 
 #include "wstring.h"
+#include "parser.h"
+#include "compiler.h"
+#include "module.h"
+#include "heap.h"
+#include "ast.h"
 
 
 // ===============================================================================
@@ -417,7 +422,9 @@ static am_process_t *am_fork_process_copy(am_runtime_t *rt, am_process_t *parent
     child->symbol_vocab = am_vocab_copy(vm_alloc, parent->symbol_vocab);
     child->var_type = am_list_copy(vm_alloc, parent->var_type);
     child->natives = am_map_copy(vm_alloc, parent->natives);
-    if (!child->var_vocab || !child->symbol_vocab || !child->var_type || !child->natives) goto fail;
+    child->var_top = am_list_copy(vm_alloc, parent->var_top);
+    child->var_arn_mapping = am_map_copy(vm_alloc, parent->var_arn_mapping);
+    if (!child->var_vocab || !child->symbol_vocab || !child->var_type || !child->natives || !child->var_top || !child->var_arn_mapping) goto fail;
 
     child->opstack_capacity = parent->opstack_capacity;
     child->opstack = (am_value_t *)am_calloc(vm_alloc, child->opstack_capacity * sizeof(am_value_t));
@@ -761,6 +768,577 @@ int32_t am_native_System_test(am_runtime_t *rt, am_process_t *proc) {
 }
 
 
+// ===============================================================================
+// System.eval 内部辅助函数
+// ===============================================================================
+
+// 构造 eval 代码的临时绝对路径：base_dir/__eval__.scm
+static wchar_t *eval_make_path(am_allocator_t *alloc, const wchar_t *base_dir) {
+    if (!alloc) return NULL;
+    const wchar_t *filename = L"__eval__.scm";
+    size_t base_len = base_dir ? wcslen(base_dir) : 0;
+    size_t file_len = wcslen(filename);
+    int need_sep = (base_len > 0 && base_dir[base_len - 1] != L'/' && base_dir[base_len - 1] != L'\\');
+    wchar_t *path = (wchar_t *)am_malloc(alloc,
+                                          (base_len + (need_sep ? 1 : 0) + file_len + 1) * sizeof(wchar_t));
+    if (!path) return NULL;
+    if (base_len > 0) wcscpy(path, base_dir);
+    if (need_sep) path[base_len] = L'/';
+    wcscpy(path + base_len + (need_sep ? 1 : 0), filename);
+    return path;
+}
+
+
+// 将 wstring 对象内容复制到 vm_alloc 管理的 wchar_t 缓冲区
+static wchar_t *eval_wstring_to_vm_buffer(am_process_t *proc, am_wstring_t *ws) {
+    if (!proc || !ws || ws->length == 0) return NULL;
+    wchar_t *buf = (wchar_t *)am_malloc(proc->vm_alloc, (ws->length + 1) * sizeof(wchar_t));
+    if (!buf) return NULL;
+    for (size_t i = 0; i < ws->length; i++) {
+        buf[i] = (wchar_t)am_value_to_wchar(ws->content[i]);
+    }
+    buf[ws->length] = L'\0';
+    return buf;
+}
+
+
+// 建立 symbol 映射：evalee symbol -> proc symbol（按字面全局统一）
+static int32_t eval_build_symbol_mapping(am_process_t *proc, am_ast_t *evalee, am_map_t **mapping) {
+    if (!proc || !evalee || !mapping) return -1;
+    size_t count = evalee->symbol_vocab ? evalee->symbol_vocab->length : 0;
+    am_map_t *m = am_map_create(proc->vm_alloc, count > 0 ? count : 8);
+    if (!m) return -1;
+
+    for (size_t i = 0; i < count; i++) {
+        wchar_t *word = am_vocab_get(evalee->alloc, evalee->symbol_vocab, &i);
+        if (!word) {
+            am_map_destroy(proc->vm_alloc, m);
+            return -1;
+        }
+        size_t proc_idx = am_vocab_find(proc->vm_alloc, proc->symbol_vocab, word);
+        if (proc_idx == SIZE_MAX) {
+            proc->symbol_vocab = am_vocab_insert(proc->vm_alloc, proc->symbol_vocab, word, &proc_idx);
+            if (!proc->symbol_vocab || proc_idx == SIZE_MAX) {
+                am_map_destroy(proc->vm_alloc, m);
+                return -1;
+            }
+        }
+        am_map_t *new_m = am_map_set(proc->vm_alloc, m,
+                                      am_make_value_of_symbol((am_symbol_t)i),
+                                      am_make_value_of_symbol((am_symbol_t)proc_idx));
+        if (!new_m) {
+            am_map_destroy(proc->vm_alloc, m);
+            return -1;
+        }
+        m = new_m;
+    }
+    *mapping = m;
+    return 0;
+}
+
+
+// 建立 varid 映射：
+// - GLOBAL_FREE：在 proc->var_top 中通过 proc->var_arn_mapping 查找原形，映射到对应 proc varid
+// - 其他：插入 proc->var_vocab，并同步 proc->var_type
+static int32_t eval_build_var_mapping(am_process_t *proc, am_ast_t *evalee, am_map_t **mapping) {
+    if (!proc || !evalee || !mapping) return -1;
+    size_t count = evalee->var_vocab ? evalee->var_vocab->length : 0;
+    am_map_t *m = am_map_create(proc->vm_alloc, count > 0 ? count : 8);
+    if (!m) return -1;
+
+    size_t old_var_vocab_len = proc->var_vocab ? proc->var_vocab->length : 0;
+
+    for (size_t i = 0; i < count; i++) {
+        am_varid_t old_varid = (am_varid_t)i;
+        am_value_t type_val = am_list_get(evalee->alloc, evalee->var_type, i);
+        am_uint_t type = am_value_is_uint(type_val) ? am_value_to_uint(type_val) : AM_VAR_TYPE_OLD;
+        am_varid_t new_varid = SIZE_MAX;
+
+        if (type == AM_VAR_TYPE_GLOBAL_FREE) {
+            wchar_t *name = am_vocab_get(evalee->alloc, evalee->var_vocab, &old_varid);
+            if (!name) {
+                am_map_destroy(proc->vm_alloc, m);
+                return -1;
+            }
+            size_t top_len = proc->var_top ? proc->var_top->length : 0;
+            for (size_t j = 0; j < top_len; j++) {
+                am_value_t top_val = am_list_get(proc->vm_alloc, proc->var_top, j);
+                if (!am_value_is_varid(top_val)) continue;
+                am_varid_t top_varid = am_value_to_varid(top_val);
+                am_value_t old_top_val = am_map_get(proc->vm_alloc, proc->var_arn_mapping,
+                                                     am_make_value_of_varid(top_varid));
+                if (!am_value_is_varid(old_top_val)) continue;
+                am_varid_t old_top_varid = am_value_to_varid(old_top_val);
+                wchar_t *old_name = am_vocab_get(proc->vm_alloc, proc->var_vocab, &old_top_varid);
+                if (old_name && wcscmp(old_name, name) == 0) {
+                    new_varid = top_varid;
+                    break;
+                }
+            }
+            if (new_varid == SIZE_MAX) {
+                fprintf(stderr, "[System.eval] 未定义的变量：%ls\n", name);
+                am_map_destroy(proc->vm_alloc, m);
+                return -1;
+            }
+        }
+        else {
+            wchar_t *name = am_vocab_get(evalee->alloc, evalee->var_vocab, &old_varid);
+            if (!name) {
+                am_map_destroy(proc->vm_alloc, m);
+                return -1;
+            }
+            size_t proc_idx = SIZE_MAX;
+            proc->var_vocab = am_vocab_insert(proc->vm_alloc, proc->var_vocab, name, &proc_idx);
+            if (!proc->var_vocab || proc_idx == SIZE_MAX) {
+                am_map_destroy(proc->vm_alloc, m);
+                return -1;
+            }
+            new_varid = (am_varid_t)proc_idx;
+
+            // 仅当真正新增 varid 时才写入 var_type，避免覆盖已有 proc 变量类型
+            if (proc_idx >= old_var_vocab_len) {
+                while (proc->var_type->length <= proc_idx) {
+                    am_list_t *vt = am_list_push(proc->vm_alloc, proc->var_type,
+                                                  am_make_value_of_uint(AM_VAR_TYPE_OLD));
+                    if (!vt) {
+                        am_map_destroy(proc->vm_alloc, m);
+                        return -1;
+                    }
+                    proc->var_type = vt;
+                }
+                if (am_list_set(proc->vm_alloc, proc->var_type, proc_idx,
+                                am_make_value_of_uint(type)) != 0) {
+                    am_map_destroy(proc->vm_alloc, m);
+                    return -1;
+                }
+            }
+        }
+
+        am_map_t *new_m = am_map_set(proc->vm_alloc, m,
+                                      am_make_value_of_varid(old_varid),
+                                      am_make_value_of_varid(new_varid));
+        if (!new_m) {
+            am_map_destroy(proc->vm_alloc, m);
+            return -1;
+        }
+        m = new_m;
+    }
+    *mapping = m;
+    return 0;
+}
+
+
+// 编译后，为编译器引入的临时变量（ILTEMP）补充映射。
+// 这些 varid 在 eval_build_var_mapping 之后才产生，因此需要额外处理。
+static int32_t eval_extend_var_mapping_for_temps(am_process_t *proc, am_ast_t *evalee,
+                                                  am_map_t **mapping, size_t old_evalee_var_vocab_len) {
+    if (!proc || !evalee || !mapping || !*mapping) return -1;
+    size_t count = evalee->var_vocab ? evalee->var_vocab->length : 0;
+    if (old_evalee_var_vocab_len >= count) return 0;
+
+    size_t old_proc_var_vocab_len = proc->var_vocab ? proc->var_vocab->length : 0;
+    am_map_t *m = *mapping;
+
+    // 用于保证每次 eval 的临时变量在 proc 中都有唯一的 varid，避免 call/cc 等续体
+    // 与后续 eval 生成的同名临时变量发生 slot 冲突。
+    static size_t eval_temp_seq = 0;
+
+    for (size_t i = old_evalee_var_vocab_len; i < count; i++) {
+        am_varid_t old_varid = (am_varid_t)i;
+        am_value_t type_val = am_list_get(evalee->alloc, evalee->var_type, i);
+        am_uint_t type = am_value_is_uint(type_val) ? am_value_to_uint(type_val) : AM_VAR_TYPE_OLD;
+
+        // 仅处理编译期引入的 ILTEMP；其余类型应在编译前完成映射
+        if (type != AM_VAR_TYPE_ILTEMP) {
+            fprintf(stderr, "[System.eval] 未预期的编译后变量类型：varid=%zu type=%u\n",
+                    (size_t)i, (unsigned int)type);
+            return -1;
+        }
+
+        wchar_t *name = am_vocab_get(evalee->alloc, evalee->var_vocab, &old_varid);
+        if (!name) return -1;
+
+        // 生成唯一名称，避免不同 eval 调用的临时变量共享 proc varid
+        wchar_t unique_name[256];
+        int n = swprintf(unique_name, 256, L"__eval_%zu_%ls", eval_temp_seq++, name);
+        if (n <= 0 || (size_t)n >= 256) return -1;
+
+        size_t proc_idx = SIZE_MAX;
+        proc->var_vocab = am_vocab_insert(proc->vm_alloc, proc->var_vocab, unique_name, &proc_idx);
+        if (!proc->var_vocab || proc_idx == SIZE_MAX) return -1;
+
+        if (proc_idx >= old_proc_var_vocab_len) {
+            while (proc->var_type->length <= proc_idx) {
+                am_list_t *vt = am_list_push(proc->vm_alloc, proc->var_type,
+                                              am_make_value_of_uint(AM_VAR_TYPE_OLD));
+                if (!vt) return -1;
+                proc->var_type = vt;
+            }
+            if (am_list_set(proc->vm_alloc, proc->var_type, proc_idx,
+                            am_make_value_of_uint(type)) != 0) return -1;
+        }
+
+        am_map_t *new_m = am_map_set(proc->vm_alloc, m,
+                                      am_make_value_of_varid(old_varid),
+                                      am_make_value_of_varid((am_varid_t)proc_idx));
+        if (!new_m) return -1;
+        m = new_m;
+    }
+
+    *mapping = m;
+    return 0;
+}
+
+
+// 迁移 natives：把 evalee 中声明的 native 库记录合并到 proc->natives
+static int32_t eval_migrate_natives(am_process_t *proc, am_ast_t *evalee, am_map_t *var_mapping) {
+    if (!proc || !evalee || !evalee->natives || !var_mapping) return 0;
+
+    size_t count = am_map_length(evalee->alloc, evalee->natives);
+    am_value_t *keys = am_map_keys(evalee->alloc, evalee->natives);
+    if (!keys && count > 0) return -1;
+
+    for (size_t i = 0; i < count; i++) {
+        am_value_t old_varid_val = keys[i];
+        am_value_t new_varid_val = am_map_get(proc->vm_alloc, var_mapping, old_varid_val);
+        if (!am_value_is_varid(new_varid_val)) continue;
+
+        am_value_t old_handle_val = am_map_get(evalee->alloc, evalee->natives, old_varid_val);
+        am_handle_t new_handle = AM_HANDLE_NULL;
+
+        if (am_value_is_handle(old_handle_val)) {
+            am_handle_t old_h = am_value_to_handle(old_handle_val);
+            am_value_t obj_val = am_heap_get(evalee->alloc, evalee->alloc, evalee->nodes, old_h);
+            if (am_value_is_ptr(obj_val)) {
+                am_object_t *obj = am_value_to_ptr(obj_val);
+                if (obj->type == AM_OBJECT_TYPE_WSTRING) {
+                    am_wstring_t *new_ws = am_wstring_copy(proc->heap_alloc, (am_wstring_t *)obj);
+                    if (new_ws) {
+                        new_handle = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
+                        if (new_handle != AM_HANDLE_NULL) {
+                            if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, new_handle,
+                                            am_make_value_of_ptr((am_object_t *)new_ws)) != 0) {
+                                am_wstring_destroy(proc->heap_alloc, new_ws);
+                                new_handle = AM_HANDLE_NULL;
+                            } else {
+                                am_object_set_static((am_object_t *)new_ws, 0);
+                            }
+                        } else {
+                            am_wstring_destroy(proc->heap_alloc, new_ws);
+                        }
+                    }
+                }
+            }
+        }
+
+        am_map_t *new_m = am_map_set(proc->vm_alloc, proc->natives,
+                                      new_varid_val,
+                                      new_handle != AM_HANDLE_NULL
+                                          ? am_make_value_of_handle(new_handle)
+                                          : AM_VALUE_HANDLE_NULL);
+        if (!new_m) {
+            free(keys);
+            return -1;
+        }
+        proc->natives = new_m;
+    }
+    free(keys);
+    return 0;
+}
+
+
+// 将 symbol 映射应用到 evalee 的所有 list 节点 children
+// varid 保持 evalee 原值，在 IL 生成后再统一 remap，以便编译器仍能用 evalee->var_vocab 解析名称
+static int32_t eval_apply_symbol_mapping(am_ast_t *evalee, am_map_t *symbol_mapping) {
+    if (!evalee || !evalee->nodes) return 0;
+
+    size_t count = am_map_length(evalee->alloc, evalee->nodes->table);
+    am_value_t *keys = am_map_keys(evalee->alloc, evalee->nodes->table);
+    if (!keys && count > 0) return -1;
+
+    for (size_t i = 0; i < count; i++) {
+        am_handle_t hd = am_value_to_handle(keys[i]);
+        am_value_t val = am_heap_get(evalee->alloc, evalee->alloc, evalee->nodes, hd);
+        if (!am_value_is_ptr(val)) continue;
+        am_object_t *obj = am_value_to_ptr(val);
+        if (obj->type != AM_OBJECT_TYPE_LIST) continue;
+
+        am_list_t *lst = (am_list_t *)obj;
+        for (size_t j = 0; j < lst->length; j++) {
+            am_value_t child = am_list_get(evalee->alloc, lst, j);
+            if (am_value_is_symbol(child)) {
+                am_value_t new_child = am_map_get(evalee->alloc, symbol_mapping, child);
+                if (am_value_is_symbol(new_child) && new_child != child) {
+                    if (am_list_set(evalee->alloc, lst, j, new_child) != 0) {
+                        free(keys);
+                        return -1;
+                    }
+                }
+            }
+        }
+    }
+    free(keys);
+    return 0;
+}
+
+
+// 把 evalee 临时堆中的对象递归深拷贝到 proc->heap，并建立 handle 映射
+typedef struct {
+    am_allocator_t *vm_alloc;
+    am_allocator_t *heap_alloc;
+    am_ast_t *evalee;
+    am_process_t *proc;
+    am_map_t *handle_mapping;
+} eval_copy_ctx_t;
+
+static am_handle_t eval_copy_object_to_proc(eval_copy_ctx_t *ctx, am_handle_t old_handle) {
+    if (old_handle == AM_HANDLE_NULL) return AM_HANDLE_NULL;
+
+    am_value_t mapped = am_map_get(ctx->vm_alloc, ctx->handle_mapping,
+                                    am_make_value_of_handle(old_handle));
+    if (am_value_is_handle(mapped)) return am_value_to_handle(mapped);
+
+    am_value_t old_val = am_heap_get(ctx->evalee->alloc, ctx->evalee->alloc,
+                                      ctx->evalee->nodes, old_handle);
+    if (!am_value_is_ptr(old_val)) return AM_HANDLE_NULL;
+
+    am_object_t *obj = am_value_to_ptr(old_val);
+    am_handle_t new_handle = AM_HANDLE_NULL;
+    am_object_t *new_obj = NULL;
+
+    if (obj->type == AM_OBJECT_TYPE_WSTRING) {
+        am_wstring_t *new_ws = am_wstring_copy(ctx->heap_alloc, (am_wstring_t *)obj);
+        if (!new_ws) return AM_HANDLE_NULL;
+        new_obj = (am_object_t *)new_ws;
+    }
+    else if (obj->type == AM_OBJECT_TYPE_LIST) {
+        am_list_t *old_lst = (am_list_t *)obj;
+        am_list_t *new_lst = am_list_copy(ctx->heap_alloc, old_lst);
+        if (!new_lst) return AM_HANDLE_NULL;
+
+        for (size_t i = 0; i < new_lst->length; i++) {
+            am_value_t child = new_lst->children[i];
+            if (am_value_is_handle(child)) {
+                am_handle_t old_child_h = am_value_to_handle(child);
+                am_handle_t new_child_h = eval_copy_object_to_proc(ctx, old_child_h);
+                if (new_child_h == AM_HANDLE_NULL && old_child_h != AM_HANDLE_NULL) {
+                    am_list_destroy(ctx->heap_alloc, new_lst);
+                    return AM_HANDLE_NULL;
+                }
+                new_lst->children[i] = am_make_value_of_handle(new_child_h);
+            }
+        }
+        new_obj = (am_object_t *)new_lst;
+    }
+    else {
+        return AM_HANDLE_NULL;
+    }
+
+    new_handle = am_heap_alloc_handle(ctx->vm_alloc, ctx->heap_alloc, ctx->proc->heap);
+    if (new_handle == AM_HANDLE_NULL) {
+        if (new_obj->type == AM_OBJECT_TYPE_WSTRING) {
+            am_wstring_destroy(ctx->heap_alloc, (am_wstring_t *)new_obj);
+        } else {
+            am_list_destroy(ctx->heap_alloc, (am_list_t *)new_obj);
+        }
+        return AM_HANDLE_NULL;
+    }
+
+    if (am_heap_set(ctx->vm_alloc, ctx->heap_alloc, ctx->proc->heap, new_handle,
+                    am_make_value_of_ptr(new_obj)) != 0) {
+        if (new_obj->type == AM_OBJECT_TYPE_WSTRING) {
+            am_wstring_destroy(ctx->heap_alloc, (am_wstring_t *)new_obj);
+        } else {
+            am_list_destroy(ctx->heap_alloc, (am_list_t *)new_obj);
+        }
+        am_heap_free_handle(ctx->vm_alloc, ctx->heap_alloc, ctx->proc->heap, new_handle);
+        return AM_HANDLE_NULL;
+    }
+
+    am_object_set_static(new_obj, 0);
+
+    am_map_t *new_m = am_map_set(ctx->vm_alloc, ctx->handle_mapping,
+                                  am_make_value_of_handle(old_handle),
+                                  am_make_value_of_handle(new_handle));
+    if (!new_m) return AM_HANDLE_NULL;
+    ctx->handle_mapping = new_m;
+
+    return new_handle;
+}
+
+
+// 扫描 evalee IL，把 varid/handle 操作数分别映射到 proc 的 varid 和 proc->heap
+static int32_t eval_remap_il_operands(eval_copy_ctx_t *ctx, am_map_t *var_mapping,
+                                       am_instruction_t *ilcode, am_iaddr_t length) {
+    if (!ctx || !var_mapping || !ilcode) return -1;
+    for (am_iaddr_t i = 0; i < length; i++) {
+        am_value_t operand = ilcode[i].operand;
+        if (am_value_is_varid(operand)) {
+            am_value_t new_val = am_map_get(ctx->vm_alloc, var_mapping, operand);
+            if (!am_value_is_varid(new_val)) {
+                fprintf(stderr, "[System.eval] IL varid 映射失败：iaddr=%zu\n", (size_t)i);
+                return -1;
+            }
+            ilcode[i].operand = new_val;
+        }
+        else if (am_value_is_handle(operand)) {
+            am_handle_t old_h = am_value_to_handle(operand);
+            if (old_h == AM_HANDLE_NULL) continue;
+            am_handle_t new_h = eval_copy_object_to_proc(ctx, old_h);
+            if (new_h == AM_HANDLE_NULL) {
+                fprintf(stderr, "[System.eval] IL handle 映射失败：iaddr=%zu\n", (size_t)i);
+                return -1;
+            }
+            ilcode[i].operand = am_make_value_of_handle(new_h);
+        }
+    }
+    return 0;
+}
+
+
+// 将 evalee IL 追加到 proc->ilcode 尾部
+static int32_t eval_append_ilcode(am_process_t *proc, am_instruction_t *new_ilcode, am_iaddr_t new_length) {
+    if (!proc || !new_ilcode || new_length == 0) return -1;
+    am_iaddr_t old_length = proc->ilcode_length;
+    am_instruction_t *combined = (am_instruction_t *)am_realloc(
+        proc->vm_alloc, proc->ilcode,
+        (old_length + new_length) * sizeof(am_instruction_t));
+    if (!combined) return -1;
+    proc->ilcode = combined;
+    memcpy(proc->ilcode + old_length, new_ilcode, new_length * sizeof(am_instruction_t));
+    proc->ilcode_length = old_length + new_length;
+    return 0;
+}
+
+
+// (System.eval codestr:String) : void
+// 运行时动态编译并执行 Scheme 代码字符串。仅捕获当前进程的顶级变量绑定。
+int32_t am_native_System_eval(am_runtime_t *rt, am_process_t *proc) {
+    if (!rt || !proc || !proc->heap) return -1;
+
+    // 弹出代码字符串
+    am_value_t code_val = am_process_pop_operand(proc);
+    if (!am_value_is_handle(code_val)) return -1;
+    am_handle_t code_h = am_value_to_handle(code_val);
+    am_value_t code_obj = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, code_h);
+    if (!am_value_is_ptr(code_obj)) return -1;
+    am_object_t *obj = am_value_to_ptr(code_obj);
+    if (obj->type != AM_OBJECT_TYPE_WSTRING) return -1;
+
+    wchar_t *code_buf = eval_wstring_to_vm_buffer(proc, (am_wstring_t *)obj);
+    if (!code_buf) return -1;
+
+    wchar_t *path_buf = eval_make_path(proc->vm_alloc, rt->working_dir);
+    if (!path_buf) {
+        am_free(proc->vm_alloc, code_buf);
+        return -1;
+    }
+
+    // 将 eval 代码包装成 Parser 要求的顶层 thunk 形式：((lambda () <code>))
+    const wchar_t *prefix = L"((lambda () ";
+    const wchar_t *suffix = L"))";
+    size_t code_len = wcslen(code_buf);
+    size_t wrapped_len = wcslen(prefix) + code_len + wcslen(suffix);
+    wchar_t *wrapped_code = (wchar_t *)am_malloc(proc->vm_alloc,
+                                                  (wrapped_len + 1) * sizeof(wchar_t));
+    if (!wrapped_code) {
+        am_free(proc->vm_alloc, code_buf);
+        am_free(proc->vm_alloc, path_buf);
+        return -1;
+    }
+    wcscpy(wrapped_code, prefix);
+    wcscat(wrapped_code, code_buf);
+    wcscat(wrapped_code, suffix);
+
+    // 解析为孤立 AST，保留 GLOBAL_FREE
+    am_ast_t *evalee = am_parse(proc->vm_alloc, wrapped_code, path_buf, 1);
+    if (!evalee) {
+        am_free(proc->vm_alloc, wrapped_code);
+        am_free(proc->vm_alloc, code_buf);
+        am_free(proc->vm_alloc, path_buf);
+        return -1;
+    }
+
+    am_map_t *symbol_mapping = NULL;
+    am_map_t *var_mapping = NULL;
+    am_module_t *mod = NULL;
+    eval_copy_ctx_t copy_ctx = { 0 };
+
+    // 建立 symbol / var 映射
+    if (eval_build_symbol_mapping(proc, evalee, &symbol_mapping) != 0) goto fail;
+    if (eval_build_var_mapping(proc, evalee, &var_mapping) != 0) goto fail;
+
+    // 迁移 natives 以支持 eval 中的 native 调用
+    if (eval_migrate_natives(proc, evalee, var_mapping) != 0) goto fail;
+
+    // 应用 symbol 映射到 evalee AST（varid 保持原值）
+    if (eval_apply_symbol_mapping(evalee, symbol_mapping) != 0) goto fail;
+
+    // 计算偏移和返回地址
+    am_iaddr_t offset = proc->ilcode_length;
+    am_iaddr_t ret = proc->PC + 1;
+
+    // 记录编译前 evalee 的 var_vocab 长度，编译器可能引入 ILTEMP 临时变量
+    size_t old_evalee_var_vocab_len = evalee->var_vocab ? evalee->var_vocab->length : 0;
+
+    // 编译 evalee AST
+    mod = am_compile(evalee, offset, ret);
+    if (!mod) {
+        fprintf(stderr, "[System.eval] 编译失败\n");
+        goto fail;
+    }
+
+    // 为编译期引入的临时变量补充 varid 映射
+    if (eval_extend_var_mapping_for_temps(proc, evalee, &var_mapping,
+                                           old_evalee_var_vocab_len) != 0) goto fail;
+
+    // 建立 handle 映射并把 IL 中 push 的 handle 映射到 proc->heap
+    copy_ctx.vm_alloc = proc->vm_alloc;
+    copy_ctx.heap_alloc = proc->heap_alloc;
+    copy_ctx.evalee = evalee;
+    copy_ctx.proc = proc;
+    copy_ctx.handle_mapping = am_map_create(proc->vm_alloc, 16);
+    if (!copy_ctx.handle_mapping) goto fail;
+
+    if (eval_remap_il_operands(&copy_ctx, var_mapping, mod->ilcode, mod->ilcode_length) != 0) goto fail;
+
+    // 追加 IL 到 proc
+    if (eval_append_ilcode(proc, mod->ilcode, mod->ilcode_length) != 0) {
+        fprintf(stderr, "[System.eval] 追加 IL 代码失败\n");
+        goto fail;
+    }
+
+    // 跳转到 evalee 入口
+    proc->PC = offset;
+
+    // 清理临时资源（mod 的 ilcode 已追加到 proc，置空避免重复释放）
+    mod->ilcode = NULL;
+    am_free(proc->vm_alloc, mod);
+    am_map_destroy(proc->vm_alloc, copy_ctx.handle_mapping);
+    am_map_destroy(proc->vm_alloc, symbol_mapping);
+    am_map_destroy(proc->vm_alloc, var_mapping);
+    am_ast_destroy(evalee);
+    am_free(proc->vm_alloc, wrapped_code);
+    am_free(proc->vm_alloc, code_buf);
+    am_free(proc->vm_alloc, path_buf);
+    return 0;
+
+fail:
+    if (copy_ctx.handle_mapping) am_map_destroy(proc->vm_alloc, copy_ctx.handle_mapping);
+    if (symbol_mapping) am_map_destroy(proc->vm_alloc, symbol_mapping);
+    if (var_mapping) am_map_destroy(proc->vm_alloc, var_mapping);
+    if (mod) {
+        mod->ilcode = NULL;
+        am_free(proc->vm_alloc, mod);
+    }
+    am_ast_destroy(evalee);
+    am_free(proc->vm_alloc, wrapped_code);
+    am_free(proc->vm_alloc, code_buf);
+    am_free(proc->vm_alloc, path_buf);
+    return -1;
+}
+
+
 static const am_native_func_entry_t am_native_System_funcs[] = {
     { L"exec",         am_native_System_exec },
     { L"set_timeout",  am_native_System_set_timeout },
@@ -770,6 +1348,7 @@ static const am_native_func_entry_t am_native_System_funcs[] = {
     { L"timestamp",    am_native_System_timestamp },
     { L"memstat",      am_native_System_memstat },
     { L"fork",         am_native_System_fork },
+    { L"eval",         am_native_System_eval },
     { L"test",         am_native_System_test },
 };
 

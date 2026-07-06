@@ -372,7 +372,7 @@ void import_analysis(am_linker_ctx_t *ctx, wchar_t *importee_path, size_t import
         current_module_index = ctx->module_counter;
         ctx->all_module_path[current_module_index] = importee_path;
         wchar_t *code = read_from_file(importee_path);
-        am_ast_t *current_ast = am_parse(ctx->alloc, code, importee_path);
+        am_ast_t *current_ast = am_parse(ctx->alloc, code, importee_path, 0);
         ctx->ALLAST[current_module_index] = current_ast;
         foreach (path of current_ast->dependencies) {
             import_analysis(ctx, path, current_module_index);
@@ -1037,8 +1037,8 @@ static am_iaddr_t am_compiler_parse_label_to_iaddr(am_compiler_ctx_t *ctx, am_va
 
 
 // 功能描述：编译后处理——全局标签解析，该函数在am_compile_all结束后调用，用于将所有的label替换为绝对iaddr。
-// 实现描述：遍历所有ilcode，检查am_instruction.operand的am_value_t的TPV类型是否是AM_VALUE_TYPE_LABEL。如果是，则调用am_compiler_parse_label_to_iaddr将其转换为iaddr，并替换掉原来的label。成功返回0，失败返回-1。
-int32_t am_compiler_label_resolution(am_compiler_ctx_t *ctx);
+// 实现描述：遍历所有ilcode，检查am_instruction.operand的am_value_t的TPV类型是否是AM_VALUE_TYPE_LABEL。如果是，则调用am_compiler_parse_label_to_iaddr将其转换为iaddr，加上offset后替换掉原来的label。成功返回0，失败返回-1。
+int32_t am_compiler_label_resolution(am_compiler_ctx_t *ctx, am_iaddr_t offset);
 ```
 
 ## 具体编译规则的实现
@@ -1060,7 +1060,13 @@ int32_t am_compile_all(am_compiler_ctx_t *ctx) {
     // 入口点
     am_value_t top_lambda_label = am_compiler_make_label(ctx, ctx->ast->top_lambda_handle);
     emit_instruction(ctx, AM_VM_OP_call, top_lambda_label);
-    emit_instruction(ctx, AM_VM_OP_halt, AM_VALUE_UNDEFINED);
+    // ctx->ret > 0 时跳转到返回目标，否则使用 halt 结束
+    if (ctx->ret > 0) {
+        emit_instruction(ctx, AM_VM_OP_goto, am_make_value_of_iaddr(ctx->ret));
+    }
+    else {
+        emit_instruction(ctx, AM_VM_OP_halt, AM_VALUE_UNDEFINED);
+    }
     // 从所有的Lambda节点开始顺序编译。这类似于C语言，所有的函数都是顶级的。
     for (hd of ctx->ast->lambda_handles) {
         am_compile_lambda(ctx, hd);
@@ -1836,7 +1842,7 @@ am_runtime_start(am_runtime_t *rt) {
 根据以下提供的解释器整体框架的参考用法，补全相关入口函数的实现。
 
 ```
-am_module_t mod = am_compile(wchar_t *code, wchar_t *absolute_path, wchar_t *base_dir);
+am_module_t mod = am_compile(am_ast_t *ast, am_iaddr_t offset, am_iaddr_t ret);
 // 中间可以有dump/load
 am_runtime_t rt = am_runtime_create(wchar_t *base_dir, ...);
 am_load_module(rt, mod);
@@ -3306,8 +3312,158 @@ else if (obj_type == AM_OBJECT_TYPE_MAP) {
 
 ---------------------
 
+# 需求：process增加var_top和var_arn_mapping两个字段
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。
+
+在 @include/process.h 和 @src/process.c 中，am_process_t 的初始化是从接收一个am_module_t开始的。这个module里面有一个完整的AST，但是 am_process_load_from_module 只保留了AST的部分字段给process。
+
+我的需求是：为am_process_t增加来自AST的var_top和var_arn_mapping两个字段；并且在 @src/native_System.c 中有关 fork 本地宿主函数的实现中，增加对于这两个字段的处理。
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确。你可以使用 @test/test.scm 作为回归测试输入。你可以使用WSL进行编译构建和测试。
 
 ---------------------
+
+# 需求：process增加var_top和var_arn_mapping两个字段
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。
+
+在 @include/parser.h 和 @src/parser.c 中， am_parse 函数实现了一个完整的从代码字符串到AST的解析过程。其中有一个过程 alpha_rename_analysis 实现了词法作用域的分析和 alpha-renaming 过程。该过程会上溯寻找每个普通变量的定义所在词法作用域，进而确定其完整的全限定名。当前的 am_parse → alpha_rename_analysis → arn_rename_varid 实现中，对于“未定义变量”的处理是宽松的。因为这种找不到所属作用域的标识符，除了出现在define、import、native中以及作为全局builtin符号等特殊情况外，也有可能是语义错误（本解释器不允许使用未预先定义的变量，也就是没有被define或者出现在lambda的参数列表中）。但是，在REPL、eval等场景下，需要明确知道哪些变量是“未定义变量”，并将这些“未定义变量”视为“全局自由变量”，以待后续在运行时环境中寻找其绑定。
+
+因此，我的需求是：修改am_parse，增加参数：int32_t is_keep_free。若其值为0，则不做任何处理（完全等同现有逻辑）。若其值为1，则在 alpha_rename_analysis 阶段，将“未定义变量”的 var_type 设为 AM_VAR_TYPE_GLOBAL_FREE 。
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确。你可以使用 @test/test.scm 作为回归测试输入。你可以使用WSL进行编译构建和测试。
+
+---------------------
+
+# 需求：改造compiler的代码生成接口
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。
+
+在 @include/compiler.h 和 @src/compiler.c 中， am_compile 函数实现了一个完整的从AST到模块（AST+ILCode+其他元数据）的编译过程。在从零开始的“冷启动”编译过程中，编译出的IL代码被放在mod->ilcode的起始位置，这是自然的。此外，编译出的IL代码的基本结构是：
+
+- 指令0：call 入口函数地址
+- 指令1：halt
+- 指令2：入口函数……
+
+也就是说，任何完整程序所执行的第一条代码都是“指令0”，执行结束后回到“指令1”并终止程序。在 am_compile 的 am_compiler_label_resolution 阶段，所有将标签解析为实际代码地址（iaddr），都依赖于“程序从0开始”和“最终halt”这个约定。
+
+然而，在REPL、eval等场景下，需要在运行时动态地编译代码，并且将编译出的代码动态地附加到当前进程的ilcode的任何位置上。因此，运行时动态编译出来的IL代码，其起始位置可能是任意位置，也就是某个offset偏移量，这就意味着在 am_compiler_label_resolution 阶段所解析得到的所有iaddr都要加上这个offset。另一方面，动态编译出的IL代码，功能上是一个完整的执行过程，因此它应当有个出口（返回目标），而不是直接halt了事，因此，“指令1”也应该可以是一条goto语句。
+
+因此，我的需求是：修改am_compile，增加两个参数：am_module_t *am_compile(am_ast_t *ast, am_iaddr_t offset, am_iaddr_t ret) 。为了实现这个需求，你可能要修改 am_compiler_label_resolution 增加参数 iaddr offset。
+
+其中offset是iaddr的整体偏移量，ret是最终返回指令的目标iaddr。默认offset=0，ret=0，默认情况则不做任何处理（完全等同现有逻辑）。如果ret大于0，则am_compile_all增加的halt指令（第二条指令）要变成 goto ret。
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确。你可以使用 @test/test.scm 作为回归测试输入。你可以使用WSL进行编译构建和测试。
+
+---------------------
+
+# 需求：实现System.eval
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。现在我需要为其增加运行时动态解释执行代码的能力，即System.eval。
+
+这个需求比较复杂。在实现这个需求之前，你需要先评估我给出的需求和方案是否合理，是否有需要我澄清的问题，先给出你的思路、判断、问题，然后问我是否继续。得到我的批准之后，你才能开始编写代码实现需求。
+
+## 需求背景
+
+为了使Scheme解释器支持运行时动态执行代码，需要在System本地库中实现(System.eval codestr)函数，该函数接收一个字符串参数，字符串内期望是Scheme代码，System.eval将其编译成IL代码，并将静态数据和IL代码动态附加到当前执行的进程上，并开始执行。执行完毕后，跳回System.eval的下一条指令。System.eval是同步的、阻塞的。System.eval仅捕获其所在进程的顶级变量绑定，但不捕获其所在词法作用域的变量绑定。
+
+## 术语约定
+
+- proc指调用System.eval的进程，进程数据结构保存了代码AST的大部分信息。
+- evalee指传入System.eval的被解释执行的“子程序”，大多数情况下指的是evalee的AST，也有可能指evalee的IL代码。
+
+## System.eval的实现思路
+
+1、取出代码字符串，将其编译为孤立AST=evalee。——GLOBAL_FREE保留原形
+2、将孤立AST=evalee根据进程环境进行重写：
+   - symbol映射，同am_ast_merge
+   - var映射，同am_ast_merge。但是对于AM_VAR_TYPE_GLOBAL_FREE，需要找到它在proc中对应的var_top，加入映射。
+     - 例如"((lambda (x) x) x)"，第1、2个x是约束变量，不换名；第三个x是自由变量(AM_VAR_TYPE_GLOBAL_FREE)，需要换成外层环境的名字。
+     - 对于evalee中的AM_VAR_TYPE_GLOBAL_FREE，应该到proc的var_top中寻找其定义。如果找不到，那就报错。
+     - 寻找线索是：遍历proc所有的var_top，通过var_arn_mapping找到其ARN之前的原形，并跟要替换的global_free进行比较。若一致，则该global_free可映射到proc中的这个var_top。
+     - 还是跟merge后换名一个道理：限定了var_top这个范围之后，原形（AM_VAR_TYPE_OLD）也不会重名了。
+   - var_top、lambda_handles、tailcall_handles、dependencies、natives都不迁移。
+   - 为evalee的所有AST节点在proc->heap中申请handle，构建新旧handle映射
+   - 替换evalee所有 list 节点 children 中的 symbol/varid/handle 为proc中的symbol/varid/heap handle
+   - 将evalee的strindex合并到proc的strindex
+   - 将evalee的所有AST节点拷贝到proc->heap中，保留evalee供后续编译
+3、获得proc->ilcode_length，作为evalee的IL代码的整体offset和入口地址。获得proc->PC+1，作为evalee的IL代码的整体返回地址。
+4、编译evalee的AST为IL代码：am_compile(evalee_ast, proc->ilcode_length, proc->PC+1)
+5、将evalee的IL代码追加到proc->ilcode的尾部。
+6、将proc->PC设置为proc->ilcode_length，从evalee的代码开始执行。
+7、System.eval引入的heap静态对象、新代码等，暂不纳入GC。
+
+## 实现注意事项
+
+- 关于本地宿主函数（native函数）的实现方式，你可以参考 @src/native_String.c 等native函数实现。务必注意每个函数实现的“套路”，也就是出栈入栈、TPV（am_value_t）与具体值类型的转化、堆对象的存取和增删改、handle机制、调用step函数以PC++等机制。这些机制有的被封装在工具函数中了，你要注意发现它们，不要遗漏。
+- 必须谨慎处理 proc->ilcode 的扩容和realloc导致的指针变化。
+- 注意清理分析和编译的中间产物。
+- 关于System.eval的返回值，由其内部执行的代码自然决定，System.eval本身暂不返回任何值（不压栈）。
+
+## 案例说明
+
+下面给出一个具体案例，说明System.eval的执行过程。
+
+在以下代码中，调用了eval，eval应当能够捕获所在进程的top变量。
+
+```
+(define x 100)
+(define f (lambda (x) x))
+(System.eval "(define y 200) ((lambda (x) (f x)) x)")
+```
+
+假设代码经过ARN之后变成：
+
+```
+; var_arn_mapping: {v.0.x->x   v.0.f->f   v.1.x->x}
+;         var_top: {v.0.x      v.0.f}
+
+(define v.0.x 100)
+(define v.0.f (lambda (v.1.x) v.1.x))
+(System.eval "((lambda (x) (f x)) x)")
+```
+
+调用System.eval后，首先将“((lambda (x) (f x)) x)”编译成孤立的AST，假设是这样：
+
+```
+(define e.0.y 200)
+((lambda (e.1.x) (f e.1.x)) x)
+;; 其中f、x是未定义（没有所属作用域）的变量，是evalee全局的自由变量，在eval过程中，应被标记为AM_VAR_TYPE_GLOBAL_FREE，保留原形
+```
+
+接下来便是重写evalee的各个AST节点、并将其拷贝到进程的heap中：
+
+```
+; 自由变量f -> 通过遍历proc的var_top，发现v.0.f在var_arn_mapping中对应f -> 所以f对应v.0.f
+; 自由变量x -> 通过遍历proc的var_top，发现v.0.x在var_arn_mapping中对应f -> 所以f对应v.0.x
+(define e.0.y 200)
+((lambda (e.1.x) (v.0.f e.1.x)) v.0.x)
+```
+
+接下来准备编译。假设proc->ilcode_length == 100，调用System.eval处的proc->PC == 30，则evalee的IL代码应该放置在proc->ilcode的尾部，其iaddr的整体偏移量就是proc->ilcode_length == 100，整体返回地址就是proc->PC+1 == 31。形如：
+
+```
+[099] 主进程的最后一条代码
+[100] call iaddr_102
+[101] goto iaddr_31
+[102] 此后都是evalee的代码...
+```
+
+随后System.eval将proc->PC设置为100，也就是从evalee的起始地址开始执行。执行完毕回到101，再跳回System.eval的下一条指令，eval结束。
+
+## 测试
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确。你可以自行构造System.eval的测试用例，以验证其正确性。回归测试方面，你可以使用 @test/test.scm 作为回归测试输入。你可以使用WSL进行编译构建和测试。
+
 
 
 ---------------------

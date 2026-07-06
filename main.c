@@ -166,7 +166,7 @@ static void test_runtime_load_from_file(char *path) {
     code[pos] = L'\0';
     free(file_content);
 
-    am_ast_t *ast = am_parse(vm_alloc, code, path_w);
+    am_ast_t *ast = am_parse(vm_alloc, code, path_w, 0);
     assert(ast != NULL);
 
     // for (int32_t i = 0; i < ast->token_count; i++) {
@@ -185,7 +185,7 @@ static void test_runtime_load_from_file(char *path) {
     // printf("=== AST ===\n");
     // am_debug_ast_print_to_stdout(linked);
 
-    am_module_t *mod = am_compile(linked);
+    am_module_t *mod = am_compile(linked, 0, 0);
 
     assert(mod != NULL);
 

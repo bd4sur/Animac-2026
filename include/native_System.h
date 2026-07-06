@@ -46,6 +46,10 @@ int32_t am_native_System_test(am_runtime_t *rt, am_process_t *proc);
 // 深度复制当前进程，创建子进程并加入调度队列。亲进程返回子进程 pid，子进程返回 0。
 int32_t am_native_System_fork(am_runtime_t *rt, am_process_t *proc);
 
+// (System.eval codestr:String) : void
+// 运行时动态编译并执行 Scheme 代码字符串。仅捕获当前进程的顶级变量绑定。
+int32_t am_native_System_eval(am_runtime_t *rt, am_process_t *proc);
+
 
 
 #ifdef __cplusplus

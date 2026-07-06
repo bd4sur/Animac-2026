@@ -38,6 +38,7 @@ extern const wchar_t* AM_GLOBAL_BUILTIN_VAR[];
 #define AM_VAR_TYPE_IMPORT_ALIAS (5) // 导入模块的别名（不ARN）：也就是(import Mod "mod.scm")中的Mod
 #define AM_VAR_TYPE_NATIVE_ID    (6) // 本地模块名（不ARN）：也就是(native Math)中的Math
 #define AM_VAR_TYPE_ILTEMP       (7) // 编译过程引入的临时中间变量，AST中不存在
+#define AM_VAR_TYPE_GLOBAL_FREE  (8) // 用于eval：全局无所属作用域的自由变量，普通代码属于错误，但evalee中应特殊处理
 
 
 // AST数据结构

@@ -286,12 +286,16 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
     proc->symbol_vocab = am_vocab_copy(proc->vm_alloc, mod->ast->symbol_vocab);
     proc->var_type = am_list_copy(proc->vm_alloc, mod->ast->var_type);
     proc->natives = am_map_copy(proc->vm_alloc, mod->ast->natives);
-    if (!proc->strindex || !proc->var_vocab || !proc->symbol_vocab || !proc->var_type || !proc->natives) {
+    proc->var_top = am_list_copy(proc->vm_alloc, mod->ast->var_top);
+    proc->var_arn_mapping = am_map_copy(proc->vm_alloc, mod->ast->var_arn_mapping);
+    if (!proc->strindex || !proc->var_vocab || !proc->symbol_vocab || !proc->var_type || !proc->natives || !proc->var_top || !proc->var_arn_mapping) {
         if (proc->strindex) am_strindex_destroy(proc->vm_alloc, proc->strindex);
         if (proc->var_vocab) am_vocab_destroy(proc->vm_alloc, proc->var_vocab);
         if (proc->symbol_vocab) am_vocab_destroy(proc->vm_alloc, proc->symbol_vocab);
         if (proc->var_type) am_list_destroy(proc->vm_alloc, proc->var_type);
         if (proc->natives) am_map_destroy(proc->vm_alloc, proc->natives);
+        if (proc->var_top) am_list_destroy(proc->vm_alloc, proc->var_top);
+        if (proc->var_arn_mapping) am_map_destroy(proc->vm_alloc, proc->var_arn_mapping);
         am_heap_destroy(vm_alloc, heap_alloc, proc->heap);
         am_free(vm_alloc, proc->ilcode);
         am_free(vm_alloc, proc);
@@ -351,6 +355,14 @@ int32_t am_process_destroy(am_process_t *proc) {
     if (proc->natives) {
         am_map_destroy(proc->vm_alloc, proc->natives);
         proc->natives = NULL;
+    }
+    if (proc->var_top) {
+        am_list_destroy(proc->vm_alloc, proc->var_top);
+        proc->var_top = NULL;
+    }
+    if (proc->var_arn_mapping) {
+        am_map_destroy(proc->vm_alloc, proc->var_arn_mapping);
+        proc->var_arn_mapping = NULL;
     }
     if (proc->strindex) {
         am_strindex_destroy(proc->vm_alloc, proc->strindex);

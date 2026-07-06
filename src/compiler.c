@@ -1217,7 +1217,13 @@ int32_t am_compile_all(am_compiler_ctx_t *ctx) {
                         am_compiler_make_label(ctx, am_make_value_of_handle(top_lambda))) != 0) {
         return -1;
     }
-    if (emit_instruction(ctx, AM_VM_OP_halt, AM_VALUE_UNDEFINED) != 0) return -1;
+    // ret 为 0 时程序结束使用 halt；否则跳转到返回目标
+    if (ctx->ret > 0) {
+        if (emit_instruction(ctx, AM_VM_OP_goto, am_make_value_of_iaddr(ctx->ret)) != 0) return -1;
+    }
+    else {
+        if (emit_instruction(ctx, AM_VM_OP_halt, AM_VALUE_UNDEFINED) != 0) return -1;
+    }
 
     // 顺序编译所有lambda节点
     if (!ctx->ast->lambda_handles) return -1;
@@ -1231,25 +1237,28 @@ int32_t am_compile_all(am_compiler_ctx_t *ctx) {
 }
 
 
-int32_t am_compiler_label_resolution(am_compiler_ctx_t *ctx) {
+int32_t am_compiler_label_resolution(am_compiler_ctx_t *ctx, am_iaddr_t offset) {
     if (!ctx || !ctx->ilcode) return -1;
 
     for (am_iaddr_t i = 0; i < ctx->icount; i++) {
         if (am_value_is_label(ctx->ilcode[i].operand)) {
             am_iaddr_t addr = am_compiler_parse_label_to_iaddr(ctx, ctx->ilcode[i].operand);
             if (addr == SIZE_MAX) return -1;
-            ctx->ilcode[i].operand = am_make_value_of_iaddr(addr);
+            ctx->ilcode[i].operand = am_make_value_of_iaddr(addr + offset);
         }
     }
     return 0;
 }
 
 
-am_module_t *am_compile(am_ast_t *ast) {
+am_module_t *am_compile(am_ast_t *ast, am_iaddr_t offset, am_iaddr_t ret) {
     if (!ast || !ast->alloc) return NULL;
 
     am_compiler_ctx_t *ctx = am_compiler_ctx_create(ast);
     if (!ctx) return NULL;
+
+    ctx->offset = offset;
+    ctx->ret = ret;
 
     if (am_compile_all(ctx) != 0) {
         am_compiler_ctx_destroy(ctx);
@@ -1262,7 +1271,7 @@ am_module_t *am_compile(am_ast_t *ast) {
         return NULL;
     }
 
-    if (am_compiler_label_resolution(ctx) != 0) {
+    if (am_compiler_label_resolution(ctx, offset) != 0) {
         am_compiler_ctx_destroy(ctx);
         return NULL;
     }
@@ -1306,6 +1315,8 @@ am_compiler_ctx_t *am_compiler_ctx_create(am_ast_t *ast) {
     ctx->value_label_mapping = am_map_create(ast->alloc, 64);
     ctx->label_iaddr_mapping = am_map_create(ast->alloc, 64);
     ctx->while_tag_stack = am_list_create(ast->alloc, 16, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    ctx->offset = 0;
+    ctx->ret = 0;
 
     if (!ctx->value_label_mapping || !ctx->label_iaddr_mapping || !ctx->while_tag_stack) {
         am_compiler_ctx_destroy(ctx);

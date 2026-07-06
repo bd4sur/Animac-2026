@@ -88,10 +88,11 @@ Analyser需要对AST做两趟扫描。分别是“词法作用域分析”和“
 
 
 // 语法分析器入口。
-// 输入：内存分配器 alloc、Scheme 源码 code、模块绝对路径 absolute_path。
+// 输入：内存分配器 alloc、Scheme 源码 code、模块绝对路径 absolute_path、is_keep_free。
+//       当 is_keep_free 为 0 时，保留现有逻辑；为 1 时，在 alpha-renaming 阶段将“未定义变量”的 var_type 设为 AM_VAR_TYPE_GLOBAL_FREE。
 // 输出：解析得到的 AST；失败返回 NULL。
 // 说明：code 与 absolute_path 由调用者所有；tokens 由返回的 AST 所有，随 AST 销毁而释放。
-am_ast_t *am_parse(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path);
+am_ast_t *am_parse(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path, int32_t is_keep_free);
 
 
 // 对 AST 执行整体的尾位置分析，将处于尾位置的 application 节点把柄记录到 ast->tailcall_handles。

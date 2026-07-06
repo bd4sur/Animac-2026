@@ -222,7 +222,7 @@ static int32_t import_analysis(am_linker_ctx_t *ctx, wchar_t *importee_path, siz
             code[pos] = L'\0';
             free(raw_code);
 
-            current_ast = am_parse(ctx->alloc, code, path_copy);
+            current_ast = am_parse(ctx->alloc, code, path_copy, 0);
             if (!current_ast) {
                 free(code);
                 free(path_copy);
