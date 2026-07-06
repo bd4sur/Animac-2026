@@ -99,3 +99,47 @@
 
 
 
+
+
+(define-syntax swap!
+  (syntax-rules ()
+    ((swap! a b)
+     ((lambda (tmp)
+        (set! a b)
+        (set! b tmp))
+      a))))
+
+(define a 1)
+(define b 2)
+(display "交换前  a=") (display a) (display "  b=") (display b) (newline)
+(swap! a b)
+(display "交换后  a=") (display a) (display "  b=") (display b) (newline)
+
+
+
+
+
+
+
+(define-syntax my_for
+  (syntax-rules (to do)
+    ((my_for var from start to end do body ...)
+     ((lambda (var limit)
+        (define loop (lambda ()
+                       (if (< var limit)
+                           (begin body ...
+                                  (set! var (+ var 1))
+                                  (loop))
+                           'done)))
+        (loop))
+      start end))))
+
+(define sum 0)
+(define i 999)
+
+(my_for i from 1 to 5 do
+  (display i) (newline)
+  (set! sum (+ sum i)))
+
+(display "my_for  sum=") (display sum) (display "  i=") (display i) (newline)
+

@@ -1010,6 +1010,28 @@ am_handle_t am_ast_make_slist_node(am_ast_t *ast, am_handle_t parent, int32_t ty
 // 功能描述：创建WString对象，返回其在AST->nodes堆中的把柄。
 // 实现说明：基于全局字符串驻留索引 strindex 实现同值复用。先查索引，若存在相同内容
 //         的字符串则复用其 handle；否则新建对象并登记到 strindex。
+
+// 将词法层面截取的字符串字面量内容做转义还原。
+// 支持 \" \\ \n \t \r；未知转义序列保留反斜杠与原字符。
+static size_t ast_unescape_string(wchar_t *dst, const wchar_t *src, size_t len) {
+    size_t i = 0, j = 0;
+    while (i < len) {
+        if (src[i] == L'\\' && i + 1 < len) {
+            switch (src[i + 1]) {
+                case L'"': dst[j++] = L'"'; i += 2; continue;
+                case L'\\': dst[j++] = L'\\'; i += 2; continue;
+                case L'n': dst[j++] = L'\n'; i += 2; continue;
+                case L't': dst[j++] = L'\t'; i += 2; continue;
+                case L'r': dst[j++] = L'\r'; i += 2; continue;
+                default: break;
+            }
+        }
+        dst[j++] = src[i++];
+    }
+    dst[j] = L'\0';
+    return j;
+}
+
 am_handle_t am_ast_make_wstring_node(am_ast_t *ast, am_token_t *str_token) {
     if (!ast || !ast->nodes || !ast->strindex || !str_token) return AM_HANDLE_NULL;
 
@@ -1020,6 +1042,10 @@ am_handle_t am_ast_make_wstring_node(am_ast_t *ast, am_token_t *str_token) {
     if (!text) return AM_HANDLE_NULL;
     wcsncpy(text, &ast->code[str_token->index + 1], len);
     text[len] = L'\0';
+
+    // 还原转义序列
+    size_t unescaped_len = ast_unescape_string(text, text, len);
+    len = unescaped_len;
 
     uint32_t hash = am_strindex_hash_string(text);
 

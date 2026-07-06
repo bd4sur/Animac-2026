@@ -3466,7 +3466,273 @@ else if (obj_type == AM_OBJECT_TYPE_MAP) {
 
 
 
+我已完成对代码库和该需求的评估。整体方案可行，但有几处关键细节需要确认，避免实现后方向偏差。
+
+## 评估结论
+
+你提出的方案在架构上是合理的：`System.eval` 本质上是一次“热补丁”式的动态编译，把 evalee 的 AST 重写后追加到当前进程的 `ilcode` 尾部，并通过 `offset`/`ret` 机制让执行流自然返回。这与前面已经完成的 `am_compile(..., offset, ret)` 改造正好衔接。
+
+不过，我发现了几个需要澄清或调整的点：
+
+### 1. AST 节点拷贝与编译的先后顺序（最关键）
+
+你的步骤 2 提到“先把 evalee 的 AST 节点拷贝到 `proc->heap`，再编译”，但这里有一个实现矛盾：
+
+- `am_ast_get_node(ast, handle)` 固定从 `ast->nodes` 堆读取；
+- 如果把节点搬到 `proc->heap`，再把 handle 换成 `proc->heap` 的 handle，`am_compile` 在编译时通过 `am_ast_get_node` 会找不到这些节点。
+
+因此我建议两种实现路径，请你选择：
+
+- **方案 A（推荐）**：先对 evalee AST 做 symbol/var 重写，直接用 `am_compile(evalee_ast, offset, ret)` 编译出 IL；编译完成后，再扫描 evalee 的 IL 指令中所有 `push handle` 操作数，把指向 evalee 临时堆的字符串/quote-list 对象深拷贝到 `proc->heap`，并替换 operand。这样不用改动 AST 结构，逻辑最干净。
+- **方案 B**：拷贝节点到 `proc->heap` 后，构造一个临时的 `am_ast_t` 视图，把它的 `nodes` 字段指向 `proc->heap`，其他字段复用 evalee，然后用这个视图去编译。编译完再销毁视图。这个方案比较 hacky，但符合你描述的顺序。
+
+### 2. eval 内部 `define` 的持久性
+
+按你的方案，`evalee->var_top` 不迁移到 `proc`。那么：
+
+```scheme
+(System.eval "(define y 200) y")
+```
+
+`y` 只在 eval 执行期间存在，eval 返回后 `y` 即失效。这是否符合预期？还是说你希望 eval 中 `define` 的顶层变量也注册到 `proc->var_top`，从而后续 eval 或主程序都能访问？
+
+### 3. eval 中是否支持 `(native ...)` / `(import ...)`
+
+你的方案明确说 `dependencies`、`natives` 不迁移。这意味着 eval 代码里写 `(native Math)` 或 `(import Foo "...")` 大概率无法正常工作。是否可以接受这个限制？如果可以，实现时我会对这类情况直接报错或忽略。
+
+### 4. eval 代码的 `absolute_path` 与 `base_dir`
+
+`am_parse` 需要 `absolute_path` 来生成 `module_id`，进而影响 ARN 生成的临时变量名。由于 eval 的 ARN 结果最终会被映射/重写，名字本身影响不大，但需要给出一个合理路径。我建议使用：
+
+```c
+<rt->working_dir>/__eval__.scm
+```
+
+是否可接受？
+
+### 5. 未解析的 GLOBAL_FREE 变量如何处理
+
+如果 evalee 中出现一个自由变量，但在 `proc->var_top` 中找不到对应原形，按你的需求应“报错”。具体行为：
+
+- 直接返回 `-1`，让 native 函数失败，虚拟机进入错误状态？
+- 还是打印一条中文/英文错误信息到 `stderr` 再返回 `-1`？
+
+### 6. `opstack` 深度
+
+eval 代码的 `opstack_depth` 不会合并到原进程。虽然 `am_process_push_operand` 会自动扩容操作数栈，但函数调用栈 `fstack` 是固定容量 3000。如果 eval 代码有极深的递归，可能会溢出。是否需要我在追加 IL 代码时检查/扩容 `fstack`？还是保持现状？
+
+### 7. 返回值
+
+你明确说 `System.eval` 本身不压栈，返回值由 eval 代码自然决定。那么 native 函数的实现逻辑是：
+
+```c
+pop codestr
+... 编译并追加代码 ...
+proc->PC = old_ilcode_length;   // 直接跳转到 evalee 入口，不调用 am_process_step
+return 0;
+```
+
+这会导致 native 调用结束后，VM 立刻从 evalee 入口开始执行，执行完再 `goto proc->PC+1`。这个理解对吗？
+
+---
+
+请确认以上问题（尤其是 **方案 A/B 的选择** 和 **define 持久性**），我会按你的决定继续实现。
+
+
+
+我的答复：
+
+1、AST 节点拷贝与编译的先后顺序：采用方案A。先对 evalee AST 做 symbol/var 重写，直接用 am_compile(evalee_ast, offset, ret) 编译出 IL；编译完成后，再扫描 evalee 的 IL 指令中所有 push handle 操作数，把指向 evalee 临时堆的字符串/quote-list 对象深拷贝到 proc->heap，并替换 operand。
+
+2、eval 内部 define 的持久性：eval内部define不持久。define的变量只在 eval 执行期间存在，eval 返回后即失效。
+
+3、eval 中是否支持 (native ...) / (import ...)：需要迁移natives以支持native调用；但是无需迁移dependencies。
+
+4、eval 代码的 absolute_path 与 base_dir：采纳你的建议。
+
+5、未解析的 GLOBAL_FREE 变量如何处理：打印一条中文错误信息到 stderr 再返回 -1。
+
+6、栈深度：opstack深度和fstack深度都保持现状，不要修改。
+
+7、返回值：理解正确。native 调用结束后，VM 立刻从 evalee 入口开始执行，执行完再 goto proc->PC+1。
+
+开始实现。
+
+
+
+`System.eval` 已实现并验证完成。
+
+**实现内容**
+- `src/native_System.c`：新增 `am_native_System_eval`，支持在当前进程上下文中动态解析、编译并执行 Scheme 代码片段。
+  - 解析时保留自由变量（`is_keep_free=1`）。
+  - 对 evalee AST 进行 symbol/varid/handle/natives 映射重写。
+  - 编译时使用 `offset = proc->ilcode_length`、`ret = proc->PC + 1`，使生成的 IL 追加到现有进程代码段并正确返回。
+  - 将 evalee 的 `push handle` 操作数深拷贝到 `proc->heap`。
+  - 对未定义的全局自由变量输出错误到 `stderr` 并返回 `-1`。
+- `include/process.h`、`src/process.c`：进程新增 `var_top` 与 `var_arn_mapping`，用于 fork 与 eval 时映射顶层变量。
+- `include/parser.h`、`src/parser.c`：`am_parse` 新增 `is_keep_free` 参数。
+- `include/compiler.h`、`src/compiler.c`：`am_compile` 新增 `offset` 与 `ret` 参数。
+- `main.c`、`repl.c`：适配新的 API 签名。
+
+**测试**
+- 新增 `test/test_eval_read.scm`、`test/test_eval_write.scm`、`test/test_eval_lambda.scm`、`test/test_eval_undef.scm`，分别验证读取外部变量、写入外部变量、eval 中定义 lambda、未定义变量报错。
+- 自定义 eval 测试全部通过。
+- 完整回归测试 `./main test/test.scm` 通过。
+- `make clean && make` 无警告、无错误，`main` 与 `repl` 均构建成功。
+
+未执行 git commit。工作区中编译产物 `main`、`repl` 与四个 eval 测试文件为未跟踪文件。
+
+
+
+
+发现一个问题：现有System.eval似乎不能处理call/cc。
+
+例如，以下代码无法执行：
+
+```
+(native System)
+(System.eval "(display (call/cc (lambda (k) (k 888) 666)))")
+```
+
+报错如下：
+
+```
+[System.eval] IL varid 映射失败：iaddr=2
+[Runtime] 指令执行异常: PID=0 PC=3
+```
+
+请排查问题。
+
+
+
+
+已定位并修复。
+
+**问题原因**
+
+`System.eval` 在编译前调用 `eval_build_var_mapping` 建立 evalee → proc 的 varid 映射，但 `call/cc` 的编译函数 `compile_callcc` 会在 **编译期间** 通过 `am_compiler_make_temp_varid` 生成一个临时续体变量（类型为 `AM_VAR_TYPE_ILTEMP`，例如 `CC_<label>_<id>`）。这个 varid 在映射建立之后才出现，因此 `eval_remap_il_operands` 扫描到 `capturecc` / `load` 操作数时找不到对应映射，报错：
+
+```
+[System.eval] IL varid 映射失败：iaddr=2
+```
+
+**修复方案**
+
+在 `am_compile` 之后新增一步 `eval_extend_var_mapping_for_temps`，扫描编译过程中新加入 `evalee->var_vocab` 的 `ILTEMP` 变量：
+
+1. 将其以唯一名称插入 `proc->var_vocab`，避免多次 `System.eval` 生成的同名临时变量共享 proc 的 varid（这对 `call/cc` 续体尤其重要）。
+2. 同步扩展 `proc->var_type` 并标记为 `AM_VAR_TYPE_ILTEMP`。
+3. 补充到 `var_mapping` 中，供后续 IL 操作数重映射使用。
+
+**验证**
+
+新增测试：
+
+- `test/test_eval_callcc.scm`：你的示例，现在输出 `888`。
+- `test/test_eval_cond.scm`：`cond` 内部同样会生成编译期临时变量，输出 `111`。
+- `test/test_eval_multi_callcc.scm`：连续两次 `call/cc` eval，输出 `111222`，说明临时 varid 没有冲突。
+
+所有测试通过：
+
+- `test/test_eval_*.scm` 全部通过。
+- 完整回归 `./main test/test.scm` 通过。
+- `make clean && make` 无警告、无错误。
+
+未执行 git commit。
+
 ---------------------
+
+需求：实现syntax-rules宏机制
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。现在我需要为其增加syntax-rules卫生宏机制。这个需求比较复杂。你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确。你可以自行构造测试用例，以验证其正确性。回归测试方面，你可以使用 @test/test.scm 作为回归测试输入。你可以使用WSL进行编译构建和测试。
+
+(其余内容见 doc/report.md 中关于宏的章节)
+
+
+
+已完成修复并追加测试用例。关键改动如下：
+
+**修复的 Bug**
+1. **顶层 lambda 被“篡改”为 APPLICATION**：`macro_ellipsis_list_get_or_create` 用 `AM_HANDLE_NULL` 作为 ellipsis 累加列表的 parent，而 `AM_HANDLE_NULL == AM_TOP_NODE_HANDLE`，导致这些临时列表被当作顶层节点，破坏 `am_ast_get_top_node_handle`。已改为使用 `ctx->parent`。
+2. **ellipsis 匹配 0 次时未绑定空列表**：在 `macro_match_list` 中预先为 ellipsis 模式变量创建空列表。
+3. **syntax-rules literals 不支持关键字**：`else` 等关键字在 literals 列表中是 symbol 而非 varid，已放宽校验。
+4. **quote/quasiquote/unquote 内部错误展开**：内部用户 symbol 可能与关键字 symbol 值冲突，现已跳过这些形式。
+5. **宏生成的 lambda 缺少作用域**：为 `macro_instantiate_list`、`macro_deep_copy_list`、`macro_expand_lambda` 中新建的 lambda 注册 scope，并加入 freshen 后的参数。
+6. **编译器 lambda 标签未预创建**：`lambda_handles` 顺序可能先遇到内层 lambda，导致 `compile_lambda` 定位标签失败。现在在 `am_compile_all` 中预创建所有 lambda 标签。
+7. **模块合并后 `var_top` 重复**：同一模块被直接/间接导入时，其 `var_top` 会被追加多次，导致 import ref 解析 `match_count != 1`。已在 `am_ast_merge` 中去重。
+
+**新增测试**
+- `test/macro_ellipsis.scm`
+- `test/macro_literal.scm`
+- `test/macro_let_syntax.scm`
+- `test/macro_hygiene.scm`
+- `test/macro_nested.scm`
+
+**验证结果**
+- 所有 macro 回归测试通过。
+- `test/test.scm` 完整运行通过。
+- `make` 无警告/错误。
+
+已同步更新 `doc/AGENTS.md` 说明宏系统相关约定与限制。
+
+---------------------
+
+根据你构造测试、测试失败的过程，你觉得现在实现的宏、System.eval、call/cc都有哪些bug或者合理的功能限制？
+
+
+
+
+根据构造测试和实际跑测的过程，我把当前实现里暴露出来的问题分成**已修复的 bug**、**仍存在的 bug**、**合理/已知的功能限制**三类来说：
+
+---
+
+### 1. 已修复的 bug
+
+- **字符串字面量转义未还原**：`am_ast_make_wstring_node` 之前直接把词法 token 内容（含反斜杠）原样存成字符串对象，导致 `\"`、`\\`、`\n`、`\t`、`\r` 等都不会被还原。对 `System.eval` 尤其致命——传给它的代码字符串如果含 `\"`，词法器能正确找到字符串边界，但解析后字符串里还残留反斜杠，eval 再解析就会失败。已在 `src/ast.c` 中加入 `ast_unescape_string` 修复。
+
+---
+
+### 2. 仍存在的 bug / 不合理行为
+
+- **`System.eval` 内部定义的宏无法在同一段 eval 代码中使用**  
+  测试里如果写：
+  ```scheme
+  (System.eval "(define-syntax eval-if ...) (eval-if #t 1 2)")
+  ```
+  会报 `未定义的变量：eval-if`。这说明 `define-syntax` 在 eval 生成的孤立 AST 里虽然能被解析，但宏展开阶段没有把同一段代码里的后续使用展开掉。  
+  根因猜测：`am_macro_expand` 依赖“顶层 lambda bodies”收集 `define-syntax`，而 `System.eval` 用的 `isolated=1` AST 在顶层 lambda 判定或 body 序列划分上和普通模块不一致，导致宏注册到了环境帧里但后续展开没生效。
+
+- **`main` 对不带目录斜杠的相对路径会段错误**  
+  例如 `./main test_eval.scm` 会 segfault，而 `./main test/test_eval.scm` 正常。原因是 `main.c` 调用 `am_path_dirname` 后直接传给 `_mbstowcs`，而 `am_path_dirname` 对不含 `/` 的路径返回 `NULL`，没有做空指针保护。这是测试/入口程序的 bug，不是语言核心。
+
+- **`System.eval` 的错误信息具有误导性**  
+  上面宏未展开的情况，报错是“未定义的变量”，容易让人以为是变量捕获失败，实际上是宏没展开。类似地，如果 eval 字符串本身词法/语法有错，也可能被包装成运行时异常。调试体验不佳。
+
+---
+
+### 3. 合理或已知的功能限制
+
+- **`System.eval` 只能捕获宿主进程的顶级变量绑定**  
+  这是 `native_System.c` 注释里明确写的。测试也验证了：在 `let-syntax` 体内用 `(define base 100)` 再让 `System.eval` 访问 `base` 会报未定义。只有放在顶层 `var_top` 里的变量才能被 eval 捕获，局部变量、闭包变量都不行。
+
+- **跨模块导入/导出宏不支持**  
+  这是项目已知限制（一期）。`test/test.scm` 里所有 `import` 的模块都只能传回运行时值，不能把宏带出来。
+
+- **宏不能作为一等值传递**  
+  `define-syntax` 注册的宏是编译期 transformer，不是运行时对象。所以没法做 `(define f my-or)` 或把宏传给 `System.eval`。这不是 bug，而是 `syntax-rules` 宏的语义。
+
+- **`call/cc` 与 `System.eval` 的 continuation 边界未验证**  
+  测试中只验证了“eval 内部自己用 `call/cc`”和“宿主宏展开后调用 eval”。但没有验证“在宿主捕获的 continuation 里再进入 eval”或“在 eval 里捕获 continuation 后返回宿主继续使用”。这类跨 eval 边界的 continuation 行为目前是不确定的，很可能受限。
+
+- **`letrec-syntax` 未在综合测试里覆盖**  
+  只测了 `let-syntax`，`letrec-syntax` 的相互递归展开是否健壮还不清楚。
+
+---
+
+### 总结
+
+最应该优先修的是 **eval 内部宏不生效**（这是用户提到的“排列组合深入测试”里真正缺失的一环），其次是 **main 入口对相对路径的保护**。其余多为已知架构限制，可以在文档里明确标注，避免使用者踩坑。
 
 
 ---------------------

@@ -18,16 +18,16 @@
 (System.eval "(display ((lambda (y) (* x y)) 10))")
 (newline)
 
-(display "预期输出：666\n实际输出：")
-(System.eval "(display (cond ((> x 2) 666) (else 888)))")
+(display "预期输出：Animac © 2026 BD4SUR\n实际输出：")
+(System.eval "(display (cond ((> x 2) \"Animac © 2026 BD4SUR\") (else \"Test System.eval\")))")
 (newline)
 
-(display "预期输出：666\n实际输出：")
-(System.eval "(display (call/cc (lambda (k) (k 666) 888)))")
+(display "预期输出：人类的本质是复读机\n实际输出：")
+(System.eval "(display (call/cc (lambda (k) (k \"人类的本质是复读机\") \"人类的本质是咕咕嘎嘎\")))")
 (newline)
 
-(display "预期输出：999\n实际输出：")
-(System.eval "(display (call/cc (lambda (k) (k 999) 666)))")
+(display "预期输出：人类的本质是路由器\n实际输出：")
+(System.eval "(display (call/cc (lambda (k) (k \"人类的本质是路由器\") \"人类的本质是人类的本质\")))")
 (newline)
 
 (display "((lambda (x) (cons x (cons (cons quote (cons x '())) '()))) (quote (lambda (x) (cons x (cons (cons quote (cons x '())) '())))))\n实际输出：")

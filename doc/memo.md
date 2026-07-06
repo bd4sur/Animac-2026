@@ -1,6 +1,27 @@
 TODO 所有代码文件加am_前缀
 
+TODO 实现JS->scm前端翻译器
+
+NOTE 回归测试使用哪些用例：
+
+- test.scm
+- fork.scm
+- mlp.scm
+- nano_llm_infer.scm
+- sleepsort.scm
+- yinyang.scm
+- yinyang_cps.scm
+- test_table.scm
+- test_eval.scm
+- test_macro.scm
+
 TODO ast->node无法扩容？am_heap_set实现似乎有问题，为什么不调用map现成接口？
+
+TODO 实现exec（从代码编译为模块，夺舍当前模块）
+
+TODO module持久化去掉scope等
+
+TODO 计算器；增加atan2；增加位运算（严格的数值类型隐式变换规则）
 
 TODO REPL对于有副作用的表达式的判定有问题。例如(Table.set tbl key value)显然是有副作用的。
 
@@ -71,6 +92,7 @@ TODO 变量Alpha-renaming(ARN)规则：
 
 TODO 将PathUtils单独实现出来。
 
+TODO 符号求导
 
 NOTE 内存池在编译期和运行期之间要发生一次彻底重分配：编译期和运行期，都可以使用完整的内存池。编译完成后，将模块dump成一个完整的二进制文件，随后彻底清空内存池。
 
