@@ -325,6 +325,56 @@ static void macro_free_macro(am_macro_t *macro) {
 }
 
 
+// 如果一个标识符的名字与某个模式变量相同，则把它规范化为该模式变量的 varid。
+// 这是必要的，因为 ARN 可能给模板中的同名标识符分配了与模式变量不同的 varid
+//（例如模板标识符恰好与外层变量同名）。
+static const wchar_t *macro_var_basename(const wchar_t *name) {
+    const wchar_t *p = wcsrchr(name, L'.');
+    return p ? p + 1 : name;
+}
+
+
+static am_value_t macro_canonicalize_varid(am_ast_t *ast, am_varid_t varid,
+                                            am_varid_t *pvars, wchar_t **pvar_names, size_t pvar_count) {
+    wchar_t *name = am_vocab_get(ast->alloc, ast->var_vocab, &varid);
+    if (!name) return am_make_value_of_varid(varid);
+    const wchar_t *base = macro_var_basename(name);
+    for (size_t i = 0; i < pvar_count; i++) {
+        if (pvar_names[i] && wcscmp(base, macro_var_basename(pvar_names[i])) == 0) {
+            return am_make_value_of_varid(pvars[i]);
+        }
+    }
+    return am_make_value_of_varid(varid);
+}
+
+
+// 递归规范化模板中的模式变量标识符。quote 内部保持原样。
+static int macro_canonicalize_template_vars(am_ast_t *ast, am_value_t value,
+                                             am_varid_t *pvars, wchar_t **pvar_names, size_t pvar_count) {
+    if (am_value_is_varid(value)) {
+        return 0; // 由调用处直接替换
+    }
+    if (!am_value_is_handle(value)) return 0;
+    am_handle_t h = am_value_to_handle(value);
+    am_value_t node_val = am_ast_get_node(ast, h);
+    if (!am_value_is_ptr(node_val)) return 0;
+    am_object_t *obj = am_value_to_ptr(node_val);
+    if (obj->type != AM_OBJECT_TYPE_LIST) return 0;
+    am_list_t *lst = (am_list_t *)obj;
+    if (lst->type == AM_LIST_TYPE_QUOTE) return 0;
+    for (size_t i = 0; i < lst->length; i++) {
+        am_value_t child = am_list_get(ast->alloc, lst, i);
+        if (am_value_is_varid(child)) {
+            lst->children[i] = macro_canonicalize_varid(ast, am_value_to_varid(child),
+                                                        pvars, pvar_names, pvar_count);
+        } else if (am_value_is_handle(child)) {
+            if (macro_canonicalize_template_vars(ast, child, pvars, pvar_names, pvar_count) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+
 static am_macro_t *macro_parse_syntax_rules(am_ast_t *ast, am_varid_t name, am_handle_t sr_handle) {
     am_list_t *sr_lst = macro_list_from_handle(ast, sr_handle);
     if (!sr_lst || sr_lst->type != AM_LIST_TYPE_APPLICATION || sr_lst->length < 3) {
@@ -401,6 +451,30 @@ static am_macro_t *macro_parse_syntax_rules(am_ast_t *ast, am_varid_t name, am_h
             clause->pvars[j] = am_value_to_varid(collect.pvars[j]);
         }
         free(collect.pvars);
+
+        // 规范化模板中的模式变量：把与模式变量同名的标识符统一成模式变量的 varid。
+        if (clause->pvar_count > 0) {
+            wchar_t **pvar_names = (wchar_t **)malloc(clause->pvar_count * sizeof(wchar_t *));
+            if (!pvar_names) {
+                macro_free_macro(macro);
+                return NULL;
+            }
+            for (size_t j = 0; j < clause->pvar_count; j++) {
+                pvar_names[j] = am_vocab_get(ast->alloc, ast->var_vocab, &clause->pvars[j]);
+            }
+            if (am_value_is_varid(clause->template)) {
+                clause->template = macro_canonicalize_varid(ast, am_value_to_varid(clause->template),
+                                                            clause->pvars, pvar_names, clause->pvar_count);
+            } else if (am_value_is_handle(clause->template)) {
+                if (macro_canonicalize_template_vars(ast, clause->template, clause->pvars,
+                                                     pvar_names, clause->pvar_count) != 0) {
+                    free(pvar_names);
+                    macro_free_macro(macro);
+                    return NULL;
+                }
+            }
+            free(pvar_names);
+        }
     }
 
     return macro;

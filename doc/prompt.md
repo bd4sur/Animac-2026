@@ -3643,6 +3643,7 @@ return 0;
 ---------------------
 
 需求：实现syntax-rules宏机制
+
 开始编码前，请先阅读 @doc/AGENTS.md 。
 
 本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。现在我需要为其增加syntax-rules卫生宏机制。这个需求比较复杂。你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确。你可以自行构造测试用例，以验证其正确性。回归测试方面，你可以使用 @test/test.scm 作为回归测试输入。你可以使用WSL进行编译构建和测试。
@@ -3747,6 +3748,88 @@ return 0;
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构，具备R5RS定义的基于syntax-rules的卫生宏机制，但不一定完整。本Scheme解释器不支持任何let类绑定语法，也不支持 (define func (arg1 arg2) xxx) 这样的定义函数的语法。
+
+现在请你排查卫生宏机制没有卫生绑定的问题。在下列测试用例中，外层变量i应当被卫生地绑定到宏内部的结构。因而程序应当输出1、2、3、4、5，最终的sum应当是15。但实际执行的结果是：输出4个999，最终的sum是3996。
+
+```
+(define-syntax my_for
+  (syntax-rules (to do)
+    ((my_for var from start to end do body ...)
+     ((lambda (var limit)
+        (define loop (lambda ()
+                       (if (< var limit)
+                           (begin body ...
+                                  (set! var (+ var 1))
+                                  (loop))
+                           'done)))
+        (loop))
+      start end))))
+
+(define sum 0)
+(define i 999)
+
+(my_for i from 1 to 5 do
+  (display i) (newline)
+  (set! sum (+ sum i)))
+
+(display "my_for  sum=") (display sum) (display "  i=") (display i) (newline)
+```
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确。你可以使用 @test/test.scm 作为回归测试输入。你可以使用WSL进行编译构建和测试。
+
+
+
+已阅读 `@doc/AGENTS.md`，并完成了卫生宏绑定问题的排查与修复。
+
+## 问题根因
+
+ARN（Alpha-Renaming）在宏定义处会给**模式变量**和**模板中同名标识符**分配不同的 `varid`——尤其是当模板标识符与外层变量同名时（如你例子里的 `i`）。而 `syntax-rules` 展开器是通过 `varid` 来判断“这是不是模式变量”的，于是模板里 `(lambda (var limit) …)` 中的 `var` 没有被识别为模式变量，被当成普通模板绑定做了 freshen。结果是：
+
+- 宏内部真正循环的 `var` 是一个全新的 varid；
+- `body …` 里用户写的 `i` 仍然指向外层 `i`（999）；
+- 所以循环虽然执行了 4 次，但每次都显示 999、累加 999。
+
+## 修复内容（`src/macro.c`）
+
+在 `macro_parse_syntax_rules` 解析每个 clause 之后，新增了两步“模板规范化”：
+
+1. 收集所有模式变量的名字；
+2. 递归遍历模板 AST，把**名字（basename）与某个模式变量相同**的标识符统一替换成该模式变量的 `varid`；
+3. `quote` 内部保持原样，避免把字面量符号误伤。
+
+这样模板里的 `var`、`start`、`end`、`body` 等就会和模式变量拥有同一个 `varid`，后续 `macro_is_pattern_var` 能正确识别，展开时会把它们替换为使用处传入的实际标识符，从而正确捕获 `body` 中的引用。
+
+## 验证结果
+
+- `./main test/test_hygiene.scm`：一个最小复现，输出 `42`（正确捕获宏引入的 lambda 参数）。
+- `./main test/test_my_for.scm` 与 `./main test/test_macro.scm`：你的 `my_for` 例子现在输出：
+
+```
+1
+2
+3
+4
+my_for  sum=10  i=999
+```
+
+外层 `i` 仍然是 999，说明卫生绑定已正确；`sum=10` 是因为宏里写的是 `(< var limit)`，1→5 会循环 4 次（1、2、3、4）。  
+**如果你期望包含 5、sum=15，需要把宏条件改成 `(<= var limit)` 或 `(<= var end)`，这不是解释器卫生宏的 bug。**
+
+- `./main test/test_eval.scm`、`./main test/test_macro_eval_continuation.scm` 均通过。
+- `./main test/test.scm` 完整回归通过。
+
+## 新增/保留的测试文件
+
+- `test/test_hygiene.scm`：最小卫生宏捕获测试。
+- `test/test_my_for.scm`：你提供的 `my_for` 用例独立测试。
+- `test/test_macro_eval_continuation.scm`：之前添加的宏 / `System.eval` / `call/cc` 综合测试（已重新生成并验证通过）。
+
+## 说明
+
+按照 `@doc/AGENTS.md`，我没有执行任何 `rm` 删除命令，因此构建产物 `main`、`repl`、`main_debug` 以及新增测试文件都保留在工作区中，未做提交。
 
 ---------------------
 

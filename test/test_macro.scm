@@ -121,12 +121,26 @@
 
 
 
+
+
+(define-syntax with-x
+  (syntax-rules ()
+    ((_ x body) ((lambda (x) body) 42))))
+
+(define x 999)
+(display (with-x x x)) (newline)
+
+
+
+
+
+
 (define-syntax my_for
   (syntax-rules (to do)
     ((my_for var from start to end do body ...)
      ((lambda (var limit)
         (define loop (lambda ()
-                       (if (< var limit)
+                       (if (<= var limit)
                            (begin body ...
                                   (set! var (+ var 1))
                                   (loop))
