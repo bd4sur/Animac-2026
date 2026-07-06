@@ -16,6 +16,7 @@
 #include "opcode.h"
 #include "scope.h"
 #include "parser.h"
+#include "macro.h"
 
 
 #define PARSER_LOG(x) ((void)x); // printf(x);
@@ -2035,6 +2036,17 @@ am_ast_t *am_parse(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path,
     alpha_rename_analysis(&ctx);
     if (ctx.error) {
         fprintf(stderr, "[Parser Error] %ls\n", ctx.error_msg);
+        free(ctx.node_stack);
+        free(ctx.state_stack);
+        free(ctx.lambda_stack);
+        free(ctx.special_app_stack);
+        am_ast_destroy(ast);
+        am_free(alloc, tokens);
+        return NULL;
+    }
+
+    // syntax-rules 卫生宏展开
+    if (am_macro_expand(ast) != 0) {
         free(ctx.node_stack);
         free(ctx.state_stack);
         free(ctx.lambda_stack);

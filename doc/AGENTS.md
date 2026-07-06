@@ -58,3 +58,17 @@ symbol是以其字面为ID的，相同拼写的symbol，无论在哪个上下文
 所有对外提供的函数，都加am_前缀。所有的宏，都加AM_前缀。
 
 对可变长容器进行写操作之后，可能触发扩容导致物理地址发生变化，因此务必注意检查和更新容器的指针。所有从heap中取出的变长容器类object，如果其指针在操作后发生变化，必须将新指针的value写回heap，以确保handle->value(ptr)->obj映射关系稳定！
+
+## 宏系统（syntax-rules）
+
+项目已添加基于 `syntax-rules` 的卫生宏系统，关键信息如下：
+
+- 新增关键字：`define-syntax`、`let-syntax`、`letrec-syntax`、`syntax-rules`。
+- 实现文件：`src/macro.c`、`include/macro.h`。
+- 展开时机：在 `am_parse` 的 ARN 之后、`cleanup_scope_objects` 之前调用 `am_macro_expand(ast)`。
+- 编译器在 `compile_application` 中跳过上述宏关键字，避免它们被当作普通函数调用编译。
+- 一期限制：
+  - 不支持跨模块导入/导出宏。
+  - 模板中引入的 lambda 绑定会做 freshen，但用户需避免在模板中使用本解释器不支持的 `let` 类语法。
+  - quote / quasiquote / unquote 内部不做宏展开，以避免用户 symbol 与关键字 symbol 值冲突。
+

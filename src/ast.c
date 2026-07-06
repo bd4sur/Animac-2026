@@ -382,13 +382,24 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
         }
     }
 
-    // var_top 迁移：将 importee 的顶级变量 varid 映射后追加到 importer
+    // var_top 迁移：将 importee 的顶级变量 varid 映射后追加到 importer，去重
     if (importee->var_top) {
         for (size_t i = 0; i < importee->var_top->length; i++) {
             am_value_t vv = am_list_get(importee->alloc, importee->var_top, i);
             if (!am_value_is_varid(vv)) continue;
             am_value_t mapped = am_map_get(importer->alloc, varid_merge_mapping, vv);
             if (!am_value_is_varid(mapped)) continue;
+
+            // 检查 importer->var_top 中是否已存在相同 varid
+            int duplicate = 0;
+            for (size_t j = 0; j < importer->var_top->length; j++) {
+                if (am_value_equal(am_list_get(importer->alloc, importer->var_top, j), mapped)) {
+                    duplicate = 1;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+
             am_list_t *lst = am_list_push(importer->alloc, importer->var_top, mapped);
             if (!lst) return -1;
             importer->var_top = lst;

@@ -463,6 +463,10 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
         am_symbol_t sym = am_value_to_symbol(first);
         if (sym == am_value_to_symbol(AM_VALUE_KW_import))  return 0;
         if (sym == am_value_to_symbol(AM_VALUE_KW_native))  return 0;
+        if (sym == am_value_to_symbol(AM_VALUE_KW_define_syntax))  return 0;
+        if (sym == am_value_to_symbol(AM_VALUE_KW_let_syntax))     return 0;
+        if (sym == am_value_to_symbol(AM_VALUE_KW_letrec_syntax))  return 0;
+        if (sym == am_value_to_symbol(AM_VALUE_KW_syntax_rules))   return 0;
         if (sym == am_value_to_symbol(AM_VALUE_KW_begin))   return compile_begin(ctx, handle);
         if (sym == am_value_to_symbol(AM_VALUE_KW_define))  return compile_define(ctx, handle);
         if (sym == am_value_to_symbol(AM_VALUE_KW_set))     return compile_set(ctx, handle);
@@ -1227,6 +1231,14 @@ int32_t am_compile_all(am_compiler_ctx_t *ctx) {
 
     // 顺序编译所有lambda节点
     if (!ctx->ast->lambda_handles) return -1;
+
+    // 预创建所有 lambda 标签，避免 lambda_handles 顺序导致内层 lambda 标签未创建
+    for (size_t i = 0; i < ctx->ast->lambda_handles->length; i++) {
+        am_value_t h = am_list_get(ctx->ast->alloc, ctx->ast->lambda_handles, i);
+        if (!am_value_is_handle(h)) continue;
+        if (am_value_is_null(am_compiler_make_label(ctx, h))) return -1;
+    }
+
     for (size_t i = 0; i < ctx->ast->lambda_handles->length; i++) {
         am_value_t h = am_list_get(ctx->ast->alloc, ctx->ast->lambda_handles, i);
         if (!am_value_is_handle(h)) continue;

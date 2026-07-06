@@ -12,7 +12,8 @@ const wchar_t* AM_KEYWORDS[] = {
     L"lambda", L"define", L"set!", L"let", L"begin", L"return", L"...", L"_",
     L"if", L"and", L"or", L"cond", L"else", L"for", L"while", L"break", L"continue", L"case", L"do",
     L"quote", L"quasiquote", L"unquote",
-    L"import", L"native", NULL
+    L"import", L"native",
+    L"define-syntax", L"let-syntax", L"letrec-syntax", L"syntax-rules", NULL
 };
 
 // 关键字对应的保留symbol值，索引与AM_KEYWORDS一一对应
@@ -40,7 +41,11 @@ static const am_value_t AM_KEYWORD_SYMBOLS[] = {
     AM_VALUE_KW_quasiquote,
     AM_VALUE_KW_unquote,
     AM_VALUE_KW_import,
-    AM_VALUE_KW_native
+    AM_VALUE_KW_native,
+    AM_VALUE_KW_define_syntax,
+    AM_VALUE_KW_let_syntax,
+    AM_VALUE_KW_letrec_syntax,
+    AM_VALUE_KW_syntax_rules
 };
 
 // ===============================================================================
