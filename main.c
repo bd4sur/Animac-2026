@@ -15,6 +15,7 @@
 #include "debug.h"
 #include "ast.h"
 #include "highlight.h"
+#include "js2scm.h"
 
 #include "native_System.h"
 #include "native_Math.h"
@@ -132,10 +133,8 @@ static wchar_t *read_file_as_wstring(const wchar_t *path) {
 // ===============================================================================
 
 
-static void test_runtime_load_from_file(char *path) {
-    printf("test_runtime_load_from_file ... \n");
-    am_allocator_pool_reset_vm(g_pool);
-    am_allocator_pool_reset_heap(g_pool);
+static void test_runtime_load_from_wstring(wchar_t *code, char *path) {
+    printf("test_runtime_load_from_string ... \n");
     test_halt_called = 0;
     test_error_called = 0;
 
@@ -146,25 +145,6 @@ static void test_runtime_load_from_file(char *path) {
 
     _mbstowcs(path_w, path, 256);
     _mbstowcs(base_dir_w, base_dir, 256);
-
-    wchar_t *file_content = read_file_as_wstring(path_w);
-    assert(file_content != NULL);
-
-    const wchar_t *prefix = L"((lambda () \n";
-    const wchar_t *suffix = L"\n))";
-    size_t prefix_len = wcslen(prefix);
-    size_t suffix_len = wcslen(suffix);
-    size_t content_len = wcslen(file_content);
-    size_t code_len = prefix_len + content_len + suffix_len;
-
-    wchar_t *code = (wchar_t *)am_malloc(vm_alloc, (code_len + 1) * sizeof(wchar_t));
-    assert(code != NULL);
-    size_t pos = 0;
-    for (size_t i = 0; i < prefix_len; i++) code[pos++] = prefix[i];
-    for (size_t i = 0; i < content_len; i++) code[pos++] = file_content[i];
-    for (size_t i = 0; i < suffix_len; i++) code[pos++] = suffix[i];
-    code[pos] = L'\0';
-    free(file_content);
 
     am_ast_t *ast = am_parse(vm_alloc, code, path_w, 0);
     assert(ast != NULL);
@@ -297,6 +277,34 @@ static void test_runtime_load_from_file(char *path) {
     free(base_dir);
 }
 
+static void test_runtime_load_from_file(char *path) {
+    am_allocator_pool_reset_vm(g_pool);
+    am_allocator_pool_reset_heap(g_pool);
+
+    wchar_t path_w_stack[256];
+    _mbstowcs(path_w_stack, path, 256);
+    wchar_t *file_content = read_file_as_wstring(path_w_stack);
+    assert(file_content != NULL);
+
+    const wchar_t *prefix = L"((lambda () \n";
+    const wchar_t *suffix = L"\n))";
+    size_t prefix_len = wcslen(prefix);
+    size_t suffix_len = wcslen(suffix);
+    size_t content_len = wcslen(file_content);
+    size_t code_len = prefix_len + content_len + suffix_len;
+
+    wchar_t *code = (wchar_t *)am_malloc(vm_alloc, (code_len + 1) * sizeof(wchar_t));
+    assert(code != NULL);
+    size_t pos = 0;
+    for (size_t i = 0; i < prefix_len; i++) code[pos++] = prefix[i];
+    for (size_t i = 0; i < content_len; i++) code[pos++] = file_content[i];
+    for (size_t i = 0; i < suffix_len; i++) code[pos++] = suffix[i];
+    code[pos] = L'\0';
+    free(file_content);
+
+    test_runtime_load_from_wstring(code, path);
+}
+
 
 int main(int argc, char* argv[]) {
 
@@ -322,7 +330,30 @@ int main(int argc, char* argv[]) {
     vm_alloc = am_allocator_pool_get_vm(g_pool);
     heap_alloc = am_allocator_pool_get_heap(g_pool);
 
-    test_runtime_load_from_file(argv[1]);
+    char *ext = strrchr(argv[1], '.');
+    if (ext != NULL && strcmp(ext, ".js") == 0) {
+        am_allocator_pool_reset_vm(g_pool);
+        am_allocator_pool_reset_heap(g_pool);
+
+        wchar_t path_w_stack[256];
+        _mbstowcs(path_w_stack, argv[1], 256);
+        wchar_t *file_content = read_file_as_wstring(path_w_stack);
+        assert(file_content != NULL);
+
+        wchar_t *scheme_code = am_js_to_scheme(file_content);
+        free(file_content);
+        assert(scheme_code != NULL);
+
+        size_t scheme_len = wcslen(scheme_code);
+        wchar_t *code = (wchar_t *)am_malloc(vm_alloc, (scheme_len + 1) * sizeof(wchar_t));
+        assert(code != NULL);
+        wcscpy(code, scheme_code);
+        free(scheme_code);
+
+        test_runtime_load_from_wstring(code, argv[1]);
+    } else {
+        test_runtime_load_from_file(argv[1]);
+    }
 
     am_allocator_pool_destroy(g_pool);
     g_pool = NULL;

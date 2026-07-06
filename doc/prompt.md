@@ -3738,16 +3738,6 @@ return 0;
 
 ---------------------
 
-- (Table.make)  →  {}
-- (Table.set tbl key value)  →  tbl[key] = value  ;; key可以是数值、符号、字符串，value可以是任何值
-- (Table.get tbl key)  →  tbl[key]
-- (Table.keys tbl)  →  Table.keys(tbl)
-- (Table.contains tbl key)  →  Table.contains(tbl, key)
-- (Table.delete tbl key)  →  Table.delete(tbl, key)
-- (Table.length tbl)  →  Table.length(tbl)
-
----------------------
-
 开始编码前，请先阅读 @doc/AGENTS.md 。
 
 本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构，具备R5RS定义的基于syntax-rules的卫生宏机制，但不一定完整。本Scheme解释器不支持任何let类绑定语法，也不支持 (define func (arg1 arg2) xxx) 这样的定义函数的语法。
@@ -3833,6 +3823,19 @@ my_for  sum=10  i=999
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。
+
+目前已经在单独的C文件 @jstoscm.c 中，实现了一个将JavaScript简单翻译成Scheme子集的算法。现在请你将其迁移到 @include/js2scm.h 和 @src/js2scm.c 中，并封装为以下接口，供应用层调用：
+
+```
+wchar_t *am_js_to_scheme(const wchar_t *js_source);
+```
+
+此后，在 @main.c 中，增加根据输入文件后缀是scm还是js来选择是否调用 am_js_to_scheme 将JS转为Scheme的流程。
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确。你可以自行构造一些合理的JavaScript代码作为测试输入。你可以使用WSL进行编译构建和测试。不得删除文件，不得修改无关代码。
 
 ---------------------
 
@@ -3887,6 +3890,16 @@ my_for  sum=10  i=999
 
 ---------------------
 
+
+---------------------
+
+- (Table.make)  →  {}
+- (Table.set tbl key value)  →  tbl[key] = value  ;; key可以是数值、符号、字符串，value可以是任何值
+- (Table.get tbl key)  →  tbl[key]
+- (Table.keys tbl)  →  Table.keys(tbl)
+- (Table.contains tbl key)  →  Table.contains(tbl, key)
+- (Table.delete tbl key)  →  Table.delete(tbl, key)
+- (Table.length tbl)  →  Table.length(tbl)
 
 ---------------------
 
