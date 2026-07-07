@@ -13,6 +13,9 @@ NOTE 回归测试使用哪些用例：
 - test_eval.scm
 - test_macro.scm
 - test_mec.scm
+- test_ipc1.scm
+- test_ipc2.scm
+- test_deadlock.scm
 
 TODO ast->node无法扩容？am_heap_set实现似乎有问题，为什么不调用map现成接口？
 

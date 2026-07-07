@@ -51,6 +51,18 @@ int32_t am_native_System_fork(am_runtime_t *rt, am_process_t *proc);
 // 运行时动态编译并执行 Scheme 代码字符串。仅捕获当前进程的顶级变量绑定。
 int32_t am_native_System_eval(am_runtime_t *rt, am_process_t *proc);
 
+// (System.make_queue len:Number) : Number|null
+// 创建一个容量为 len 的队列，返回队列编号；失败返回 #null。
+int32_t am_native_System_make_queue(am_runtime_t *rt, am_process_t *proc);
+
+// (System.write qid:Number v:any timeout_ms:Number) : Boolean
+// 向队列 qid 写入 v，timeout_ms 为超时时间。成功返回 #t，失败返回 #f。
+int32_t am_native_System_write(am_runtime_t *rt, am_process_t *proc);
+
+// (System.read qid:Number timeout_ms:Number) : any
+// 从队列 qid 读取一个值，timeout_ms 为超时时间。成功返回值，失败返回 #undefined。
+int32_t am_native_System_read(am_runtime_t *rt, am_process_t *proc);
+
 
 
 #ifdef __cplusplus

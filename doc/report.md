@@ -1079,3 +1079,392 @@ am_handle_t am_macro_deep_copy_subtree(am_ast_t *ast,
 - 新增代码集中在 `macro.h/c`，与现有前端/后端耦合点很少。
 
 如果需要，后续可以在此基础上扩展跨模块宏导入导出、更复杂的 ellipsis 嵌套，以及 `letrec-syntax` 的互递归 transformer 等特性。
+
+# 进程间通信队列机制技术报告
+
+## 摘要
+
+Animac-2026 在已有的编译器+中间语言 VM、多进程事件循环架构之上，新增了一套基于 FIFO 队列的进程间通信（IPC）机制。该机制以 `src/list.c` 中实现的 `am_list_t` 作为队列存储容器，通过 `am_list_push` / `am_list_shift` 完成入队与出队；队列对象本身分配在 VM 工作区，由 `am_runtime_t` 统一管理；任何进程都可以通过队列编号（ID）对队列进行发送或接收操作。发送与接收均为阻塞式，支持超时；收发双方以 `am_value_t` 的按值拷贝方式传递数据，解释器不对数据语义做解释或序列化。本报告详细阐述该机制的设计目标、数据结构、核心 API、调度与超时实现、与现有事件循环的集成方式，以及测试验证结果。
+
+---
+
+## 1 设计目标与约束
+
+新增 IPC 队列机制基于以下需求与约束：
+
+1. **基于现有列表实现**：队列的底层存储复用 `am_list_t`，入队使用 `am_list_push`，出队使用 `am_list_shift`，不引入新的动态数组或环形缓冲区。
+2. **VM 区分配**：队列对象（包括队列控制结构与数据项列表）均通过 `rt->vm_alloc` 分配，生命周期由运行时管理，不属于单个进程的私有堆。
+3. **多生产者/多消费者**：任意进程都可以向同一队列发送或接收；队列内部维护发送等待者与接收等待者链表，实现阻塞同步。
+4. **按值拷贝**：队列项类型为 `am_value_t`，通过直接拷贝 TPV 传递；如果是 handle，则拷贝 handle 值本身，解释器不做深拷贝或语义解释。
+5. **阻塞式 + 超时**：`System.write` 在队列满时阻塞，`System.read` 在队列空时阻塞；二者均可指定 `timeout_ms`，超时后分别返回 `#f` 与 `#undefined`。
+6. **编号访问**：队列通过自增编号 `id` 进行管理，Scheme 层只暴露编号，便于跨进程共享。
+
+---
+
+## 2 核心数据结构
+
+### 2.1 队列控制结构
+
+队列控制结构定义在 `include/runtime.h`：
+
+```c
+typedef struct am_queue_waiter_t am_queue_waiter_t;
+typedef struct am_queue_t am_queue_t;
+
+struct am_queue_waiter_t {
+    am_pid_t pid;                 // 阻塞的进程 ID
+    am_value_t value;             // 发送等待者要写入的值（接收等待者忽略）
+    am_timestamp_t deadline_ms;   // 超时绝对时间（毫秒）
+    bool is_writer;               // true=发送等待者，false=接收等待者
+    am_queue_waiter_t *next;      // 链表下一个节点
+};
+
+struct am_queue_t {
+    size_t id;                    // 队列编号
+    size_t capacity;              // 最大容量
+    am_list_t *items;             // 数据项列表（FIFO）
+    am_queue_waiter_t *send_waiters; // 等待可写的发送者链表
+    am_queue_waiter_t *recv_waiters; // 等待可读的接收者链表
+};
+```
+
+`am_queue_t` 不继承 `am_object_t` 头，因为它不是 Scheme 层面的对象，而是运行时内部设施；其数据项 `items` 虽然是 `am_list_t`，但同样不暴露给 Scheme 程序，仅用于内部存储。
+
+### 2.2 运行时中的队列列表
+
+`am_runtime_t` 新增两个字段：
+
+```c
+typedef struct am_runtime_t {
+    // ... 原有字段 ...
+    am_list_t *queue_list;   // 队列列表：List<am_queue_t*>
+    size_t queue_next_id;    // 下一个队列编号，从 1 开始递增
+} am_runtime_t;
+```
+
+`queue_list` 中每个元素是一个 `am_value_t` 包装的原始指针（`am_make_value_of_ptr(q)`），指向一个 `am_queue_t`。线性查找函数 `am_runtime_get_queue` 通过遍历该列表实现 ID 到队列的映射。ID 从 1 开始单调递增，0 保留为无效编号。
+
+---
+
+## 3 Native API 语义
+
+在 `src/native_System.c` 中实现并注册了三个函数：
+
+```c
+static const am_native_func_entry_t am_native_System_funcs[] = {
+    // ... 其他 System 函数 ...
+    { L"make_queue", am_native_System_make_queue },
+    { L"write",      am_native_System_write },
+    { L"read",       am_native_System_read },
+};
+```
+
+### 3.1 `(System.make_queue len)`
+
+- 参数：`len` 为队列最大容量（必须 > 0）。
+- 行为：调用 `am_runtime_queue_create(rt, (size_t)len)` 创建队列，返回队列编号 `id`。
+- 返回值：成功返回 `uint` 类型的编号；失败（如容量非法、内存不足）返回 `#null`。
+
+### 3.2 `(System.write qid v timeout_ms)`
+
+- 参数：`qid` 队列编号，`v` 任意值，`timeout_ms` 超时时间（毫秒）。
+- 行为：
+  - 若存在等待接收者，直接将 `v` 交给最前面的接收者，发送方返回 `#t`。
+  - 否则若队列未满，将 `v` 压入 `items`，返回 `#t`。
+  - 否则若 `timeout_ms == 0`，立即返回 `#f`。
+  - 否则将当前进程阻塞为发送等待者，设置超时绝对时间。
+- 返回值：成功 `#t`，失败/超时 `#f`。
+
+### 3.3 `(System.read qid timeout_ms)`
+
+- 参数：`qid` 队列编号，`timeout_ms` 超时时间（毫秒）。
+- 行为：
+  - 若队列非空，弹出队首值并返回。
+  - 若存在等待发送者，则弹出一个元素腾出空间后，立即把该发送者的值入队并唤醒发送者。
+  - 若 `timeout_ms == 0`，立即返回 `#undefined`。
+  - 否则将当前进程阻塞为接收等待者，设置超时绝对时间。
+- 返回值：成功返回读到的值，失败/超时返回 `#undefined`。
+
+参数弹出顺序遵循 Scheme 调用约定：`native` 函数从操作数栈顶依次弹出，因此 `write` 实际先弹出 `timeout_ms`，再弹出 `v`，最后弹出 `qid`；`read` 先弹出 `timeout_ms`，再弹出 `qid`。
+
+---
+
+## 4 队列生命周期管理
+
+### 4.1 创建
+
+`am_runtime_queue_create` 在 `src/runtime.c` 中实现：
+
+```c
+am_queue_t *am_runtime_queue_create(am_runtime_t *rt, size_t capacity) {
+    if (!rt || capacity == 0) return NULL;
+
+    am_queue_t *q = (am_queue_t *)am_malloc(rt->vm_alloc, sizeof(am_queue_t));
+    if (!q) return NULL;
+
+    q->id = rt->queue_next_id++;
+    if (q->id == 0) q->id = rt->queue_next_id++; // 跳过 0
+    q->capacity = capacity;
+    q->items = am_list_create(rt->vm_alloc, capacity, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    q->send_waiters = NULL;
+    q->recv_waiters = NULL;
+
+    if (!q->items) { am_free(rt->vm_alloc, q); return NULL; }
+
+    am_list_t *new_list = am_list_push(rt->vm_alloc, rt->queue_list,
+                                       am_make_value_of_ptr((am_object_t *)q));
+    if (!new_list) { /* 回滚 */ }
+    rt->queue_list = new_list;
+    return q;
+}
+```
+
+注意：虽然 `am_list_create` 会把 capacity 对齐到内部最小值（默认 4），但 `q->capacity` 才是逻辑上的最大长度，`am_runtime_queue_write` 通过比较 `q->items->length < q->capacity` 决定是否还有空间。
+
+### 4.2 销毁
+
+`am_runtime_destroy` 在销毁运行时时遍历 `queue_list`，对每个队列调用 `am_runtime_queue_destroy`。该函数释放所有等待者节点、数据项列表以及队列控制结构本身。
+
+---
+
+## 5 核心操作实现
+
+### 5.1 写入路径
+
+`am_runtime_queue_write` 的实现逻辑如下：
+
+1. **直接交付给等待接收者**：若 `recv_waiters` 非空，取出队首接收者，把待写入值作为结果唤醒该进程，发送方压入 `#t` 并步进 PC。
+2. **常规入队**：若 `items->length < capacity`，调用 `am_list_push` 入队，发送方压入 `#t` 并步进 PC。
+3. **立即失败**：队列已满且 `timeout_ms == 0`，压入 `#f` 并步进 PC。
+4. **阻塞**：创建一个 `am_queue_waiter_t` 节点，记录当前进程 PID、待写入值、超时截止时间，插入 `send_waiters` 链表头部，然后将进程状态置为 `AM_PROCESS_STATE_BLOCKED`，**不步进 PC**。
+
+```c
+int32_t am_runtime_queue_write(am_runtime_t *rt, am_queue_t *q, am_value_t value,
+                               am_timestamp_t timeout_ms, am_process_t *proc) {
+    if (q->recv_waiters) {
+        // 直接交给等待的接收者
+        am_queue_waiter_t *reader = q->recv_waiters;
+        q->recv_waiters = reader->next;
+        runtime_queue_wake_process(rt, reader->pid, value);
+        am_free(rt->vm_alloc, reader);
+        am_process_push_operand(proc, AM_VALUE_TRUE);
+        am_process_step(proc);
+        return 0;
+    }
+    if (q->items->length < q->capacity) {
+        am_list_t *new_items = am_list_push(rt->vm_alloc, q->items, value);
+        if (!new_items) return -1;
+        q->items = new_items;
+        am_process_push_operand(proc, AM_VALUE_TRUE);
+        am_process_step(proc);
+        return 0;
+    }
+    if (timeout_ms == 0) {
+        am_process_push_operand(proc, AM_VALUE_FALSE);
+        am_process_step(proc);
+        return 0;
+    }
+    // 阻塞
+    am_queue_waiter_t *w = runtime_queue_waiter_create(rt, proc->pid, value,
+                                                         am_runtime_now_ms() + timeout_ms, true);
+    w->next = q->send_waiters;
+    q->send_waiters = w;
+    am_process_set_state(proc, AM_PROCESS_STATE_BLOCKED);
+    return 0;
+}
+```
+
+### 5.2 读取路径
+
+`am_runtime_queue_read` 的逻辑：
+
+1. **直接出队**：若 `items->length > 0`，调用 `am_list_shift` 弹出队首值。若有发送等待者，则取出一个，将其值入队并唤醒，从而保持队列始终处于满状态（只要还有发送者）。读取方返回弹出的值并步进 PC。
+2. **立即失败**：队列空且 `timeout_ms == 0`，压入 `#undefined` 并步进 PC。
+3. **阻塞**：创建接收等待者节点，插入 `recv_waiters` 链表头部，进程状态置为 `AM_PROCESS_STATE_BLOCKED`。
+
+### 5.3 进程唤醒
+
+`runtime_queue_wake_process` 统一处理被唤醒进程：
+
+```c
+static void runtime_queue_wake_process(am_runtime_t *rt, am_pid_t pid, am_value_t result) {
+    am_process_t *proc = rt->process_pool[pid];
+    if (!proc) return;
+    am_process_push_operand(proc, result);
+    am_process_step(proc);                 // PC 越过 native 调用
+    am_process_set_state(proc, AM_PROCESS_STATE_READY);
+    rt->process_queue = am_list_push(rt->vm_alloc, rt->process_queue,
+                                     am_make_value_of_uint((am_uint_t)pid));
+}
+```
+
+被唤醒的进程会将结果压入操作数栈，PC 指向 native 调用之后的下一条指令，然后被重新加入 `process_queue`，等待下一次调度。
+
+---
+
+## 6 阻塞状态与事件循环集成
+
+### 6.1 进程状态扩展
+
+`include/process.h` 新增：
+
+```c
+#define AM_PROCESS_STATE_BLOCKED (6)
+```
+
+处于 `BLOCKED` 状态的进程不会被 `am_runtime_tick` 重新入队；它只能通过以下两种方式被唤醒：
+
+1. **对端操作**：另一个进程向同一队列写入或读取时，直接将其从等待者链表中移除并唤醒。
+2. **超时**：事件循环在每次 tick 后扫描所有队列的等待者链表，将已超时的等待者唤醒。
+
+### 6.2 超时扫描
+
+`runtime_queue_check_waiters` 在 `src/runtime.c` 中实现，它遍历 `rt->queue_list` 中的每条队列及其 `send_waiters` / `recv_waiters` 链表：
+
+```c
+static void runtime_queue_check_waiters(am_runtime_t *rt) {
+    am_timestamp_t now = am_runtime_now_ms();
+    // 对每个队列：
+    //   遍历 send_waiters，若 deadline_ms <= now 则唤醒为 #f 并移除
+    //   遍历 recv_waiters，若 deadline_ms <= now 则唤醒为 #undefined 并移除
+}
+```
+
+扫描后，被超时的进程状态变为 `READY` 并重新入队。
+
+### 6.3 事件循环不 IDLE
+
+在 `am_runtime_event_handler` 末尾做了如下调整：
+
+```c
+runtime_queue_check_waiters(rt);
+runtime_fire_expired_timers(rt);
+
+if (rt->process_queue && rt->process_queue->length > 0) {
+    vm_state = AM_VM_STATE_RUNNING;
+}
+if (vm_state == AM_VM_STATE_IDLE &&
+    (runtime_has_nonblocked_timer(rt, NULL) || runtime_queue_has_waiters(rt, NULL))) {
+    vm_state = AM_VM_STATE_RUNNING;
+}
+```
+
+这意味着即使当前没有就绪进程，只要还有阻塞中的队列等待者或未到期且关联进程未阻塞的定时器，虚拟机就继续运转。
+
+### 6.4 睡眠策略
+
+`am_runtime_start` 在 `process_queue` 为空但仍有等待者/定时器时，计算最近的到期时间并睡眠：
+
+```c
+if (rt->process_queue && rt->process_queue->length == 0 &&
+    (runtime_has_nonblocked_timer(rt, NULL) || runtime_queue_has_waiters(rt, NULL))) {
+    am_timestamp_t now = am_runtime_now_ms();
+    am_timestamp_t next = 0;
+    am_timestamp_t tnext;
+    if (runtime_has_nonblocked_timer(rt, &tnext)) next = tnext;
+    am_timestamp_t qnext;
+    if (runtime_queue_has_waiters(rt, &qnext)) {
+        if (next == 0 || qnext < next) next = qnext;
+    }
+    if (next > now) runtime_sleep_ms(next - now);
+}
+```
+
+这避免了空转；当所有等待者都使用无限超时时，事件循环会保持睡眠，直到被外部输入或其他机制唤醒（当前实现下无限超时等价于永久阻塞）。
+
+### 6.5 与定时器的互斥
+
+如果一个进程在持有用户定时器的同时因队列操作进入 `BLOCKED` 状态，直接触发定时器回调会破坏队列操作现场（操作数栈已被弹出、PC 仍停在 native 调用处）。因此 `runtime_fire_expired_timers` 做了特殊处理：
+
+```c
+if (proc && proc->state == AM_PROCESS_STATE_BLOCKED) {
+    // 暂不触发，待进程解除阻塞后再检查
+    cur = &timer->next;
+    continue;
+}
+```
+
+同时，事件循环的 IDLE 判断与睡眠计算均使用 `runtime_has_nonblocked_timer`，跳过被阻塞进程的定时器，防止因跳过操作导致忙等。
+
+---
+
+## 7 多生产者/多消费者模型
+
+队列内部的发送等待者与接收等待者都是单向链表，新等待者插入链表头部，唤醒时也取头部节点。因此：
+
+- 多个发送者可以在队列满时同时阻塞；
+- 多个接收者可以在队列空时同时阻塞；
+- 当条件满足时，每次只唤醒一个等待者，保证 FIFO 的语义边界在队列数据项层面维持。
+
+需要注意的是，等待者链表本身不是 FIFO（头部插入），但这只影响同一条件下多个阻塞进程被唤醒的先后顺序，不影响队列中数据项的出队顺序。队列项本身严格按照 `am_list_push` / `am_list_shift` 维护。
+
+---
+
+## 8 测试验证
+
+新增测试文件：
+
+- `test/queue_ipc_test.scm`：基础创建/读写、空队列超时读、满队列超时写、跨进程双向通信。
+- `test/queue_mpmc_test.scm`：一个队列、两个消费者、一个生产者，验证多消费者阻塞与唤醒。
+- `test/queue_deadlock_test.scm`：用两个队列模拟两把锁，父/子进程分别持有一把并请求对方，形成死锁；通过超时检测死锁并输出。
+
+### 8.1 基础 IPC 测试结果
+
+```text
+queue id=1
+write immediate=#t
+read immediate=42
+read timeout empty=#undefined
+write timeout full=#f
+child read=100
+parent read=200
+queue IPC tests done
+```
+
+### 8.2 多消费者测试结果
+
+```text
+consumer1 read=111
+consumer2 read=222
+mpmc test done
+```
+
+### 8.3 死锁测试结果
+
+```text
+parent: A acquired
+child: B acquired
+child: trying to acquire A (expect deadlock)
+parent: trying to acquire B (expect deadlock)
+child: DEADLOCK detected, could not acquire A
+parent: DEADLOCK detected, could not acquire B
+```
+
+### 8.4 回归测试
+
+将队列 IPC 加入后重新编译并运行原有 `test/test.scm`，退出码为 0，所有原有测试用例输出与预期一致，说明新增机制未破坏现有运行时、GC、定时器、fork 等功能。
+
+---
+
+## 9 关键设计决策
+
+1. **复用 `am_list_t`**：避免引入新的 FIFO 容器；`am_list_push` / `am_list_shift` 已能满足队列语义。
+2. **队列对象放在 VM 区**：队列是运行时全局资源，不随单个进程堆的 GC/压缩而移动；进程间通过编号访问，避免 handle 跨进程语义问题。
+3. **等待者链表而非定时器**：为每个阻塞操作记录绝对超时时间，由事件循环统一扫描；这样可以在一个函数中同时处理对端唤醒和超时唤醒，避免定时器回调与队列操作现场冲突。
+4. **`BLOCKED` 状态独立**：与 `SLEEPING` 区分开，便于定时器系统识别并跳过，防止异步回调破坏同步阻塞语义。
+5. **按值拷贝 `am_value_t`**：不解释 value 语义，也不做深拷贝；handle 值作为 TPV 直接传递，由 Scheme 层自行约定含义。
+
+---
+
+## 10 已知限制
+
+- 等待者链表采用头部插入，严格来说等待者唤醒顺序是 LIFO；对多数 IPC 场景无影响，但对等待者公平性有要求的场景需注意。
+- 队列 ID 线性递增，不回收；长时间运行大量创建/销毁队列可能耗尽编号空间（`size_t` 范围通常足够大）。
+- 收发双方自行负责 handle 的跨进程解释；若发送方被 GC 移动对象，handle 是否仍有效取决于具体 heap 实现，解释器不保证跨进程 handle 语义。
+- 用户定时器在进程 `BLOCKED` 期间被暂停，待进程解除阻塞后才会重新检查到期。
+
+---
+
+## 11 结论
+
+Animac-2026 的 IPC 队列机制在保持现有事件循环与多进程调度架构不变的前提下，通过新增 `am_queue_t` 控制结构、两条等待者链表、三个 `System.*` native 函数，以及对事件循环超时扫描和睡眠策略的扩展，实现了一套完整的多生产者/多消费者 FIFO 队列。它复用 `am_list_t` 作为底层存储，按 `am_value_t` 按值拷贝传递数据，支持阻塞式读写与超时，并在跨进程通信、资源死锁等复杂场景下通过了测试验证。

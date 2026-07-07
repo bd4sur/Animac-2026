@@ -863,6 +863,92 @@ int32_t am_native_System_fork(am_runtime_t *rt, am_process_t *proc) {
 }
 
 
+// (System.make_queue len:Number) : Number|null
+// 创建一个容量为 len 的队列，返回队列编号；失败返回 #null。
+int32_t am_native_System_make_queue(am_runtime_t *rt, am_process_t *proc) {
+    if (!rt || !proc) return -1;
+
+    am_float_t len_f;
+    if (!native_pop_number(proc, &len_f)) return -1;
+
+    if (isnan(len_f) || len_f <= 0.0) {
+        if (am_process_push_operand(proc, AM_VALUE_NULL) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    am_queue_t *q = am_runtime_queue_create(rt, (size_t)len_f);
+    if (!q) {
+        if (am_process_push_operand(proc, AM_VALUE_NULL) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    if (am_process_push_operand(proc, am_make_value_of_uint((am_uint_t)q->id)) != 0) return -1;
+    am_process_step(proc);
+    return 0;
+}
+
+
+// (System.write qid:Number v:any timeout_ms:Number) : Boolean
+// 向队列 qid 写入 v，timeout_ms 为超时时间。成功返回 #t，失败返回 #f。
+int32_t am_native_System_write(am_runtime_t *rt, am_process_t *proc) {
+    if (!rt || !proc) return -1;
+
+    am_float_t timeout_f;
+    if (!native_pop_number(proc, &timeout_f)) return -1;
+
+    am_value_t v = am_process_pop_operand(proc);
+    if (v == (am_value_t)UINTPTR_MAX) return -1;
+
+    am_float_t qid_f;
+    if (!native_pop_number(proc, &qid_f)) return -1;
+
+    if (isnan(timeout_f) || timeout_f < 0.0 || isnan(qid_f) || qid_f < 0.0) {
+        if (am_process_push_operand(proc, AM_VALUE_FALSE) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    am_queue_t *q = am_runtime_get_queue(rt, (size_t)qid_f);
+    if (!q) {
+        if (am_process_push_operand(proc, AM_VALUE_FALSE) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    return am_runtime_queue_write(rt, q, v, (am_timestamp_t)timeout_f, proc);
+}
+
+
+// (System.read qid:Number timeout_ms:Number) : any
+// 从队列 qid 读取一个值，timeout_ms 为超时时间。成功返回值，失败返回 #undefined。
+int32_t am_native_System_read(am_runtime_t *rt, am_process_t *proc) {
+    if (!rt || !proc) return -1;
+
+    am_float_t timeout_f;
+    if (!native_pop_number(proc, &timeout_f)) return -1;
+
+    am_float_t qid_f;
+    if (!native_pop_number(proc, &qid_f)) return -1;
+
+    if (isnan(timeout_f) || timeout_f < 0.0 || isnan(qid_f) || qid_f < 0.0) {
+        if (am_process_push_operand(proc, AM_VALUE_UNDEFINED) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    am_queue_t *q = am_runtime_get_queue(rt, (size_t)qid_f);
+    if (!q) {
+        if (am_process_push_operand(proc, AM_VALUE_UNDEFINED) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    return am_runtime_queue_read(rt, q, (am_timestamp_t)timeout_f, proc);
+}
+
+
 // (System.test x:any) : String
 // 保留的测试函数，用于兼容现有测试用例 mob.scm。
 int32_t am_native_System_test(am_runtime_t *rt, am_process_t *proc) {
@@ -1455,6 +1541,9 @@ static const am_native_func_entry_t am_native_System_funcs[] = {
     { L"memstat",      am_native_System_memstat },
     { L"fork",         am_native_System_fork },
     { L"eval",         am_native_System_eval },
+    { L"make_queue",   am_native_System_make_queue },
+    { L"write",        am_native_System_write },
+    { L"read",         am_native_System_read },
     { L"test",         am_native_System_test },
 };
 

@@ -30,6 +30,7 @@ extern "C" {
 #define AM_PROCESS_STATE_SLEEPING  (3)
 #define AM_PROCESS_STATE_SUSPENDED (4)
 #define AM_PROCESS_STATE_STOPPED   (5)
+#define AM_PROCESS_STATE_BLOCKED   (6)
 
 
 ///////////////////////////////////////////

@@ -47,6 +47,269 @@ static void destroy_fifo(am_runtime_t *rt, am_list_t *fifo) {
 }
 
 
+// ===============================================================================
+// 队列 IPC 内部辅助函数
+// ===============================================================================
+
+// 根据 ID 在队列列表中线性查找队列。
+static am_queue_t *runtime_find_queue(am_runtime_t *rt, size_t queue_id) {
+    if (!rt || !rt->queue_list) return NULL;
+    for (size_t i = 0; i < rt->queue_list->length; i++) {
+        am_value_t v = am_list_get(rt->vm_alloc, rt->queue_list, i);
+        if (!am_value_is_ptr(v)) continue;
+        am_queue_t *q = (am_queue_t *)am_value_to_ptr(v);
+        if (q && q->id == queue_id) return q;
+    }
+    return NULL;
+}
+
+
+// 分配并初始化一个等待者节点。
+static am_queue_waiter_t *runtime_queue_waiter_create(am_runtime_t *rt, am_pid_t pid,
+                                                       am_value_t value,
+                                                       am_timestamp_t deadline_ms,
+                                                       bool is_writer) {
+    if (!rt) return NULL;
+    am_queue_waiter_t *w = (am_queue_waiter_t *)am_malloc(rt->vm_alloc, sizeof(am_queue_waiter_t));
+    if (!w) return NULL;
+    w->pid = pid;
+    w->value = value;
+    w->deadline_ms = deadline_ms;
+    w->is_writer = is_writer;
+    w->next = NULL;
+    return w;
+}
+
+
+// 唤醒指定进程：将结果压入操作数栈、步进 PC、置为 READY 并入队。
+static void runtime_queue_wake_process(am_runtime_t *rt, am_pid_t pid, am_value_t result) {
+    if (!rt || pid >= rt->process_poll_counter) return;
+    am_process_t *proc = rt->process_pool[pid];
+    if (!proc) return;
+
+    if (am_process_push_operand(proc, result) != 0) return;
+    am_process_step(proc);
+    am_process_set_state(proc, AM_PROCESS_STATE_READY);
+
+    am_list_t *new_queue = am_list_push(rt->vm_alloc, rt->process_queue,
+                                        am_make_value_of_uint((am_uint_t)pid));
+    if (new_queue) rt->process_queue = new_queue;
+}
+
+
+// 扫描所有队列，将已超时的等待者唤醒。
+static void runtime_queue_check_waiters(am_runtime_t *rt) {
+    if (!rt || !rt->queue_list) return;
+
+    am_timestamp_t now = am_runtime_now_ms();
+    for (size_t i = 0; i < rt->queue_list->length; i++) {
+        am_value_t qv = am_list_get(rt->vm_alloc, rt->queue_list, i);
+        if (!am_value_is_ptr(qv)) continue;
+        am_queue_t *q = (am_queue_t *)am_value_to_ptr(qv);
+        if (!q) continue;
+
+        am_queue_waiter_t **cur = &q->send_waiters;
+        while (*cur) {
+            am_queue_waiter_t *w = *cur;
+            if (w->deadline_ms <= now) {
+                *cur = w->next;
+                runtime_queue_wake_process(rt, w->pid, AM_VALUE_FALSE);
+                am_free(rt->vm_alloc, w);
+            } else {
+                cur = &w->next;
+            }
+        }
+
+        cur = &q->recv_waiters;
+        while (*cur) {
+            am_queue_waiter_t *w = *cur;
+            if (w->deadline_ms <= now) {
+                *cur = w->next;
+                runtime_queue_wake_process(rt, w->pid, AM_VALUE_UNDEFINED);
+                am_free(rt->vm_alloc, w);
+            } else {
+                cur = &w->next;
+            }
+        }
+    }
+}
+
+
+// 判断当前是否还有阻塞等待者，并返回最近的超时时间。
+static bool runtime_queue_has_waiters(am_runtime_t *rt, am_timestamp_t *nearest) {
+    if (!rt || !rt->queue_list) return false;
+
+    bool has = false;
+    for (size_t i = 0; i < rt->queue_list->length; i++) {
+        am_value_t qv = am_list_get(rt->vm_alloc, rt->queue_list, i);
+        if (!am_value_is_ptr(qv)) continue;
+        am_queue_t *q = (am_queue_t *)am_value_to_ptr(qv);
+        if (!q) continue;
+
+        for (am_queue_waiter_t *w = q->send_waiters; w; w = w->next) {
+            if (nearest && (!has || w->deadline_ms < *nearest)) *nearest = w->deadline_ms;
+            has = true;
+        }
+        for (am_queue_waiter_t *w = q->recv_waiters; w; w = w->next) {
+            if (nearest && (!has || w->deadline_ms < *nearest)) *nearest = w->deadline_ms;
+            has = true;
+        }
+    }
+    return has;
+}
+
+
+am_queue_t *am_runtime_get_queue(am_runtime_t *rt, size_t queue_id) {
+    return runtime_find_queue(rt, queue_id);
+}
+
+
+am_queue_t *am_runtime_queue_create(am_runtime_t *rt, size_t capacity) {
+    if (!rt || capacity == 0) return NULL;
+
+    am_queue_t *q = (am_queue_t *)am_malloc(rt->vm_alloc, sizeof(am_queue_t));
+    if (!q) return NULL;
+
+    q->id = rt->queue_next_id++;
+    if (q->id == 0) q->id = rt->queue_next_id++; // 跳过 0
+    q->capacity = capacity;
+    q->items = am_list_create(rt->vm_alloc, capacity, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    q->send_waiters = NULL;
+    q->recv_waiters = NULL;
+
+    if (!q->items) {
+        am_free(rt->vm_alloc, q);
+        return NULL;
+    }
+
+    am_list_t *new_list = am_list_push(rt->vm_alloc, rt->queue_list,
+                                       am_make_value_of_ptr((am_object_t *)q));
+    if (!new_list) {
+        am_list_destroy(rt->vm_alloc, q->items);
+        am_free(rt->vm_alloc, q);
+        return NULL;
+    }
+    rt->queue_list = new_list;
+    return q;
+}
+
+
+int32_t am_runtime_queue_destroy(am_runtime_t *rt, am_queue_t *q) {
+    if (!rt || !q) return 0;
+
+    am_queue_waiter_t *w = q->send_waiters;
+    while (w) {
+        am_queue_waiter_t *next = w->next;
+        am_free(rt->vm_alloc, w);
+        w = next;
+    }
+    w = q->recv_waiters;
+    while (w) {
+        am_queue_waiter_t *next = w->next;
+        am_free(rt->vm_alloc, w);
+        w = next;
+    }
+
+    if (q->items) {
+        am_list_destroy(rt->vm_alloc, q->items);
+        q->items = NULL;
+    }
+
+    am_free(rt->vm_alloc, q);
+    return 0;
+}
+
+
+int32_t am_runtime_queue_write(am_runtime_t *rt, am_queue_t *q, am_value_t value,
+                               am_timestamp_t timeout_ms, am_process_t *proc) {
+    if (!rt || !q || !proc) return -1;
+
+    // 优先直接交给等待中的接收者
+    if (q->recv_waiters) {
+        am_queue_waiter_t *reader = q->recv_waiters;
+        q->recv_waiters = reader->next;
+        runtime_queue_wake_process(rt, reader->pid, value);
+        am_free(rt->vm_alloc, reader);
+
+        if (am_process_push_operand(proc, AM_VALUE_TRUE) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    // 队列未满，直接入队
+    if (q->items->length < q->capacity) {
+        am_list_t *new_items = am_list_push(rt->vm_alloc, q->items, value);
+        if (!new_items) return -1;
+        q->items = new_items;
+
+        if (am_process_push_operand(proc, AM_VALUE_TRUE) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    // 队列已满：超时为 0 时立即失败
+    if (timeout_ms == 0) {
+        if (am_process_push_operand(proc, AM_VALUE_FALSE) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    // 阻塞当前发送者
+    am_queue_waiter_t *w = runtime_queue_waiter_create(rt, proc->pid, value,
+                                                         am_runtime_now_ms() + timeout_ms, true);
+    if (!w) return -1;
+    w->next = q->send_waiters;
+    q->send_waiters = w;
+
+    am_process_set_state(proc, AM_PROCESS_STATE_BLOCKED);
+    return 0;
+}
+
+
+int32_t am_runtime_queue_read(am_runtime_t *rt, am_queue_t *q, am_timestamp_t timeout_ms,
+                              am_process_t *proc) {
+    if (!rt || !q || !proc) return -1;
+
+    // 队列非空，直接出队
+    if (q->items->length > 0) {
+        am_value_t v = am_list_shift(rt->vm_alloc, q->items);
+
+        // 若有等待中的发送者，现在腾出了空间，允许一个发送者入队
+        if (q->send_waiters) {
+            am_queue_waiter_t *writer = q->send_waiters;
+            q->send_waiters = writer->next;
+
+            am_list_t *new_items = am_list_push(rt->vm_alloc, q->items, writer->value);
+            if (new_items) q->items = new_items;
+            // 即使 push 失败，也已腾出一个位置，发送者仍视为成功
+            runtime_queue_wake_process(rt, writer->pid, AM_VALUE_TRUE);
+            am_free(rt->vm_alloc, writer);
+        }
+
+        if (am_process_push_operand(proc, v) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    // 队列空：超时为 0 时立即失败
+    if (timeout_ms == 0) {
+        if (am_process_push_operand(proc, AM_VALUE_UNDEFINED) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    // 阻塞当前接收者
+    am_queue_waiter_t *w = runtime_queue_waiter_create(rt, proc->pid, AM_VALUE_UNDEFINED,
+                                                         am_runtime_now_ms() + timeout_ms, false);
+    if (!w) return -1;
+    w->next = q->recv_waiters;
+    q->recv_waiters = w;
+
+    am_process_set_state(proc, AM_PROCESS_STATE_BLOCKED);
+    return 0;
+}
+
+
 // 复制当前闭包的所有绑定到新闭包作为自由变量（用于 load/loadclosure/call）
 // new_closure_hd 必须已绑定到一个新创建的 closure 对象。
 static int32_t copy_current_closure_bindings_as_free_vars(am_process_t *proc, am_handle_t new_closure_hd) {
@@ -1458,11 +1721,14 @@ am_runtime_t *am_runtime_create(am_allocator_t *vm_alloc, am_allocator_t *heap_a
     rt->input_fifo = am_list_create(vm_alloc, 16, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
     rt->output_fifo = am_list_create(vm_alloc, 16, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
     rt->error_fifo = am_list_create(vm_alloc, 16, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    rt->queue_list = am_list_create(vm_alloc, 8, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
 
-    if (!rt->process_queue || !rt->input_fifo || !rt->output_fifo || !rt->error_fifo) {
+    if (!rt->process_queue || !rt->input_fifo || !rt->output_fifo || !rt->error_fifo || !rt->queue_list) {
         am_runtime_destroy(rt);
         return NULL;
     }
+
+    rt->queue_next_id = 1;
 
     rt->callback_on_tick = NULL;
     rt->callback_on_event = NULL;
@@ -1504,6 +1770,18 @@ int32_t am_runtime_destroy(am_runtime_t *rt) {
     rt->output_fifo = NULL;
     destroy_fifo(rt, rt->error_fifo);
     rt->error_fifo = NULL;
+
+    if (rt->queue_list) {
+        for (size_t i = 0; i < rt->queue_list->length; i++) {
+            am_value_t qv = am_list_get(rt->vm_alloc, rt->queue_list, i);
+            if (am_value_is_ptr(qv)) {
+                am_queue_t *q = (am_queue_t *)am_value_to_ptr(qv);
+                if (q) am_runtime_queue_destroy(rt, q);
+            }
+        }
+        am_list_destroy(rt->vm_alloc, rt->queue_list);
+        rt->queue_list = NULL;
+    }
 
     if (rt->working_dir) {
         am_free(rt->vm_alloc, rt->working_dir);
@@ -1607,6 +1885,21 @@ bool am_runtime_clear_timer(am_runtime_t *rt, size_t timer_id) {
 }
 
 
+// 检查是否存在至少一个关联进程未处于 BLOCKED 状态的定时器。
+// 若 nearest 非 NULL，同时返回最近的未阻塞定时器到期时间。
+static bool runtime_has_nonblocked_timer(am_runtime_t *rt, am_timestamp_t *nearest) {
+    if (!rt || !rt->timer_list) return false;
+    bool has = false;
+    for (am_timer_t *t = rt->timer_list; t; t = t->next) {
+        am_process_t *proc = am_runtime_get_process(rt, t->pid);
+        if (proc && proc->state == AM_PROCESS_STATE_BLOCKED) continue;
+        if (nearest && (!has || t->expire_ms < *nearest)) *nearest = t->expire_ms;
+        has = true;
+    }
+    return has;
+}
+
+
 // 触发所有已到期的定时器。
 static void runtime_fire_expired_timers(am_runtime_t *rt) {
     if (!rt || !rt->timer_list) return;
@@ -1622,6 +1915,12 @@ static void runtime_fire_expired_timers(am_runtime_t *rt) {
 
         am_process_t *proc = am_runtime_get_process(rt, timer->pid);
         if (proc) {
+            // 进程正在执行阻塞式队列操作：用户定时器暂不触发，避免破坏队列操作状态
+            if (proc->state == AM_PROCESS_STATE_BLOCKED) {
+                cur = &timer->next;
+                continue;
+            }
+
             am_iaddr_t return_target;
             if (proc->state == AM_PROCESS_STATE_STOPPED) {
                 // 进程已停止：回调结束后回到 halt 指令（地址1），并重新入队
@@ -1997,14 +2296,19 @@ int32_t am_runtime_event_handler(am_runtime_t *rt) {
     // }
 #endif
 
+    // 检查队列阻塞等待者：唤醒超时的发送者/接收者
+    runtime_queue_check_waiters(rt);
+
     runtime_fire_expired_timers(rt);
 
-    // 若触发定时器后有进程入队，继续保持 RUNNING 状态
+    // 若触发定时器或队列唤醒后有进程入队，继续保持 RUNNING 状态
     if (rt->process_queue && rt->process_queue->length > 0) {
         vm_state = AM_VM_STATE_RUNNING;
     }
-    // 即使暂无进程，只要还有未到期定时器，也应保持事件循环运转
-    if (vm_state == AM_VM_STATE_IDLE && rt->timer_list) {
+    // 即使暂无就绪进程，只要还有未到期定时器（且其关联进程未阻塞）
+    // 或阻塞中的队列等待者，事件循环也应继续运转，等待它们到期或被唤醒。
+    if (vm_state == AM_VM_STATE_IDLE &&
+        (runtime_has_nonblocked_timer(rt, NULL) || runtime_queue_has_waiters(rt, NULL))) {
         vm_state = AM_VM_STATE_RUNNING;
     }
 
@@ -2023,12 +2327,19 @@ void am_runtime_start(am_runtime_t *rt) {
             break;
         }
 
-        // 若当前无就绪进程但仍有未到期定时器，则睡眠到最近定时器到期
-        if (rt->process_queue && rt->process_queue->length == 0 && rt->timer_list) {
+        // 若当前无就绪进程但仍有未到期定时器（关联进程未阻塞）
+        // 或队列阻塞等待者，则睡眠到最近的到期时间。
+        if (rt->process_queue && rt->process_queue->length == 0 &&
+            (runtime_has_nonblocked_timer(rt, NULL) || runtime_queue_has_waiters(rt, NULL))) {
             am_timestamp_t now = am_runtime_now_ms();
             am_timestamp_t next = 0;
-            for (am_timer_t *t = rt->timer_list; t; t = t->next) {
-                if (next == 0 || t->expire_ms < next) next = t->expire_ms;
+            am_timestamp_t tnext;
+            if (runtime_has_nonblocked_timer(rt, &tnext)) {
+                next = tnext;
+            }
+            am_timestamp_t qnext;
+            if (runtime_queue_has_waiters(rt, &qnext)) {
+                if (next == 0 || qnext < next) next = qnext;
             }
             if (next > now) {
                 runtime_sleep_ms(next - now);

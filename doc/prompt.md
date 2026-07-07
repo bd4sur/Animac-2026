@@ -3858,6 +3858,33 @@ wchar_t *am_js_to_scheme(const wchar_t *js_source);
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。VM通过事件循环实现了多进程机制（ @src/runtime.c ），但现在还没有进程间通信机制。
+
+我的需求：请你为解释器实现基于队列（FIFO）的进程间通信机制。总的来说，类似于FreeRTOS的xQueue。详细要求如下：
+
+- 队列基于 @src/list.c 中定义的列表实现，运用其shift、push等函数实现入队出队。
+- 在 @include/runtime.h 中定义的 am_runtime_t 中，增加一个队列列表成员，用于存储所有队列（的指针），可能还有必要维护一个队列计数器，用于为队列赋予编号（ID），通过编号对已有的队列进行管理。其他你认为必要的基础设施，按需增加。
+- 队列是多生产者多消费者的，任何process都可以向队列发送或者从队列接收数据。
+- 队列的数据项是am_value_t，通过拷贝的方式进行传递。收发双方需自行解释value的语义，解释器不做任何语义层面的检查和限制。解释器不提供复杂对象序列化的基础设施，由用户自行在Scheme层实现。
+- 阻塞式访问：队列的发送和接收都是阻塞式的，但可以指定超时时间。
+- 所有的队列都通过vm_alloc分配在VM区（工作区），任何进程都可以通过队列的编号（ID）和相应的API去访问队列。
+
+为了实现队列操作，在 @src/native_System.c 中，实现以下本地（native）API：
+
+```
+;; 创建一个队列，参数为队列的长度（容纳多少个am_value_t），返回值为新建队列的编号（ID），若失败则返回#null。
+(System.make_queue  len:number(uint)) : number(uint)
+
+;; 向队列qid发送一个值v，指定超时时间timeout_ms。成功返回#t，失败返回#f。
+(System.write  qid:number(uint)  v:any  timeout_ms:number(uint) )
+
+;; 从队列qid接收一个值，指定超时时间timeout_ms。成功返回接收到的value，失败返回#undefined。
+(System.read  qid:number(uint)  timeout_ms:number(uint) )
+```
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以自行构造一些合理的测试用例。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

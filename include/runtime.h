@@ -98,6 +98,9 @@ typedef struct am_runtime_t {
     am_list_t *output_fifo;  // 输出 FIFO（存储 wchar 值）
     am_list_t *error_fifo;   // 错误 FIFO（存储 wchar 值）
 
+    am_list_t *queue_list;   // 队列列表：List<am_queue_t*>
+    size_t queue_next_id;    // 下一个队列编号，从 1 开始递增
+
     void (*callback_on_tick)(am_runtime_t *rt);   // 每个 Tick 结束后触发
     void (*callback_on_event)(am_runtime_t *rt);  // 每个事件循环结束后触发
     void (*callback_on_halt)(am_runtime_t *rt);   // 虚拟机进入 IDLE 后触发
@@ -144,6 +147,53 @@ am_pid_t am_load_module(am_runtime_t *rt, am_module_t *mod);
 
 // 启动虚拟机主循环，直到所有进程执行结束进入 IDLE。
 void am_start(am_runtime_t *rt);
+
+
+///////////////////////////////////////////
+// 队列 IPC 基础设施
+///////////////////////////////////////////
+
+typedef struct am_queue_waiter_t am_queue_waiter_t;
+typedef struct am_queue_t am_queue_t;
+
+// 队列阻塞等待者
+struct am_queue_waiter_t {
+    am_pid_t pid;                 // 阻塞的进程 ID
+    am_value_t value;             // 发送等待者要写入的值（接收等待者忽略）
+    am_timestamp_t deadline_ms;   // 超时绝对时间（毫秒）
+    bool is_writer;               // true=发送等待者，false=接收等待者
+    am_queue_waiter_t *next;      // 链表下一个节点
+};
+
+// 多生产者多消费者 FIFO 队列
+struct am_queue_t {
+    size_t id;                    // 队列编号
+    size_t capacity;              // 最大容量
+    am_list_t *items;             // 数据项列表（FIFO）
+    am_queue_waiter_t *send_waiters; // 等待可写的发送者链表
+    am_queue_waiter_t *recv_waiters; // 等待可读的接收者链表
+};
+
+// 根据 ID 查找队列。成功返回指针，失败返回 NULL。
+am_queue_t *am_runtime_get_queue(am_runtime_t *rt, size_t queue_id);
+
+// 创建一个容量为 capacity 的队列。成功返回队列指针，失败返回 NULL。
+am_queue_t *am_runtime_queue_create(am_runtime_t *rt, size_t capacity);
+
+// 销毁队列并释放其占用的全部资源。成功返回 0，失败返回 -1。
+int32_t am_runtime_queue_destroy(am_runtime_t *rt, am_queue_t *q);
+
+// 尝试/阻塞地向队列写入一个值。由 native_System.write 调用。
+// 立即成功、立即失败或超时失败时都会直接修改 proc 的操作数栈并步进 PC；
+// 进入阻塞时设置进程状态并返回 0，不步进 PC。
+int32_t am_runtime_queue_write(am_runtime_t *rt, am_queue_t *q, am_value_t value,
+                               am_timestamp_t timeout_ms, am_process_t *proc);
+
+// 尝试/阻塞地从队列读取一个值。由 native_System.read 调用。
+// 立即成功、立即失败或超时失败时都会直接修改 proc 的操作数栈并步进 PC；
+// 进入阻塞时设置进程状态并返回 0，不步进 PC。
+int32_t am_runtime_queue_read(am_runtime_t *rt, am_queue_t *q, am_timestamp_t timeout_ms,
+                              am_process_t *proc);
 
 
 ///////////////////////////////////////////
