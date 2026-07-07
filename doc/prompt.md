@@ -3839,6 +3839,22 @@ wchar_t *am_js_to_scheme(const wchar_t *js_source);
 
 ---------------------
 
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。当前，在 @src/native_System.c 和 @include/native_System.h 中实现的 am_native_System_exec 函数，其功能为执行宿主环境的shell命令。但是，现在我希望把它彻底修改成类似于Linux系统调用 execve 的功能，即：接收一个Scheme源码字符串，将其编译成module后，用module中的ILCode、静态数据对象等内容，彻底替换掉当前所在的process的全部内容，并从头开始执行。
+
+修改后的 (System.exec codepath) 接收一个参数，即Scheme源码。失败则返回（压栈）-1；成功则无所谓返回，因exec这条指令已经被替换掉了。
+
+期望的功能是与System.fork搭配使用，最常见的用法就是在fork出来的子进程中执行System.exec，彻底替换掉fork出来的子进程，实现同Linux类似的创建进程。
+
+注意事项如下：
+
+- 你可以参考 @main.c ，该函数作为整个解释器的入口，演示了从Scheme源码出发，如何编译并转换得到一个module。但是 @main.c 中还演示了模块的dump/load以及压缩解压等过程，这部分不要在System.exec中实现。
+- 关于本地宿主函数（native函数）的实现方式，你可以参考 @src/native_String.c 等native函数实现。务必注意每个函数实现的“套路”，也就是出栈入栈、TPV（am_value_t）与具体值类型的转化、堆对象的存取和增删改、handle机制、调用step函数以PC++等机制。这些机制有的被封装在工具函数中了，你要注意发现它们，不要遗漏。
+- 必须谨慎处理 proc->ilcode 等容器类数据结构的扩容和realloc导致的指针变化。
+- 注意清理分析和编译的中间产物。
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以自行构造一些合理的Scheme代码作为测试输入。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

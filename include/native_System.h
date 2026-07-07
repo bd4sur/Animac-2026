@@ -16,8 +16,9 @@ extern "C" {
 extern const am_native_lib_entry_t am_native_System_lib;
 
 
-// (System.exec cmd:String) : String
-// 同步执行 shell 命令，返回标准输出字符串。
+// (System.exec code:String) : Number|-1
+// 将 Scheme 源码编译成 module，原地替换当前 process 的全部内容并从 PC=0 开始执行。
+// 失败时压栈 -1 并继续执行。
 int32_t am_native_System_exec(am_runtime_t *rt, am_process_t *proc);
 
 // (System.set_timeout time_ms:Number callback:(void->undefined)) : Number

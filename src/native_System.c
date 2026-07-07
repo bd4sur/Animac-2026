@@ -10,10 +10,16 @@
 
 #include "wstring.h"
 #include "parser.h"
+#include "linker.h"
 #include "compiler.h"
 #include "module.h"
 #include "heap.h"
 #include "ast.h"
+
+
+// 前向声明：System.eval 的辅助函数，供 System.exec 复用
+static wchar_t *eval_wstring_to_vm_buffer(am_process_t *proc, am_wstring_t *ws);
+static wchar_t *eval_make_path(am_allocator_t *alloc, const wchar_t *base_dir);
 
 
 // ===============================================================================
@@ -516,76 +522,174 @@ static am_pid_t am_fork_runtime_add_process(am_runtime_t *rt, am_process_t *proc
 // Native 函数实现
 // ===============================================================================
 
-// (System.exec cmd:String) : String
-// 同步执行 shell 命令，返回标准输出字符串。
+// ===============================================================================
+// System.exec 内部辅助函数
+// ===============================================================================
+
+// exec 失败时压栈 -1，并步进到下一条指令。
+static int32_t exec_push_failure(am_process_t *proc) {
+    if (am_process_push_operand(proc, am_make_value_of_int(-1)) != 0) return -1;
+    am_process_step(proc);
+    return 0;
+}
+
+
+// 释放编译产生的 module（ilcode + ast + module 结构体本身）。
+static void exec_free_module(am_allocator_t *vm_alloc, am_module_t *mod) {
+    if (!mod) return;
+    if (mod->ilcode) am_free(vm_alloc, mod->ilcode);
+    if (mod->ast) am_ast_destroy(mod->ast);
+    am_free(vm_alloc, mod);
+}
+
+
+// 用 new_proc 的内容原地替换 proc，保持 proc 指针不变（调用链持有该指针）。
+static int32_t exec_replace_process(am_process_t *proc, am_process_t *new_proc) {
+    if (!proc || !new_proc) return -1;
+
+    am_pid_t old_pid = proc->pid;
+    am_pid_t old_parent_pid = proc->parent_pid;
+
+    // 释放旧进程占用的全部资源
+    if (proc->ilcode) {
+        am_free(proc->vm_alloc, proc->ilcode);
+        proc->ilcode = NULL;
+    }
+    if (proc->opstack) {
+        am_free(proc->vm_alloc, proc->opstack);
+        proc->opstack = NULL;
+        proc->opstack_top = NULL;
+    }
+    if (proc->fstack) {
+        am_free(proc->vm_alloc, proc->fstack);
+        proc->fstack = NULL;
+        proc->fstack_top = NULL;
+    }
+    if (proc->var_type) {
+        am_list_destroy(proc->vm_alloc, proc->var_type);
+        proc->var_type = NULL;
+    }
+    if (proc->natives) {
+        am_map_destroy(proc->vm_alloc, proc->natives);
+        proc->natives = NULL;
+    }
+    if (proc->var_top) {
+        am_list_destroy(proc->vm_alloc, proc->var_top);
+        proc->var_top = NULL;
+    }
+    if (proc->var_arn_mapping) {
+        am_map_destroy(proc->vm_alloc, proc->var_arn_mapping);
+        proc->var_arn_mapping = NULL;
+    }
+    if (proc->strindex) {
+        am_strindex_destroy(proc->vm_alloc, proc->strindex);
+        proc->strindex = NULL;
+    }
+    if (proc->heap) {
+        am_heap_destroy(proc->vm_alloc, proc->heap_alloc, proc->heap);
+        proc->heap = NULL;
+    }
+
+    // 整体替换为 new_proc 的内容
+    memcpy(proc, new_proc, sizeof(am_process_t));
+    proc->pid = old_pid;
+    proc->parent_pid = old_parent_pid;
+    proc->state = AM_PROCESS_STATE_RUNNING;
+    proc->PC = 0;
+    proc->current_closure_handle = AM_HANDLE_NULL;
+
+    // new_proc 结构体本身不再使用，其字段已归属 proc
+    am_free(proc->vm_alloc, new_proc);
+    return 0;
+}
+
+
+// (System.exec code:String) : Number|-1
+// 将 Scheme 源码编译成 module，原地替换当前 process 的全部内容并从 PC=0 开始执行。
+// 失败时压栈 -1 并继续执行。
 int32_t am_native_System_exec(am_runtime_t *rt, am_process_t *proc) {
-    (void)rt;
-    char *cmd = NULL;
-    if (!native_pop_wstring_as_mb(proc, &cmd)) return -1;
+    if (!rt || !proc || !proc->heap) return -1;
 
-    FILE *fp = popen(cmd, "r");
-    am_free(proc->heap_alloc, cmd);
-    if (!fp) {
-        // 执行失败：返回空字符串
-        return native_push_wstring_buf(proc, L"", 0);
-    }
+    // 弹出源码字符串对象
+    am_value_t code_val = am_process_pop_operand(proc);
+    if (!am_value_is_handle(code_val)) return -1;
 
-    // 读取标准输出
-    size_t cap = 256;
-    size_t len = 0;
-    char *out = (char *)am_malloc(proc->heap_alloc, cap);
-    if (!out) {
-        pclose(fp);
+    am_handle_t code_h = am_value_to_handle(code_val);
+    am_value_t code_obj = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, code_h);
+    if (!am_value_is_ptr(code_obj)) return -1;
+
+    am_object_t *obj = am_value_to_ptr(code_obj);
+    if (obj->type != AM_OBJECT_TYPE_WSTRING) return -1;
+
+    wchar_t *code_buf = eval_wstring_to_vm_buffer(proc, (am_wstring_t *)obj);
+    if (!code_buf) return -1;
+
+    wchar_t *path_buf = eval_make_path(proc->vm_alloc, rt->working_dir);
+    if (!path_buf) {
+        am_free(proc->vm_alloc, code_buf);
         return -1;
     }
 
-    char buf[256];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
-        if (len + n + 1 > cap) {
-            size_t new_cap = cap * 2;
-            while (len + n + 1 > new_cap) new_cap *= 2;
-            char *new_out = (char *)am_malloc(proc->heap_alloc, new_cap);
-            if (!new_out) {
-                am_free(proc->heap_alloc, out);
-                pclose(fp);
-                return -1;
-            }
-            memcpy(new_out, out, len);
-            am_free(proc->heap_alloc, out);
-            out = new_out;
-            cap = new_cap;
-        }
-        memcpy(out + len, buf, n);
-        len += n;
+    // 包装成顶层 thunk 形式，与 main.c 保持一致
+    const wchar_t *prefix = L"((lambda () \n";
+    const wchar_t *suffix = L"\n))";
+    size_t code_len = wcslen(code_buf);
+    size_t wrapped_len = wcslen(prefix) + code_len + wcslen(suffix);
+    wchar_t *wrapped_code = (wchar_t *)am_malloc(proc->vm_alloc,
+                                                  (wrapped_len + 1) * sizeof(wchar_t));
+    if (!wrapped_code) {
+        am_free(proc->vm_alloc, code_buf);
+        am_free(proc->vm_alloc, path_buf);
+        return exec_push_failure(proc);
+    }
+    wcscpy(wrapped_code, prefix);
+    wcscat(wrapped_code, code_buf);
+    wcscat(wrapped_code, suffix);
+
+    // 解析、链接、编译
+    am_ast_t *ast = am_parse(proc->vm_alloc, wrapped_code, path_buf, 0);
+    if (!ast) goto fail;
+
+    am_ast_t *linked = am_link(ast, rt->working_dir);
+    if (!linked) {
+        am_ast_destroy(ast);
+        goto fail;
     }
 
-    int status = pclose(fp);
-    if (status != 0 && len == 0) {
-        // 命令执行出错且无输出：返回空字符串
-        am_free(proc->heap_alloc, out);
-        return native_push_wstring_buf(proc, L"", 0);
+    am_module_t *mod = am_compile(linked, 0, 0);
+    if (!mod) {
+        am_ast_destroy(linked);
+        goto fail;
     }
 
-    // 转换为宽字符串
-    size_t wlen = mbstowcs(NULL, out, 0);
-    if (wlen == (size_t)-1) {
-        am_free(proc->heap_alloc, out);
-        return native_push_wstring_buf(proc, L"", 0);
+    // 从 module 构造新进程
+    am_process_t *new_proc = am_process_load_from_module(proc->vm_alloc, proc->heap_alloc, mod);
+    if (!new_proc) {
+        exec_free_module(proc->vm_alloc, mod);
+        goto fail;
     }
 
-    wchar_t *wout = (wchar_t *)am_malloc(proc->heap_alloc, (wlen + 1) * sizeof(wchar_t));
-    if (!wout) {
-        am_free(proc->heap_alloc, out);
-        return -1;
+    // 原地替换当前进程内容
+    if (exec_replace_process(proc, new_proc) != 0) {
+        am_process_destroy(new_proc);
+        exec_free_module(proc->vm_alloc, mod);
+        goto fail;
     }
-    mbstowcs(wout, out, wlen + 1);
-    wout[wlen] = L'\0';
-    am_free(proc->heap_alloc, out);
 
-    int32_t ret = native_push_wstring_buf(proc, wout, wlen);
-    am_free(proc->heap_alloc, wout);
-    return ret;
+    // 清理编译中间产物
+    exec_free_module(proc->vm_alloc, mod);
+    am_free(proc->vm_alloc, wrapped_code);
+    am_free(proc->vm_alloc, code_buf);
+    am_free(proc->vm_alloc, path_buf);
+
+    // 成功：proc 已经被替换，PC=0，无需压栈
+    return 0;
+
+fail:
+    am_free(proc->vm_alloc, wrapped_code);
+    am_free(proc->vm_alloc, code_buf);
+    am_free(proc->vm_alloc, path_buf);
+    return exec_push_failure(proc);
 }
 
 
@@ -669,7 +773,9 @@ int32_t am_native_System_clear_interval(am_runtime_t *rt, am_process_t *proc) {
 int32_t am_native_System_timestamp(am_runtime_t *rt, am_process_t *proc) {
     (void)rt;
     am_timestamp_t now = am_runtime_now_ms();
-    return native_push_float_or_null(proc, (am_float_t)now);
+    if (am_process_push_operand(proc, am_make_value_of_uint(now)) != 0) return -1;
+    am_process_step(proc);
+    return 0;
 }
 
 

@@ -1,19 +1,18 @@
 TODO 所有代码文件加am_前缀
 
-TODO 实现JS->scm前端翻译器
-
 NOTE 回归测试使用哪些用例：
 
 - test.scm
-- fork.scm
 - mlp.scm
 - nano_llm_infer.scm
 - sleepsort.scm
 - yinyang.scm
 - yinyang_cps.scm
+- test_fork.scm
 - test_table.scm
 - test_eval.scm
 - test_macro.scm
+- test_mec.scm
 
 TODO ast->node无法扩容？am_heap_set实现似乎有问题，为什么不调用map现成接口？
 

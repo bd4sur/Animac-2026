@@ -1,28 +1,42 @@
+;; 辅助测试宏：assert
+(define-syntax assert
+  (syntax-rules ()
+    ((_ expr)
+     (if (not expr)
+         {
+           (display "❌ FAIL")
+           (display 'expr)
+           (newline)
+           (error "Test Failed")
+         } {
+           (display "✅ PASS")
+           (newline)
+         }))))
+
+;; ================= 1. my-if =================
 (define-syntax my-if
   (syntax-rules ()
     ((_ c t f) (if c t f))))
 
-(display (my-if #t 1 2))
-(newline)
-(display (my-if #f 1 2))
-(newline)
+(display "1. my-if test:") (newline)
+(display (my-if #t 1 2)) (newline)
+(display (my-if #f 1 2)) (newline)
+(assert (eqv? (my-if #t 1 2) 1))
+(assert (eqv? (my-if #f 1 2) 2))
 
-
-
-
+;; ================= 2. my-begin =================
 (define-syntax my-begin
   (syntax-rules ()
-    ((_ e ...) {e ...})))
+    ((_ e ...) { e ...})))
 
+(display "2. my-begin test:") (newline)
 (my-begin
   (display 1)
   (display 2)
   (display 3)
   (newline))
 
-
-
-
+;; ================= 3. my-or =================
 (define tmp 100)
 
 (define-syntax my-or
@@ -30,77 +44,64 @@
     ((_ a b)
      ((lambda (tmp) (if tmp tmp b)) a))))
 
+(display "3. my-or test:") (newline)
 (display (my-or #f 42)) (newline)
 (display tmp) (newline)
+(assert (eqv? (my-or #f 42) 42))
+(assert (eqv? tmp 100)) ; 验证卫生宏：内部 tmp 未捕获全局 tmp
 
-
-
-
-
-
+;; ================= 4. let-syntax =================
 (define global 100)
 
+(display "4. let-syntax test:") (newline)
 (let-syntax ((local (syntax-rules () ((_) 42))))
   (display (local)) (newline)
-  (display global) (newline))
+  (display global) (newline)
+  (assert (eqv? (local) 42)))
 
-(let-syntax ((twice (syntax-rules () ((_ body) (begin body body)))))
+(let-syntax ((twice (syntax-rules () ((_ body) {body body}))))
   (twice (display 1)))
 (newline)
 
 (display global) (newline)
+(assert (eqv? global 100))
 
-
-
-
-
-
-
+;; ================= 5. my-when =================
 (define-syntax my-when
   (syntax-rules (else)
-    ((_ test e1 e2 ...) (if test (begin e1 e2 ...) #f))
-    ((_ else e1 e2 ...) (begin e1 e2 ...))))
+    ((_ test e1 e2 ...) (if test {e1 e2 ...} #f))
+    ((_ else e1 e2 ...) {e1 e2 ...})))
 
+(display "5. my-when test:") (newline)
 (my-when #t (display 1) (display 2))
 (newline)
 (my-when else (display 3))
 (newline)
+(assert (eqv? (my-when #t 10 20) 20))
+(assert (eqv? (my-when #f 10 20) #f))
+(assert (eqv? (my-when else 10 20) 20)) ; 验证字面量 else
 
-
-
-
-
-
-
-
+;; ================= 6. inc! and double-inc! =================
 (define-syntax inc!
   (syntax-rules ()
     ((_ x) (set! x (+ x 1)))))
 
 (define-syntax double-inc!
   (syntax-rules ()
-    ((_ x) (begin (inc! x) (inc! x)))))
+    ((_ x) { (inc! x) (inc! x) })))
 
 (define n 0)
 (double-inc! n)
-(display n) (newline)
+(display "6. inc! test: ") (display n) (newline)
+(assert (eqv? n 2))
 
-
-
-
-
-
+;; ================= 7. unused =================
 (define-syntax unused
   (syntax-rules ()
     ((_ x) x)))
-(display 42)
-(newline)
+(display "7. unused test: ") (display 42) (newline)
 
-
-
-
-
-
+;; ================= 8. swap! =================
 (define-syntax swap!
   (syntax-rules ()
     ((swap! a b)
@@ -111,30 +112,24 @@
 
 (define a 1)
 (define b 2)
+(display "8. swap! test: ") (newline)
 (display "交换前  a=") (display a) (display "  b=") (display b) (newline)
 (swap! a b)
 (display "交换后  a=") (display a) (display "  b=") (display b) (newline)
+(assert (eqv? a 2))
+(assert (eqv? b 1))
 
-
-
-
-
-
-
-
-
+;; ================= 9. with-x =================
 (define-syntax with-x
   (syntax-rules ()
     ((_ x body) ((lambda (x) body) 42))))
 
 (define x 999)
-(display (with-x x x)) (newline)
+(display "9. with-x test: ") (display (with-x x x)) (newline)
+(assert (eqv? (with-x x x) 42))
+(assert (eqv? x 999)) ; 验证全局 x 未被污染
 
-
-
-
-
-
+;; ================= 10. my_for =================
 (define-syntax my_for
   (syntax-rules (to do)
     ((my_for var from start to end do body ...)
@@ -151,9 +146,12 @@
 (define sum 0)
 (define i 999)
 
+(display "10. my_for test:") (newline)
 (my_for i from 1 to 5 do
   (display i) (newline)
   (set! sum (+ sum i)))
 
 (display "my_for  sum=") (display sum) (display "  i=") (display i) (newline)
+(assert (eqv? sum 15))
+(assert (eqv? i 999)) ; 全局 i 被遮蔽，保持 999 不变
 
