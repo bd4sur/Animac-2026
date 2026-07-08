@@ -85,6 +85,8 @@ typedef struct am_process_t {
     am_value_t *fstack;
     am_value_t *fstack_top; // fstack栈顶指针，注意每次操作加减2个元素
     size_t fstack_capacity; // fstack容量（am_value_t元素个数）
+
+    void *host_context;     // 宿主提供的不透明上下文
 } am_process_t;
 
 

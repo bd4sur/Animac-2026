@@ -232,6 +232,7 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
     proc->state = AM_PROCESS_STATE_READY;
     proc->PC = 0;
     proc->current_closure_handle = AM_HANDLE_NULL;
+    proc->host_context = NULL;
 
     // 复制中间语言代码到进程
     proc->ilcode_length = mod->ilcode_length;

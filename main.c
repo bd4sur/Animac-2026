@@ -249,9 +249,15 @@ static void test_runtime_load_from_wstring(wchar_t *code, char *path) {
     printf("Module loaded: opstack_depth=%zu, ilcode_length=%zu\n",
            mod_loaded->opstack_depth, (size_t)mod_loaded->ilcode_length);
 
-
+    // 创建VM实例
     am_runtime_t *rt = am_runtime_create(vm_alloc, heap_alloc, base_dir_w_reload);
     assert(rt != NULL);
+
+    // 设置默认时间片长度（ticks）
+    am_runtime_set_default_timeslice(rt, 8192);
+
+    // 设置宿主上下文
+    am_set_runtime_host_context(rt, NULL);
 
     // 注册内置 native 库
     am_runtime_register_native_lib(rt, &am_native_System_lib);
@@ -260,18 +266,24 @@ static void test_runtime_load_from_wstring(wchar_t *code, char *path) {
     am_runtime_register_native_lib(rt, &am_native_LLM_lib);
     am_runtime_register_native_lib(rt, &am_native_Table_lib);
 
+    // 设置VM回调函数
     rt->callback_on_halt = on_halt;
     rt->callback_on_error = on_error;
     rt->callback_on_tick = on_tick;
 
-    am_pid_t pid1 = am_load_module(rt, mod_loaded);
-    (void)pid1;
-    // am_pid_t pid2 = am_load_module(rt, mod);
+    // 加载模块为新进程
+    am_pid_t pid1 = am_runtime_load_module(rt, mod_loaded);
 
-    printf("=== VM output ===\n");
-    am_start(rt);
-    printf("\n=== VM halted ===\n");
+    // 设置进程的宿主上下文
+    am_process_t *proc = am_rumtime_get_process_by_pid(rt, pid1);
+    am_set_process_host_context(rt, proc, NULL);
 
+    // am_pid_t pid2 = am_runtime_load_module(rt, mod);
+
+    // 启动解释器
+    am_runtime_start(rt);
+
+    // 释放资源
     am_runtime_destroy(rt);
     free(module_buffer);
     free(base_dir);

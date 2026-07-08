@@ -338,7 +338,7 @@ static int32_t am_repl_run(const wchar_t *code) {
     rt->callback_on_halt = am_repl_on_halt;
     rt->callback_on_error = am_repl_on_error;
 
-    am_pid_t pid = am_load_module(rt, mod_loaded);
+    am_pid_t pid = am_runtime_load_module(rt, mod_loaded);
     if (pid == (am_pid_t)-1) {
         fwprintf(stderr, L"[REPL Error] 加载模块到运行时失败\n");
         fflush(stderr);
@@ -348,7 +348,7 @@ static int32_t am_repl_run(const wchar_t *code) {
     }
 
     g_should_print_prompt = 0;
-    am_start(rt);
+    am_runtime_start(rt);
     am_repl_flush_output_fifo(rt);
 
     am_runtime_destroy(rt);

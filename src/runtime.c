@@ -1739,8 +1739,12 @@ am_runtime_t *am_runtime_create(am_allocator_t *vm_alloc, am_allocator_t *heap_a
     rt->gc_count = 0;
     rt->gc_timestamp = time(NULL);
 
+    rt->timeslice = 8192;
+
     rt->timer_list = NULL;
     rt->timer_next_id = 1;
+
+    rt->host_context = NULL;
 
     return rt;
 }
@@ -2001,8 +2005,42 @@ am_process_t *am_runtime_get_process(am_runtime_t *rt, am_pid_t pid) {
 }
 
 
-am_pid_t am_load_module(am_runtime_t *rt, am_module_t *mod) {
-    return am_runtime_load_module(rt, mod);
+void am_runtime_set_default_timeslice(am_runtime_t *rt, uint32_t ticks) {
+    if (!rt) return;
+    rt->timeslice = ticks;
+}
+
+
+am_process_t *am_rumtime_get_process_by_pid(am_runtime_t *rt, am_pid_t pid) {
+    return am_runtime_get_process(rt, pid);
+}
+
+
+int32_t am_set_runtime_host_context(am_runtime_t *rt, void *ctx) {
+    if (!rt) return -1;
+    rt->host_context = ctx;
+    return 0;
+}
+
+
+void *am_get_runtime_host_context(am_runtime_t *rt) {
+    if (!rt) return NULL;
+    return rt->host_context;
+}
+
+
+int32_t am_set_process_host_context(am_runtime_t *rt, am_process_t *proc, void *ctx) {
+    (void)rt;
+    if (!proc) return -1;
+    proc->host_context = ctx;
+    return 0;
+}
+
+
+void *am_get_process_host_context(am_runtime_t *rt, am_process_t *proc) {
+    (void)rt;
+    if (!proc) return NULL;
+    return proc->host_context;
 }
 
 
@@ -2249,7 +2287,7 @@ int32_t am_runtime_event_handler(am_runtime_t *rt) {
     // NOTE 此处时间片的长度，决定了GC的时间粒度。若GC间隔过长，可能导致峰值内存需求较大时，内存分配失败，即使空闲够用。
     int32_t vm_state = AM_VM_STATE_IDLE;
     for (int i = 0; i < AM_COMPUTATION_PHASE_LENGTH; i++) {
-        vm_state = am_runtime_tick(rt, 8192);
+        vm_state = am_runtime_tick(rt, rt->timeslice);
         if (vm_state == AM_VM_STATE_IDLE) break;
     }
 

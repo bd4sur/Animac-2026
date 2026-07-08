@@ -1845,8 +1845,8 @@ am_runtime_start(am_runtime_t *rt) {
 am_module_t mod = am_compile(am_ast_t *ast, am_iaddr_t offset, am_iaddr_t ret);
 // 中间可以有dump/load
 am_runtime_t rt = am_runtime_create(wchar_t *base_dir, ...);
-am_load_module(rt, mod);
-am_start(rt);
+am_runtime_load_module(rt, mod);
+am_runtime_start(rt);
 ```
 
 请你实现上述需求。你可以使用WSL进行编译构建和测试。
@@ -4085,12 +4085,61 @@ wchar_t *am_js_to_scheme(const wchar_t *js_source);
 
 ---------------------
 
+2026-07-08
+
+根据你的分析，尝试消除 @src/compiler.c 中所有libc提供的malloc/calloc/realloc，转为通过allocator在内存池上进行分配。这样当链接-编译过程结束后，所有临时东西都被一次性清除。其中需要重点处理的是ilcode，它在编译完成后应当移交给module。现在只是移交指针，修改后可能要复制。
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
+2026-07-08
+
+为什么 emit_instruction 每次都要 realloc ？为什么不事先分配一整块、再按需扩容？先回答问题，得到允许前不要修改代码。
+
+OK，按照你的建议进行修改，增加ilcode的容量字段、并按需扩容。
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
+2026-07-08
+
+在 @src/map.c 中实现的 am_map_keys 函数，返回了一个用系统malloc分配的key副本列表。我要求你将其改成返回通过allocator分配的数组。所有调用处对应的free也要修改。另外，调用者所使用的allocator，应当尽量使用VM区（工作区）。
+
+这个需求波及面比较广，务必谨慎修改。
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以使用WSL进行编译构建和测试。
+
+---------------------
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。首先在 @src/runtime.c 和 @include/runtime.h 中实现下列两个简单函数。
+
+```
+// 直接设置rt->timeslice字段（单位：VM指令周期数）
+void am_runtime_set_default_timeslice(am_runtime_t *rt, uint32_t ticks);
+// 根据pid返回对应的process对象。若失败，返回NULL。
+am_process_t *am_rumtime_get_process_by_pid(am_runtime_t *rt, am_pid_t pid);
+```
+
+为了使得解释器与宿主环境互操作时能够持有宿主的上下文，以便Scheme层面对宿主上下文进行操作，为Runtime和每个Process都增加一个宿主上下文 void *host_context 字段，由宿主提供，解释器对其不做任何解释和检查，因此是所谓的“不透明”数据，类似QuickJS的opaque。通过以下函数进行设置和访问。
+
+在 @src/runtime.c 和 @include/runtime.h 中实现：
+
+```
+// 设置VM的全局宿主上下文
+int32_t am_set_runtime_host_context(am_runtime_t *rt, void *ctx);
+// 获取VM的全局宿主上下文
+void *am_get_runtime_host_context(am_runtime_t *rt);
+// 设置某进程的宿主上下文
+int32_t am_set_process_host_context(am_runtime_t *rt, am_process_t *proc, void *ctx);
+// 获取某进程的宿主上下文
+void *am_get_process_host_context(am_runtime_t *rt, am_process_t *proc);
+```
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

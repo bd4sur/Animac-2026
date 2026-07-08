@@ -110,8 +110,12 @@ typedef struct am_runtime_t {
     size_t gc_count;         // 全局 GC 周期计数器
     time_t gc_timestamp;     // GC 时间戳
 
+    uint32_t timeslice;      // 默认时间片长度（单位：VM指令周期数）
+
     am_timer_t *timer_list;  // 定时器链表头
     size_t timer_next_id;    // 下一个定时器编号
+
+    void *host_context;      // 宿主提供的全局不透明上下文
 } am_runtime_t;
 
 
@@ -143,10 +147,10 @@ int32_t am_runtime_register_native_lib(am_runtime_t *rt, const am_native_lib_ent
 ///////////////////////////////////////////
 
 // 将模块加载到运行时中，创建并启动一个进程。成功返回 PID，失败返回 -1。
-am_pid_t am_load_module(am_runtime_t *rt, am_module_t *mod);
+am_pid_t am_runtime_load_module(am_runtime_t *rt, am_module_t *mod);
 
 // 启动虚拟机主循环，直到所有进程执行结束进入 IDLE。
-void am_start(am_runtime_t *rt);
+void am_runtime_start(am_runtime_t *rt);
 
 
 ///////////////////////////////////////////
@@ -205,6 +209,20 @@ am_pid_t am_runtime_load_module(am_runtime_t *rt, am_module_t *mod);
 
 // 根据 PID 获取进程。成功返回进程指针，失败返回 NULL。
 am_process_t *am_runtime_get_process(am_runtime_t *rt, am_pid_t pid);
+
+// 直接设置 rt->timeslice 字段（单位：VM指令周期数）
+void am_runtime_set_default_timeslice(am_runtime_t *rt, uint32_t ticks);
+
+// 根据 pid 返回对应的 process 对象。若失败，返回 NULL。
+am_process_t *am_rumtime_get_process_by_pid(am_runtime_t *rt, am_pid_t pid);
+
+// 设置/获取 VM 的全局宿主上下文（不透明数据）。设置成功返回 0，失败返回 -1。
+int32_t am_set_runtime_host_context(am_runtime_t *rt, void *ctx);
+void *am_get_runtime_host_context(am_runtime_t *rt);
+
+// 设置/获取某进程的宿主上下文（不透明数据）。设置成功返回 0，失败返回 -1。
+int32_t am_set_process_host_context(am_runtime_t *rt, am_process_t *proc, void *ctx);
+void *am_get_process_host_context(am_runtime_t *rt, am_process_t *proc);
 
 
 ///////////////////////////////////////////
