@@ -630,12 +630,12 @@ static int macro_match_list(am_macro_expand_ctx_t *ctx, am_macro_t *macro,
             for (size_t j = 0; j < key_count; j++) {
                 am_value_t val = am_map_get(NULL, sub_ctx.subst, keys[j]);
                 if (macro_ellipsis_list_append(ctx, am_value_to_varid(keys[j]), val) != 0) {
-                    free(keys);
+                    am_free(ctx->ast->alloc, keys);
                     am_map_destroy(ctx->ast->alloc, sub_ctx.subst);
                     return -1;
                 }
             }
-            free(keys);
+            am_free(ctx->ast->alloc, keys);
         }
         am_map_destroy(ctx->ast->alloc, sub_ctx.subst);
         if (ok != 0) return -1;

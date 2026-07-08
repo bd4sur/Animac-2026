@@ -98,7 +98,7 @@ int32_t am_heap_destroy(am_allocator_t *container_alloc, am_allocator_t *obj_all
             }
             am_map_delete(container_alloc, heap->table, keys[i]);
         }
-        free(keys);
+        am_free(container_alloc, keys);
         am_map_destroy(container_alloc, heap->table);
     }
 

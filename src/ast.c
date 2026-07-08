@@ -480,14 +480,14 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
                 am_map_t *m = am_map_set(importer->alloc, importer->dependencies,
                                           new_varid_val, new_h_val);
                 if (!m) {
-                    free(dep_keys);
+                    am_free(importee->alloc, dep_keys);
                     free(node_ctx.entries);
                     return -1;
                 }
                 importer->dependencies = m;
             }
         }
-        if (dep_keys) free(dep_keys);
+        am_free(importee->alloc, dep_keys);
     }
 
     // 迁移 natives
@@ -503,14 +503,14 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
                 am_map_t *m = am_map_set(importer->alloc, importer->natives,
                                           new_varid_val, new_h_val);
                 if (!m) {
-                    free(nat_keys);
+                    am_free(importee->alloc, nat_keys);
                     free(node_ctx.entries);
                     return -1;
                 }
                 importer->natives = m;
             }
         }
-        if (nat_keys) free(nat_keys);
+        am_free(importee->alloc, nat_keys);
     }
 
     // 第三遍扫描：替换所有 list 节点 children 中的 symbol/varid/handle

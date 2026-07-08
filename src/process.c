@@ -965,7 +965,7 @@ int32_t am_process_gc_root(am_process_t *proc, am_list_t **gcroots) {
     // 分析所有已保存的续体环境中的GC根
     // 遍历堆中所有对象，找到continuation对象
     size_t heap_count = am_map_length(proc->heap_alloc, proc->heap->table);
-    am_value_t *keys = am_map_keys(proc->heap_alloc, proc->heap->table);
+    am_value_t *keys = am_map_keys(proc->vm_alloc, proc->heap->table);
     if (!keys && heap_count > 0) return -1;
 
     int32_t ret = 0;
@@ -1005,7 +1005,7 @@ int32_t am_process_gc_root(am_process_t *proc, am_list_t **gcroots) {
         am_free(proc->vm_alloc, cont_fstack);
     }
 
-    free(keys);
+    am_free(proc->vm_alloc, keys);
     return ret;
 }
 
@@ -1093,7 +1093,7 @@ int32_t am_process_gc_sweep(am_process_t *proc) {
     size_t count = 0;
 
     size_t heap_count = am_map_length(proc->heap_alloc, proc->heap->table);
-    am_value_t *keys = am_map_keys(proc->heap_alloc, proc->heap->table);
+    am_value_t *keys = am_map_keys(proc->vm_alloc, proc->heap->table);
     if (!keys && heap_count > 0) return -1;
 
     for (size_t i = 0; i < heap_count; i++) {
@@ -1134,7 +1134,7 @@ int32_t am_process_gc_sweep(am_process_t *proc) {
         }
     }
 
-    free(keys);
+    am_free(proc->vm_alloc, keys);
 
     // printf("[GC] 已清理 %zu / %zu 个对象\n", gcount, count);
 
@@ -1162,7 +1162,7 @@ int32_t am_process_gc(am_process_t *proc) {
     // 将堆中所有 keepalive 对象也加入 GC 根，确保异步回调闭包及其引用的
     // 父闭包链、捕获变量等不会被 GC 回收。
     size_t heap_count = am_map_length(proc->heap_alloc, proc->heap->table);
-    am_value_t *keys = am_map_keys(proc->heap_alloc, proc->heap->table);
+    am_value_t *keys = am_map_keys(proc->vm_alloc, proc->heap->table);
     if (!keys && heap_count > 0) {
         ret = -1;
         goto cleanup;
@@ -1177,7 +1177,7 @@ int32_t am_process_gc(am_process_t *proc) {
             if (new_roots) gcroots = new_roots;
         }
     }
-    free(keys);
+    am_free(proc->vm_alloc, keys);
 
     // 从GC根对象开始递归标记存活对象
     for (size_t i = 0; i < gcroots->length; i++) {

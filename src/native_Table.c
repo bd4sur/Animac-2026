@@ -194,7 +194,7 @@ int32_t am_native_Table_keys(am_runtime_t *rt, am_process_t *proc) {
     if (!lst) return -1;
 
     if (count > 0) {
-        am_value_t *keys = am_map_keys(proc->heap_alloc, map);
+        am_value_t *keys = am_map_keys(proc->vm_alloc, map);
         if (!keys) {
             am_list_destroy(proc->heap_alloc, lst);
             return -1;
@@ -202,13 +202,13 @@ int32_t am_native_Table_keys(am_runtime_t *rt, am_process_t *proc) {
         for (size_t i = 0; i < count; i++) {
             am_list_t *new_lst = am_list_push(proc->heap_alloc, lst, keys[i]);
             if (!new_lst) {
-                free(keys);
+                am_free(proc->vm_alloc, keys);
                 am_list_destroy(proc->heap_alloc, lst);
                 return -1;
             }
             lst = new_lst;
         }
-        free(keys);
+        am_free(proc->vm_alloc, keys);
     }
 
     am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);

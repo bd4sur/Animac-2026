@@ -348,7 +348,7 @@ static int32_t am_fork_heap_deep_copy(am_fork_heap_ctx_t *ctx) {
 
         am_handle_t new_handle = am_heap_alloc_handle(ctx->vm_alloc, ctx->heap_alloc, ctx->dst_heap);
         if (new_handle == AM_HANDLE_NULL) {
-            free(keys);
+            am_free(ctx->vm_alloc, keys);
             return -1;
         }
 
@@ -357,7 +357,7 @@ static int32_t am_fork_heap_deep_copy(am_fork_heap_ctx_t *ctx) {
         if (old_obj) {
             new_obj = am_fork_heap_copy_object(ctx, old_obj);
             if (!new_obj) {
-                free(keys);
+                am_free(ctx->vm_alloc, keys);
                 return -1;
             }
             new_value = am_make_value_of_ptr(new_obj);
@@ -365,7 +365,7 @@ static int32_t am_fork_heap_deep_copy(am_fork_heap_ctx_t *ctx) {
 
         if (am_heap_set(ctx->vm_alloc, ctx->heap_alloc, ctx->dst_heap, new_handle, new_value) != 0) {
             if (new_obj) am_fork_heap_free_object(ctx->heap_alloc, new_obj);
-            free(keys);
+            am_free(ctx->vm_alloc, keys);
             return -1;
         }
 
@@ -374,7 +374,7 @@ static int32_t am_fork_heap_deep_copy(am_fork_heap_ctx_t *ctx) {
             am_fork_heap_mapping_t *new_entries = (am_fork_heap_mapping_t *)am_realloc(
                 ctx->vm_alloc, ctx->entries, new_capacity * sizeof(am_fork_heap_mapping_t));
             if (!new_entries) {
-                free(keys);
+                am_free(ctx->vm_alloc, keys);
                 return -1;
             }
             ctx->entries = new_entries;
@@ -387,7 +387,7 @@ static int32_t am_fork_heap_deep_copy(am_fork_heap_ctx_t *ctx) {
         ctx->entries[ctx->count].new_obj = new_obj;
         ctx->count++;
     }
-    free(keys);
+    am_free(ctx->vm_alloc, keys);
 
     // 第二遍：重映射各对象内部的把柄引用
     for (size_t i = 0; i < ctx->count; i++) {
@@ -1229,12 +1229,12 @@ static int32_t eval_migrate_natives(am_process_t *proc, am_ast_t *evalee, am_map
                                           ? am_make_value_of_handle(new_handle)
                                           : AM_VALUE_HANDLE_NULL);
         if (!new_m) {
-            free(keys);
+            am_free(evalee->alloc, keys);
             return -1;
         }
         proc->natives = new_m;
     }
-    free(keys);
+    am_free(evalee->alloc, keys);
     return 0;
 }
 
@@ -1262,14 +1262,14 @@ static int32_t eval_apply_symbol_mapping(am_ast_t *evalee, am_map_t *symbol_mapp
                 am_value_t new_child = am_map_get(evalee->alloc, symbol_mapping, child);
                 if (am_value_is_symbol(new_child) && new_child != child) {
                     if (am_list_set(evalee->alloc, lst, j, new_child) != 0) {
-                        free(keys);
+                        am_free(evalee->alloc, keys);
                         return -1;
                     }
                 }
             }
         }
     }
-    free(keys);
+    am_free(evalee->alloc, keys);
     return 0;
 }
 

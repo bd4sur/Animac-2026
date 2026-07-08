@@ -152,8 +152,8 @@ size_t am_map_capacity(am_allocator_t *alloc, am_map_t *map);
 // 遍历所有有效键值对，调用回调 cb
 void am_map_iter(am_allocator_t *alloc, am_map_t *map, am_map_iter_callback_t cb, void *user_data);
 
-// 获取所有 key 的副本列表，使用系统 malloc 分配。
-// 调用者负责使用 free() 释放返回的指针；size 为 0 时返回 NULL。
+// 获取所有 key 的副本列表，使用 allocator 分配。
+// 调用者负责使用 am_free(alloc, ...) 释放返回的指针；size 为 0 时返回 NULL。
 am_value_t *am_map_keys(am_allocator_t *alloc, am_map_t *map);
 
 #ifdef __cplusplus

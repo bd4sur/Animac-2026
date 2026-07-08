@@ -444,14 +444,14 @@ void am_map_iter(am_allocator_t *alloc, am_map_t *map, am_map_iter_callback_t cb
     }
 }
 
-// 获取所有 key 的副本列表，使用系统 malloc 分配。
-// 调用者负责使用 free() 释放返回的指针；size 为 0 时返回 NULL。
+// 获取所有 key 的副本列表，使用 allocator 分配。
+// 调用者负责使用 am_free(alloc, ...) 释放返回的指针；size 为 0 时返回 NULL。
 am_value_t *am_map_keys(am_allocator_t *alloc, am_map_t *map) {
-    (void)alloc;
+    if (!alloc || !map) return NULL;
     am_map_t *m = (am_map_t *)map;
     if (m->length == 0) return NULL;
 
-    am_value_t *keys = (am_value_t *)malloc(m->length * sizeof(am_value_t));
+    am_value_t *keys = (am_value_t *)am_malloc(alloc, m->length * sizeof(am_value_t));
     if (!keys) return NULL;
 
     size_t count = 0;

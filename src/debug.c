@@ -272,7 +272,7 @@ static void debug_ast_print_map_varid_to_handle(FILE *out, am_ast_t *ast, am_map
             fwprintf(out, L"null");
         }
     }
-    if (keys) free(keys);
+    if (keys) am_free(ast->alloc, keys);
     fputwc(L'}', out);
 }
 
@@ -334,7 +334,7 @@ static void debug_ast_print_var_arn_mapping(FILE *out, am_ast_t *ast, am_map_t *
             fwprintf(out, L"null");
         }
     }
-    if (keys) free(keys);
+    if (keys) am_free(ast->alloc, keys);
     fputwc(L'}', out);
 }
 
