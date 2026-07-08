@@ -303,7 +303,7 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
     }
 
     // 分配操作数栈
-    proc->opstack_capacity = (size_t)(mod->opstack_depth > 0 ? mod->opstack_depth : 1024);
+    proc->opstack_capacity = (size_t)(mod->opstack_depth > 0 ? mod->opstack_depth : 256);
     proc->opstack = (am_value_t *)am_calloc(vm_alloc, proc->opstack_capacity * sizeof(am_value_t));
     if (!proc->opstack) {
         am_heap_destroy(vm_alloc, heap_alloc, proc->heap);
@@ -314,7 +314,7 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
     proc->opstack_top = proc->opstack;
 
     // 分配函数调用栈
-    proc->fstack_capacity = 3000;
+    proc->fstack_capacity = 2048;
     proc->fstack = (am_value_t *)am_calloc(vm_alloc, proc->fstack_capacity * sizeof(am_value_t));
     if (!proc->fstack) {
         am_free(vm_alloc, proc->opstack);

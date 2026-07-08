@@ -176,10 +176,16 @@ static int32_t while_tag_stack_pop(am_compiler_ctx_t *ctx) {
 // 实现说明：成功返回0；失败返回-1
 static int32_t emit_instruction(am_compiler_ctx_t *ctx, uint32_t opcode, am_value_t operand) {
     if (!ctx) return -1;
-    am_instruction_t *new_ilcode = (am_instruction_t *)realloc(
-        ctx->ilcode, (ctx->icount + 1) * sizeof(am_instruction_t));
-    if (!new_ilcode) return -1;
-    ctx->ilcode = new_ilcode;
+
+    if (ctx->icount >= ctx->ilcode_capacity) {
+        am_iaddr_t new_cap = ctx->ilcode_capacity ? ctx->ilcode_capacity * 2 : 64;
+        am_instruction_t *new_ilcode = (am_instruction_t *)am_realloc(
+            ctx->ast->alloc, ctx->ilcode, new_cap * sizeof(am_instruction_t));
+        if (!new_ilcode) return -1;
+        ctx->ilcode = new_ilcode;
+        ctx->ilcode_capacity = new_cap;
+    }
+
     ctx->ilcode[ctx->icount].opcode = opcode;
     ctx->ilcode[ctx->icount].operand = operand;
     ctx->icount++;
@@ -552,16 +558,9 @@ static int32_t compile_lambda(am_compiler_ctx_t *ctx, am_handle_t handle) {
     }
 
     // 逐个编译函数体
-    size_t n_body = 0;
-    am_value_t *bodies = am_list_lambda_get_bodies(ctx->ast->alloc, node, &n_body);
-    if (n_body > 0 && !bodies) return -1;
-    for (size_t i = 0; i < n_body; i++) {
-        if (compile_value(ctx, bodies[i]) != 0) {
-            free(bodies);
-            return -1;
-        }
+    for (size_t i = 2 + n_param; i < node->length; i++) {
+        if (compile_value(ctx, node->children[i]) != 0) return -1;
     }
-    free(bodies);
 
     return emit_instruction(ctx, AM_VM_OP_return, AM_VALUE_UNDEFINED);
 }
@@ -1000,8 +999,9 @@ static int32_t compiler_stack_effect(am_compiler_ctx_t *ctx, am_iaddr_t iaddr) {
 }
 
 
-static int32_t compiler_depth_add_entry(compiler_depth_entry_t **entries, size_t *count,
-                                         size_t *capacity, am_iaddr_t iaddr, size_t init_depth) {
+static int32_t compiler_depth_add_entry(am_allocator_t *alloc, compiler_depth_entry_t **entries,
+                                         size_t *count, size_t *capacity,
+                                         am_iaddr_t iaddr, size_t init_depth) {
     if (iaddr == SIZE_MAX) return 0;
 
     // 去重
@@ -1011,8 +1011,8 @@ static int32_t compiler_depth_add_entry(compiler_depth_entry_t **entries, size_t
 
     if (*count >= *capacity) {
         size_t new_cap = *capacity ? *capacity * 2 : 16;
-        compiler_depth_entry_t *new_entries = (compiler_depth_entry_t *)realloc(
-            *entries, new_cap * sizeof(compiler_depth_entry_t));
+        compiler_depth_entry_t *new_entries = (compiler_depth_entry_t *)am_realloc(
+            alloc, *entries, new_cap * sizeof(compiler_depth_entry_t));
         if (!new_entries) return -1;
         *entries = new_entries;
         *capacity = new_cap;
@@ -1036,8 +1036,8 @@ static void compiler_depth_search(am_compiler_ctx_t *ctx, am_iaddr_t entry, size
                                    size_t *best_depth, size_t *global_max) {
     if (!ctx || entry >= ctx->icount) return;
 
-    compiler_depth_frame_t *stack = (compiler_depth_frame_t *)malloc(
-        ctx->icount * 4 * sizeof(compiler_depth_frame_t));
+    compiler_depth_frame_t *stack = (compiler_depth_frame_t *)am_malloc(
+        ctx->ast->alloc, ctx->icount * 4 * sizeof(compiler_depth_frame_t));
     if (!stack) return;
 
     size_t stack_capacity = ctx->icount * 4;
@@ -1114,7 +1114,7 @@ static void compiler_depth_search(am_compiler_ctx_t *ctx, am_iaddr_t entry, size
         #undef DEPTH_PUSH
     }
 
-    free(stack);
+    am_free(ctx->ast->alloc, stack);
 }
 
 
@@ -1127,8 +1127,8 @@ size_t am_compiler_opstack_depth_analysis(am_compiler_ctx_t *ctx) {
     size_t entry_capacity = 0;
 
     // 程序入口
-    if (compiler_depth_add_entry(&entries, &entry_count, &entry_capacity, 0, 0) != 0) {
-        free(entries);
+    if (compiler_depth_add_entry(ctx->ast->alloc, &entries, &entry_count, &entry_capacity, 0, 0) != 0) {
+        am_free(ctx->ast->alloc, entries);
         return SIZE_MAX;
     }
 
@@ -1151,9 +1151,9 @@ size_t am_compiler_opstack_depth_analysis(am_compiler_ctx_t *ctx) {
                 n_param = compiler_lambda_param_count(lambda);
             }
 
-            if (compiler_depth_add_entry(&entries, &entry_count, &entry_capacity,
+            if (compiler_depth_add_entry(ctx->ast->alloc, &entries, &entry_count, &entry_capacity,
                                           iaddr, (size_t)n_param) != 0) {
-                free(entries);
+                am_free(ctx->ast->alloc, entries);
                 return SIZE_MAX;
             }
         }
@@ -1176,16 +1176,16 @@ size_t am_compiler_opstack_depth_analysis(am_compiler_ctx_t *ctx) {
             n_param++;
         }
 
-        if (compiler_depth_add_entry(&entries, &entry_count, &entry_capacity,
+        if (compiler_depth_add_entry(ctx->ast->alloc, &entries, &entry_count, &entry_capacity,
                                       target, n_param) != 0) {
-            free(entries);
+            am_free(ctx->ast->alloc, entries);
             return SIZE_MAX;
         }
     }
 
-    size_t *best_depth = (size_t *)malloc(ctx->icount * sizeof(size_t));
+    size_t *best_depth = (size_t *)am_malloc(ctx->ast->alloc, ctx->icount * sizeof(size_t));
     if (!best_depth) {
-        free(entries);
+        am_free(ctx->ast->alloc, entries);
         return SIZE_MAX;
     }
 
@@ -1196,8 +1196,8 @@ size_t am_compiler_opstack_depth_analysis(am_compiler_ctx_t *ctx) {
         compiler_depth_search(ctx, entries[i].iaddr, entries[i].init_depth, best_depth, &global_max);
     }
 
-    free(best_depth);
-    free(entries);
+    am_free(ctx->ast->alloc, best_depth);
+    am_free(ctx->ast->alloc, entries);
 
     return global_max > 0 ? global_max : 1;
 }
@@ -1302,6 +1302,7 @@ am_module_t *am_compile(am_ast_t *ast, am_iaddr_t offset, am_iaddr_t ret) {
 
     // ilcode所有权转移给module，避免ctx销毁时释放ilcode
     ctx->ilcode = NULL;
+    ctx->ilcode_capacity = 0;
 
     am_compiler_ctx_destroy(ctx);
     return mod;
@@ -1320,6 +1321,7 @@ am_compiler_ctx_t *am_compiler_ctx_create(am_ast_t *ast) {
 
     ctx->ast = ast;
     ctx->icount = 0;
+    ctx->ilcode_capacity = 0;
     ctx->ilcode = NULL;
     ctx->label_counter = 0;
     ctx->unique_id_counter = 0;
@@ -1343,19 +1345,11 @@ void am_compiler_ctx_destroy(am_compiler_ctx_t *ctx) {
     if (!ctx) return;
 
     am_allocator_t *alloc = ctx->ast ? ctx->ast->alloc : NULL;
+    if (!alloc) return;
 
-    if (ctx->ilcode) {
-        free(ctx->ilcode);
-        ctx->ilcode = NULL;
-    }
-
-    if (alloc) {
-        if (ctx->value_label_mapping) am_map_destroy(alloc, ctx->value_label_mapping);
-        if (ctx->label_iaddr_mapping) am_map_destroy(alloc, ctx->label_iaddr_mapping);
-        if (ctx->while_tag_stack) am_list_destroy(alloc, ctx->while_tag_stack);
-        am_free(alloc, ctx);
-    }
-    else {
-        free(ctx);
-    }
+    if (ctx->ilcode) am_free(alloc, ctx->ilcode);
+    if (ctx->value_label_mapping) am_map_destroy(alloc, ctx->value_label_mapping);
+    if (ctx->label_iaddr_mapping) am_map_destroy(alloc, ctx->label_iaddr_mapping);
+    if (ctx->while_tag_stack) am_list_destroy(alloc, ctx->while_tag_stack);
+    am_free(alloc, ctx);
 }

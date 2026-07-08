@@ -145,9 +145,9 @@ am_ast_t *am_ast_create(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_
     ast->symbol_vocab = am_vocab_create(alloc, 64);
     ast->var_vocab = am_vocab_create(alloc, 64);
     ast->var_type = am_list_create(alloc, 64, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
-    ast->nodes = am_heap_create(alloc, alloc, 1024);
+    ast->nodes = am_heap_create(alloc, alloc, 512);
     ast->node_token_mapping = am_map_create(alloc, 64);
-    ast->strindex = am_strindex_create(alloc, 1024);
+    ast->strindex = am_strindex_create(alloc, 512);
     ast->scopes = am_map_create(alloc, 64);
     ast->var_arn_mapping = am_map_create(alloc, 64);
     ast->lambda_handles = am_list_create(alloc, 32, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);

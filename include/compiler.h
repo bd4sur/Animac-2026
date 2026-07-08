@@ -24,6 +24,7 @@ typedef struct am_instruction_t {
 typedef struct am_compiler_ctx_t {
     am_ast_t *ast; // 编译输入的AST，编译过程中会被修改，作为编译结果的一部分（概念上相当于“静态数据段”）
     am_iaddr_t icount; // 中间语言指令计数器
+    am_iaddr_t ilcode_capacity; // ilcode 当前分配的容量（以指令数计）
     am_instruction_t *ilcode; // 编译得到的中间语言指令序列
     size_t label_counter; // 用于生成标签枚举值的计数器
     am_map_t *value_label_mapping; // Map<am_value_t(any), am_value_t(label)> 从任何类型的索引TPV到标签TPV的映射

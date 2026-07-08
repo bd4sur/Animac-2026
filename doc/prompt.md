@@ -3888,9 +3888,200 @@ wchar_t *am_js_to_scheme(const wchar_t *js_source);
 
 ---------------------
 
+2026-07-08
+
+请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。我的目标是让它在内存只有kB级的MCU（如ESP32）上运行。因此，请你分析以下问题。仅回答，不要修改代码。
+
+1、分析所有调用系统malloc/calloc/realloc的情况，分析脱离内存池的内存分配情况和静态下限。
+
+2、dump/load如何受数据类型长度的影响？当前实现的dump/load是否与系统字长无关？
+
+
+
+以下是对两个问题的分析结论，仅作说明，未改动任何代码。
+
+---
+
+## 1. 系统 `malloc/calloc/realloc` 调用与内存池外分配分析
+
+### 1.1 整体架构：两条内存路径
+
+项目内部有一层 `am_allocator_t` 抽象分配器（`include/allocator.h`），通过 vtable 把 `am_malloc/am_calloc/am_realloc/am_free` 转发到具体实现。  
+默认实现是 `src/allocator.c` 中的统一内存池 `am_allocator_pool_create`：
+
+- 启动时一次性 `malloc(total_size)` 拿到整池连续内存（`pool->base`），并 `malloc(sizeof(am_allocator_pool_t))` 分配控制块。
+- 池内再划分为 VM 工作区（segregated free-list）和堆区（first-fit free-list）。
+- **此后绝大多数运行时对象不再调用 libc `malloc`**，而是通过池内分配器分配。
+
+因此判断“是否脱离内存池”，关键看是否直接调用 libc 的 `malloc/calloc/realloc`，而非走 `am_allocator_t`。
+
+### 1.2 直接调用系统分配器的位置（脱离内存池）
+
+经过全文扫描，直接调用系统 `malloc/calloc/realloc` 的位置可分为以下几类：
+
+| 类别 | 典型文件/行 | 说明 |
+|------|------------|------|
+| **内存池自身** | `src/allocator.c:580, 586` | 池控制块、`pool->base`（默认 128/200 MB） |
+| **GC/压缩辅助数组** | `src/allocator.c:1114, 1144, 1183, 1198` | 全局压缩时的存活对象表、reloc 表、slot 指针表 |
+| **运行时 GC 临时数组** | `src/runtime.c:2126, 2277` | 多进程全局压缩时临时 `heaps` 数组 |
+| **编译器核心** | `src/compiler.c:179, 1039, 1186` | `ilcode` 数组全程走 libc；栈深度分析临时数组 |
+| **解析器/AST/链接器/宏** | `src/parser.c`, `src/ast.c`, `src/linker.c`, `src/macro.c` | 状态栈、节点栈、拓扑排序数组、DAG 矩阵、token 文本、宏对象等 |
+| **`am_map_keys()` 返回值** | `src/map.c:454` | 调用者需 `free()` |
+| **调试输出** | `src/debug.c` | visited 数组、输出缓冲 |
+| **文件/路径/REPL 工具** | `src/utils.c`, `main.c`, `repl.c` | 文件内容缓冲、路径、`read_line` 缓冲、模块 dump 缓冲、PackBits 压缩缓冲 |
+| **JS→Scheme 翻译器** | `src/js2scm.c` | 全部内部节点、字符串 builder |
+| **本地 LLM 库** | `src/native_LLM.c` | tokenizer map/trie、词表指针数组、Base64 编解码缓冲、模型权重缓冲 |
+| **闭包、列表、作用域等 API 返回值** | `src/list.c:310` 等 | 少量“调用者负责 free”的副本 |
+
+其中占用较大、对 MCU 不友好的几块离线分配：
+
+- **`src/linker.c:127`**：`ctx->DAG = calloc(64*64, sizeof(size_t[2]))`，固定 **32 KB（32 位）/ 64 KB（64 位）**。
+- **`src/compiler.c:179`**：`ilcode` 数组在编译期完全走 libc，大小与程序指令数成正比。
+- **`main.c/repl.c`**：模块 dump、PackBits 压缩/解压缓冲与模块大小成正比。
+- **`src/native_LLM.c`**：词表指针数组固定 `16384 * sizeof(wchar_t*)`，约 **64 KB（32 位）/ 128 KB（64 位）**，再加上 unicode charset 64 KB；模型权重本身更大。
+
+### 1.3 内存池内分配的对象
+
+通过 `am_malloc/am_calloc` 走的对象包括：
+
+- `am_map_t`、`am_list_t`、`am_vocab_t`、`am_strindex_t`
+- AST 节点、抽象堆 `am_heap_t` 及其 table/metadata
+- 进程结构 `am_process_t`、操作数栈 `opstack`、函数栈 `fstack`、ilcode 副本
+- 运行时 FIFO、队列、定时器等
+
+这些都在池内，但池本身需要一块连续内存。
+
+### 1.4 静态下限估算
+
+影响最低内存占用的关键常量：
+
+| 常量 | 位置 | 默认值 | 影响 |
+|------|------|--------|------|
+| `AM_ALLOCATOR_POOL_SIZE` | `main.c:53` / `repl.c:26` | 200 MB / 128 MB | 整池连续内存，最大头 |
+| `AM_ALLOC_ALIGN` | `src/allocator.c:12` | `sizeof(void*)` | 所有块对齐 |
+| Map 最小容量 | `src/map.c:138` | 8 | 每个 map 至少 8 槽 |
+| List 最小容量 | `src/list.c:54` | 4 | 每个 list 至少 4 槽 |
+| Vocab 最小容量 | `src/vocab.c:49` | 4 | 每个 vocab 至少 4 槽 |
+| Strindex 最小容量 | `src/wstring.c:277` | 8 | 每个 strindex 至少 8 槽 |
+| AST 初始容量 | `src/ast.c:145-157` | nodes=1024, strindex=1024, vocab=64 等 | 编译期预分配 |
+| `fstack` 容量 | `src/process.c:317` | 3000 | 每个进程函数调用栈 |
+| `opstack` 默认 | `src/process.c:306` | max(opstack_depth, 1024) | 每个进程操作数栈 |
+| `AM_LINKER_MAX_MODULES` | `src/linker.c:19` | 64 | DAG 固定矩阵 |
+| `AM_LLM_VOCAB_SIZE` | `src/native_LLM.c:229` | 16384 | LLM tokenizer 上限 |
+
+若把 `AM_ALLOCATOR_POOL_SIZE` 强行改成 128 KB，在 32 位平台下一个空解释器/最小模块的粗略下限：
+
+| 项目 | 32 位估算 |
+|------|----------|
+| 内存池 backing | 128 KB |
+| 池控制块 + 全局变量 | < 1 KB |
+| AST 初始表（池内） | ~25–30 KB |
+| 运行时 + 最小进程栈（池内） | ~20 KB |
+| 链接器 DAG + 上下文（libc） | ~34 KB |
+| 编译器/解析器临时（libc） | 数 KB ~ 十几 KB |
+| **合计** | **~200–220 KB** |
+
+64 位因指针/`size_t`/`am_value_t` 翻倍，整体约 **300–340 KB**。
+
+### 1.5 对 kB 级 MCU（如 ESP32）的结论
+
+**当前默认实现无法直接在 ESP32 上运行**，主要瓶颈：
+
+1. **默认池太大**：128/200 MB，远超 ESP32 的 320–520 KB SRAM。
+2. **池需要连续内存**：即使总空闲 RAM 够，也可能因碎片化而分配失败。
+3. **链接器固定 DAG 过大**：64×64 矩阵占 32/64 KB，可改小 `AM_LINKER_MAX_MODULES`。
+4. **进程栈预分配偏大**：`fstack` 3000、`opstack` 1024，对简单脚本过大。
+5. **AST 初始容量偏大**：`nodes=1024`、`strindex=1024` 等。
+6. **大量离线 libc 分配**：编译器、链接器、REPL、JS 前端、LLM 本地库都不走池，增加碎片化。
+7. **POSIX/宽字符依赖**：`setlocale`、`getcwd`、stdio、mbstowcs/wcstombs 等在裸机 MCU 上需要移植。
+
+若要移植，需要：
+
+- 通过编译宏把 `AM_ALLOCATOR_POOL_SIZE` 降到 64–128 KB 级别；
+- 大幅减小 `AM_LINKER_MAX_MODULES`、进程栈容量、AST 初始容量；
+- 把编译器/链接器的临时数组逐步移入 `vm_alloc` 或改为静态缓冲；
+- 移除 `native_LLM.c` 等重型本地库；
+- 仅保留“加载预编译模块”模式，避免在 MCU 上做完整编译。
+
+在大幅裁剪后，**理论上可在 256–512 KB RAM 的 MCU 上跑极简脚本**，但默认代码不能直接运行。
+
+---
+
+## 2. `dump/load` 与数据类型长度的关系
+
+### 2.1 当前实现是“内存快照式”序列化
+
+各 `dump`/`load` 函数基本做法是把运行时 C 结构体（或其柔性数组部分）直接 `memcpy` 到 buffer：
+
+- `am_heap_dump/load`（`src/heap.c`）：写 `am_heap_t` 头 + 两个 `am_map_dump`。
+- `am_heap_deep_dump/load`（`src/heap.c`）：先写两个 `uint64_t` 长度，再写 `am_heap_dump`，最后把 list/wstring 对象逐个 `memcpy`；对象位置用“相对 deep_dump 起点的偏移”记录。
+- `am_module_dump/load`（`src/module.c`）：写 packed 的 `module_header_t`，再依次写 IL 指令、deep_heap、vocab、list、map、strindex 等。
+- `am_list_dump/load`（`src/list.c`）：直接写 `am_list_t` 头 + `children[]`。
+- `am_map_dump/load`（`src/map.c`）：直接写 `am_map_t` 头 + 有效 `slots[]`。
+- `am_vocab_dump/load`（`src/vocab.c`）：写头 + `wchar_t*` 指针数组 + 字符串内容。
+- `am_wstring_dump/load`（`src/wstring.c`）：写对象头 + `length` + `content[]`。
+- `am_strindex_dump/load`、`am_closure_dump/load` 同理。
+
+### 2.2 关键类型长度依赖
+
+| 类型 | 定义位置 | 32 位宽度 | 64 位宽度 | 影响 |
+|------|----------|-----------|-----------|------|
+| `am_value_t` | `include/object.h:74` | `uintptr_t` = 4 B | 8 B | 所有 `children[]`、`slots[]`、`content[]`、`binding.value` 元素宽度不同 |
+| `am_handle_t` / `am_iaddr_t` / `am_varid_t` / `am_symbol_t` / `am_label_t` | `include/object.h:39-63` | `size_t` = 4 B | 8 B | list 的 `parent`、closure 的 `iaddr/parent`、binding 的 `varid` 等字段宽度不同 |
+| `am_int_t` / `am_uint_t` | `include/object.h:39-63` | `int32_t/uint32_t` | `int64_t/uint64_t` | 整数值范围不同，TPV 编码位宽不同 |
+| `am_float_t` | `include/object.h:39-63` | `float` | `double` | 浮点精度与编码不同 |
+| `size_t` | 系统类型 | 4 B | 8 B | 所有 `capacity/length/mask/tombstones`、模块头偏移字段宽度不同 |
+| 原生指针 | 系统类型 | 4 B | 8 B | `am_heap_t.table/metadata` 偏移、`vocab.words[]` 存储的是指针/绝对地址 |
+| `wchar_t` | 系统类型 | Windows 16 位 / Linux 32 位 | — | `vocab` 字符串内容宽度不同 |
+
+### 2.3 为什么与系统字长**不无关**
+
+结论：**当前 `dump/load` 与系统字长、指针长度、`size_t` 长度强相关**。具体表现为：
+
+1. **直接 `memcpy` 运行时结构体**：`am_list_t`、`am_map_t`、`am_wstring_t`、`am_obj_closure_t` 等都没有 `#pragma pack`，32 位和 64 位下的填充、偏移、大小完全不同。
+2. **`am_value_t = uintptr_t`**：所有容器数组元素宽度随平台变化。
+3. **`am_handle_t` 等 = `size_t`**：对象头后续字段的偏移和宽度随平台变化。
+4. **`am_instruction_t`**（`include/compiler.h:17-20`）在 32 位为 8 字节，64 位因 `am_value_t` 对齐为 16 字节。
+5. **`am_heap_dump` 中 `table`/`metadata` 偏移以 `am_map_t*` 指针类型写入**，本质是原生指针宽度。
+6. **`am_vocab_dump` 把 `words[i]` 写成运行时绝对地址指针**，跨地址空间直接失效。
+7. **`module_header_t` 虽 `#pragma pack(1)`，但内部含大量 `size_t`/`am_iaddr_t`**，头部长度和字段偏移仍随平台变化。
+8. **`am_float_t` 在 32 位是 `float`、64 位是 `double`**，TPV 浮点编码不同。
+9. **`vocab` 字符串使用系统 `wchar_t`**，Windows（16 位）与 Linux（32 位）不兼容。
+10. `am_heap_deep_dump` 虽使用相对偏移，但偏移值被塞进 `am_value_t`（指针宽度），仍随平台变化。
+
+因此，**现在生成的模块 dump / deep_dump 文件无法在 32 位 MCU 与 64 位宿主之间互导**。
+
+### 2.4 若要做到跨 32/64 位互导，最小修改方向
+
+1. **定义固定宽度的磁盘类型**：所有磁盘字段使用 `uint32_t/uint64_t/int64_t`，绝不用 `size_t`、`uintptr_t`、原生指针、`am_value_t`。
+2. **为每个对象定义紧凑的磁盘结构体**：`#pragma pack(push,1)`，按字段逐个读写，禁止直接 `memcpy` 运行时结构体。
+3. **对象间引用统一用 `uint64_t` 相对偏移**：heap 的 table/metadata、deep_dump 对象位置、vocab 字符串位置都用相对偏移。
+4. **规范化 `am_value_t` 磁盘格式**：定义 64 位 TPV 磁盘格式，dump/load 时做平台相关转换。
+5. **统一浮点与整数格式**：磁盘统一用 `int64_t` 和 IEEE-754 double/fixed 格式；32 位加载时检查整数越界。
+6. **字符串统一用 `am_wchar_t`（`uint32_t`）或 UTF-8**，不使用系统 `wchar_t`。
+7. **固定 `am_instruction_t` 磁盘格式**：例如 `uint32_t opcode` + `uint64_t operand`。
+8. **模块头全部改用固定宽度字段**：所有偏移、长度、栈深用 `uint64_t`。
+9. **增加版本号/字节序标记**： bump `MODULE_VERSION`，并加入 endianness 标志。
+10. **统一 8 字节对齐**：所有段按 8 字节对齐，便于 32/64 位共同解析。
+
+---
+
+**总结**：
+
+1. 当前项目有大量脱离内存池的 libc 分配，默认配置对 kB 级 MCU 不可行；但通过裁剪池大小、链接器容量、进程栈和 AST 初始容量，理论上可压到 200 KB 级静态下限。
+2. 当前 `dump/load` 是“内存快照式”实现，严重依赖字长、指针长度、`size_t` 长度和结构体填充，**不是与系统字长无关**；要在 32 位 MCU 与 64 位宿主之间互导模块，需要引入一层显式的固定宽度磁盘格式。
 
 ---------------------
 
+2026-07-08
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+根据你的分析，尝试消除 @src/linker.c 中所有libc提供的malloc/calloc/realloc，转为通过allocator在内存池上进行分配。这样当链接-编译过程结束后，所有临时东西都被一次性清除。
+
+你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
