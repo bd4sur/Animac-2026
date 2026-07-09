@@ -102,3 +102,56 @@ bubble_sort(lst, (x, y)=>{ return x > y; })
 display(lst);
 
 
+
+
+
+var is_null = (x) => { return length(x) == 0; };
+
+function filter(f, lst) {
+    if (is_null(lst)) {
+        return [];
+    } else {
+        if (f(car(lst))) {
+            return cons(car(lst), filter(f, cdr(lst)));
+        } else {
+            return filter(f, cdr(lst));
+        }
+    }
+}
+
+function concat(a, b) {
+    if (is_null(a)) {
+        return b;
+    } else {
+        return cons(car(a), concat(cdr(a), b));
+    }
+}
+
+function partition(op, pivot, array) {
+    return filter((x)=>{ if (op(x, pivot)) { return true; } else { return false; } }, array);
+}
+
+function quicksort(array) {
+    var pivot = false;
+    if (is_null(array) || is_null(cdr(array))) {
+        return array;
+    } else {
+        pivot = car(array);
+        return concat(quicksort(partition((x, y)=>{ return x < y; }, pivot, array)),
+                      concat(partition((x, y)=>{ return x == y; }, pivot, array),
+                             quicksort(partition((x, y)=>{ return x > y; }, pivot, array))));
+    }
+}
+
+function run() {
+    display("快速排序：测试验证列表操作、if、and/or等特殊结构");
+    newline();
+    display("期望结果：(-3 -3 -2 -1 0 1 2 3 4 5 5 6 6 6 7 8 9)");
+    newline();
+    display("实际结果：");
+    display(quicksort([6, -3, 5, 9, -2, 6, 1, 7, -3, 5, 3, 0, 4, -1, 6, 8, 2]));
+    newline();
+    newline();
+}
+
+run();
