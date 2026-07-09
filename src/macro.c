@@ -42,6 +42,7 @@ typedef struct am_macro_t {
 typedef struct am_macro_env_frame_t {
     am_map_t *bindings; // varid -> am_macro_t*
     struct am_macro_env_frame_t *parent;
+    am_ast_t *ast;      // 拥有 bindings map 的 AST，用于销毁 map
 } am_macro_env_frame_t;
 
 
@@ -216,6 +217,7 @@ static am_macro_env_frame_t *macro_env_frame_create(am_ast_t *ast) {
     if (!frame) return NULL;
     frame->bindings = am_map_create(ast->alloc, 16);
     frame->parent = NULL;
+    frame->ast = ast;
     if (!frame->bindings) {
         free(frame);
         return NULL;
@@ -226,7 +228,17 @@ static am_macro_env_frame_t *macro_env_frame_create(am_ast_t *ast) {
 
 static void macro_env_frame_destroy(am_macro_env_frame_t *frame) {
     if (!frame) return;
-    // bindings map 由 ast->alloc 管理，随 AST 销毁释放
+    // bindings 中的 value（am_macro_t*）由 macro_expand 上下文统一释放，
+    // 这里先将所有有效槽位的 value 置空，避免 am_map_destroy 误释放它们。
+    if (frame->bindings && frame->ast) {
+        am_map_t *m = frame->bindings;
+        for (size_t i = 0; i < m->capacity; i++) {
+            if (m->slots[i].key != AM_MAP_KEY_EMPTY && m->slots[i].key != AM_MAP_KEY_TOMBSTONE) {
+                m->slots[i].value = AM_VALUE_NULL;
+            }
+        }
+        am_map_destroy(frame->ast->alloc, frame->bindings);
+    }
     free(frame);
 }
 

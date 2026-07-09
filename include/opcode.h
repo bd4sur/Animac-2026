@@ -65,6 +65,7 @@ extern "C" {
 #define AM_VM_OP_length      (53)
 #define AM_VM_OP_concat      (54)
 #define AM_VM_OP_duplicate   (55)
+#define AM_VM_OP_evalcleanup (56)
 
 
 

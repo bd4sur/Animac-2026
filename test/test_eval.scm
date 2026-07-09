@@ -34,6 +34,13 @@
 (System.eval "(display ((lambda (x) (cons x (cons (cons quote (cons x '())) '()))) (quote (lambda (x) (cons x (cons (cons quote (cons x '())) '()))))))")
 (newline)
 
+(display "测试多次执行eval的可靠性\n")
+(define count 500)
+(define lst '())
+(while (> count 0) {
+    (System.eval "(native System) (push lst count) (display \"测试多次执行eval的可靠性 \") (display (System.timestamp)) (display lst) (newline) (set! count (- count 1))")
+})
+
 (display "预期输出：报错（变量z未定义）\n实际输出：")
 (System.eval "(display z)")
 (newline)

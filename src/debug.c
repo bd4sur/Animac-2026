@@ -667,6 +667,7 @@ const char *am_debug_opcode_name(uint32_t opcode) {
         case AM_VM_OP_length:      return "length";
         case AM_VM_OP_concat:      return "concat";
         case AM_VM_OP_duplicate:   return "duplicate";
+        case AM_VM_OP_evalcleanup: return "evalcleanup";
         default:                   return "?";
     }
 }

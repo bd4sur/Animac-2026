@@ -1223,6 +1223,177 @@ static int32_t op_duplicate(am_runtime_t *rt, am_process_t *proc, am_value_t ope
 
 
 // ===============================================================================
+// evalcleanup：System.eval 执行结束后的清理指令
+// ===============================================================================
+
+typedef struct {
+    am_handle_t first_handle;
+    am_handle_t last_handle;
+} eval_unmark_ctx_t;
+
+
+static void eval_unmark_static_cb(am_handle_t handle, am_value_t value, void *user_data) {
+    eval_unmark_ctx_t *ctx = (eval_unmark_ctx_t *)user_data;
+    if (handle < ctx->first_handle || handle > ctx->last_handle) return;
+    if (!am_value_is_ptr(value)) return;
+    am_object_t *obj = am_value_to_ptr(value);
+    if (am_object_check_static(obj) == 0) {
+        am_object_set_static(obj, -1);
+    }
+}
+
+
+static void eval_shrink_var_type(am_process_t *proc, size_t old_len) {
+    if (!proc || !proc->var_type || proc->var_type->length <= old_len) return;
+
+    am_list_t *new_list = am_list_create(proc->vm_alloc,
+                                         old_len > 0 ? old_len : 4,
+                                         AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    if (!new_list) return;
+
+    for (size_t i = 0; i < old_len; i++) {
+        new_list = am_list_push(proc->vm_alloc, new_list,
+                                am_list_get(proc->vm_alloc, proc->var_type, i));
+        if (!new_list) return;
+    }
+
+    am_list_destroy(proc->vm_alloc, proc->var_type);
+    proc->var_type = new_list;
+}
+
+
+static void eval_shrink_var_vocab(am_process_t *proc, size_t old_len) {
+    if (!proc || !proc->var_vocab) return;
+
+    // 释放 eval 引入的所有尾部 var_vocab 条目，保持 var_vocab / var_type 同步
+    while (proc->var_vocab->length > old_len) {
+        size_t idx = proc->var_vocab->length - 1;
+        wchar_t *word = proc->var_vocab->words[idx];
+        if (word) {
+            am_free(proc->vm_alloc, word);
+            proc->var_vocab->words[idx] = NULL;
+        }
+        proc->var_vocab->length--;
+    }
+
+    if (proc->var_vocab->length == old_len && proc->var_vocab->capacity > old_len * 2 + 8) {
+        am_vocab_t *new_vocab = am_vocab_create(proc->vm_alloc,
+                                                old_len > 0 ? old_len : 4);
+        if (!new_vocab) return;
+
+        new_vocab->length = old_len;
+        for (size_t i = 0; i < old_len; i++) {
+            new_vocab->words[i] = proc->var_vocab->words[i];
+            proc->var_vocab->words[i] = NULL;
+        }
+        proc->var_vocab->length = 0;
+        am_vocab_destroy(proc->vm_alloc, proc->var_vocab);
+        proc->var_vocab = new_vocab;
+    }
+}
+
+
+// 清理 eval 引入的 native 记录，避免 stale varid 残留在 proc->natives 中
+static void eval_cleanup_natives(am_process_t *proc, size_t old_var_vocab_len) {
+    if (!proc || !proc->natives) return;
+
+    am_map_t *m = proc->natives;
+    for (size_t i = 0; i < m->capacity; i++) {
+        am_value_t key = m->slots[i].key;
+        if (key == AM_MAP_KEY_EMPTY || key == AM_MAP_KEY_TOMBSTONE) continue;
+        if (!am_value_is_varid(key)) continue;
+        if ((size_t)am_value_to_varid(key) >= old_var_vocab_len) {
+            m->slots[i].key = AM_MAP_KEY_TOMBSTONE;
+            m->slots[i].value = AM_VALUE_NULL;
+            if (m->length > 0) m->length--;
+            m->tombstones++;
+        }
+    }
+}
+
+
+static void eval_cleanup_var_tables(am_process_t *proc, size_t old_var_vocab_len) {
+    if (!proc) return;
+    eval_shrink_var_type(proc, old_var_vocab_len);
+    eval_shrink_var_vocab(proc, old_var_vocab_len);
+    eval_cleanup_natives(proc, old_var_vocab_len);
+}
+
+
+static int32_t op_evalcleanup(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt;
+    if (!proc || !proc->heap) return -1;
+    if (!am_value_is_handle(operand)) return -1;
+
+    am_handle_t rec_h = am_value_to_handle(operand);
+    am_value_t rec_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, rec_h);
+    if (!am_value_is_ptr(rec_val)) return -1;
+    am_list_t *rec = (am_list_t *)am_value_to_ptr(rec_val);
+    if (!rec || rec->type != AM_LIST_TYPE_DEFAULT || rec->length < 6) return -1;
+
+    am_value_t ret_val           = rec->children[0];
+    am_value_t saved_len_val     = rec->children[1];
+    am_value_t first_h_val       = rec->children[2];
+    am_value_t last_h_val        = rec->children[3];
+    am_value_t old_ilen_val      = rec->children[4];
+    am_value_t old_var_len_val   = rec->children[5];
+
+    if (!am_value_is_iaddr(ret_val) ||
+        !am_value_is_uint(saved_len_val) ||
+        !am_value_is_handle(first_h_val) ||
+        !am_value_is_handle(last_h_val) ||
+        !am_value_is_uint(old_ilen_val) ||
+        !am_value_is_uint(old_var_len_val)) {
+        return -1;
+    }
+
+    am_iaddr_t ret_iaddr      = am_value_to_iaddr(ret_val);
+    size_t     saved_len      = (size_t)am_value_to_uint(saved_len_val);
+    am_handle_t first_handle  = am_value_to_handle(first_h_val);
+    am_handle_t last_handle   = am_value_to_handle(last_h_val);
+    size_t     old_ilen       = (size_t)am_value_to_uint(old_ilen_val);
+    size_t     old_var_len    = (size_t)am_value_to_uint(old_var_len_val);
+
+    // 1. 将操作数栈恢复到 eval 调用前的高度
+    size_t cur_len = am_process_length_of_opstack(proc);
+    if (cur_len != SIZE_MAX) {
+        while (cur_len > saved_len) {
+            am_process_pop_operand(proc);
+            cur_len--;
+        }
+    }
+
+    // 2. 截断 eval 追加的 ilcode
+    if (proc->ilcode && old_ilen < proc->ilcode_length) {
+        am_instruction_t *shrunk = (am_instruction_t *)am_realloc(
+            proc->vm_alloc, proc->ilcode, old_ilen * sizeof(am_instruction_t));
+        if (shrunk) {
+            proc->ilcode = shrunk;
+        }
+        proc->ilcode_length = old_ilen;
+    }
+
+    // 3. 清除 eval 引入的静态对象标记，使它们可以被后续 GC 回收
+    if (first_handle <= last_handle) {
+        eval_unmark_ctx_t ctx = { first_handle, last_handle };
+        am_heap_iter(proc->vm_alloc, proc->heap_alloc, proc->heap,
+                     eval_unmark_static_cb, &ctx);
+    }
+
+    // 4. 清理 eval 引入的 ILTEMP 临时变量（只在尾部且类型为 ILTEMP 时收缩）
+    eval_cleanup_var_tables(proc, old_var_len);
+
+    // 5. 释放清理记录本身
+    am_object_set_keepalive((am_object_t *)rec, -1);
+    am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, rec_h);
+
+    // 6. 跳回到 eval 调用点之后
+    am_process_goto(proc, ret_iaddr);
+    return 0;
+}
+
+
+// ===============================================================================
 // 第四类：算术逻辑运算和谓词
 // ===============================================================================
 
@@ -2108,6 +2279,7 @@ int32_t am_runtime_op_dispatch(am_runtime_t *rt, am_process_t *proc, uint32_t op
         case AM_VM_OP_length:      return op_length(rt, proc, operand);
         case AM_VM_OP_concat:      return op_concat(rt, proc, operand);
         case AM_VM_OP_duplicate:   return op_duplicate(rt, proc, operand);
+        case AM_VM_OP_evalcleanup: return op_evalcleanup(rt, proc, operand);
         default:
             fprintf(stderr, "[Runtime] 未知指令: %u\n", opcode);
             return -1;

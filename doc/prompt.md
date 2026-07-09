@@ -4113,6 +4113,8 @@ OK，按照你的建议进行修改，增加ilcode的容量字段、并按需扩
 
 ---------------------
 
+2026-07-08
+
 开始编码前，请先阅读 @doc/AGENTS.md 。
 
 本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。首先在 @src/runtime.c 和 @include/runtime.h 中实现下列两个简单函数。
@@ -4143,9 +4145,80 @@ void *am_get_process_host_context(am_runtime_t *rt, am_process_t *proc);
 
 ---------------------
 
+2026-07-09
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。请你仔细排查并修复 System.eval 的内存泄漏问题。
+
+问题背景：在 @src/native_System.c 中实现了本地宿主函数 System.eval，用于运行时解释执行代码。其原理是将代码字符串编译成IL代码和静态数据对象，追加到当前进程的ilcode和heap中。用 @test/test_eval_large.scm 测试发现，System.eval （对应 @src/native_System.c 中的 am_native_System_eval ）在运行时存在严重的内存泄漏问题。我初步排查得到的问题范围如下：
+
+- 追加到当前进程的ilcode，在eval执行结束后不会自动回收，因此如果多次频繁调用System.eval，会造成ilcode越来越长，直至耗尽VM区内存。
+- 追加到当前进程heap的新的静态对象（eval代码的AST节点，如SList、字符串等），由于是静态，在eval执行期间当然不会被GC，但是eval执行完毕之后，它们应该被GC，至少不能继续作为静态对象存在。
+- Parse和Compile阶段存在内存泄漏。例如： @src/macro.c 中的宏环境帧`macro_env_frame_destroy` 只 `free(frame)`，没有释放 `bindings` map。该 map 由 AST 分配器分配，但不在 AST 的销毁路径里，导致每次解析含宏展开代码时泄漏一个 336 字节的 `am_map_t`。可能还有其他情况，你需要利用打调试日志、gdb、Valgrind等各种手段进行定位和修复。
+- opstack容量无限增长。这是一个全局性的遗留问题，对于opstack栈深度的估计，以及栈平衡，现在做得很粗糙，opstack呈现出增长趋势，因此以扩容为临时应对手段，现在你不需要解决这个全局性问题。但是仅在eval这个场景下，如果多次频繁调用System.eval，入栈的操作数不做清理，很有可能会导致opstack多次扩容，最终耗尽VM区内存。
+
+我设想的解决方案，供你参考：
+
+- 你可能需要增加一个专门用于清理eval执行结果的Runtime指令，将解决方案封装在这个op当中，在eval结束返回时调用，进行善后。
+- 关于ilcode膨胀问题，似乎可以记录eval引入的iaddr范围，善后时直接清理掉。保证多次eval时ilcode不持续膨胀。
+- 当前eval的实现能够访问所在进程的顶级变量，这个机制要保留，但是eval代码引入的static的AST节点，在eval结束善后时，必须去掉static标记，在下次GC中处理。
+- 仔细排查Parse和Compile阶段的内存利用情况，保证alloc/free操作严格对称。
+- opstack无限增长问题，似乎可以记录eval调用前的栈top，善后时一次性pop到调用eval前的状态。
+
+请你修复这个问题。
+
+系统中安装了WSL（Ubuntu 24.04），具备gcc、make、gdb等工具。你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以使用 @test/test_eval_large.scm 进行调试。你可以使用WSL进行编译构建和测试。
+
+
+
+
+System.eval 的内存泄漏修复已经完成并验证通过。
+
+## 修改内容
+
+1. **新增 `AM_VM_OP_evalcleanup` 操作码**（`include/opcode.h`、`src/debug.c`）
+2. **在 runtime 中实现清理逻辑**（`src/runtime.c`）：
+   - 恢复 eval 前的操作数栈高度
+   - 截断 eval 追加的 IL code
+   - 取消 eval 期间分配的堆对象的静态标记，使其可被 GC 回收
+   - 清理 eval 引入的 ILTEMP 临时变量表
+   - 释放清理记录本身
+3. **在 `System.eval` 编译的 thunk 返回处插入 `evalcleanup`**（`src/native_System.c`）
+4. **修复 macro 环境帧 `bindings` map 的泄漏**（`src/macro.c`）
+5. **修复测试文件** `test/test_eval_large.scm：原文件没有 `(set! count (- count 1))`，导致 `while` 是无限循环，这也是它一直 timeout 的真正原因。
+
+## 验证结果
+
+- `make clean && make`：编译成功，无警告
+- `./main ./test/test_eval.scm`：通过
+- `./main ./test/test.scm`：完整回归测试通过，约 28s
+- `./main ./test/test_eval_large.scm`：10000 次 large eval，约 1.7s
+
+### Valgrind
+
+- `valgrind --leak-check=full ./main ./test/test_eval.scm`：**0 泄漏**
+- `valgrind --leak-check=full ./main ./test/test_eval_large.scm`（10000 次）：**0 泄漏**，共 41,080,356 次 alloc/free 全部匹配
+
+Valgrind 中仍报告的 144 个 error 来自已有的 `am_packbits_compress` / `test_runtime_load_from_wstring` 未初始化值问题，与本次 eval 泄漏修复无关。
+
+## 已知限制
+
+eval 内部立即调用 `call/cc` 的测试已通过。但如果把 eval 内部捕获的 continuation 保存到外部、等 eval 返回后再调用，会因为 IL code 和临时变量表已被清理而失败。这是当前 eval cleanup 设计下跨边界 continuation 的固有限制。
 
 ---------------------
 
+2026-07-09
+
+发现新问题：在System.eval中，定义的native函数只有第一次调用时能成功执行，第二次eval就会报“变量未定义”的错误。你可以通过现在最新的 @test/test_eval_large.scm 复现这个问题。怀疑与eval善后清理时把native相关的信息清理掉了有关。请排查此问题。
+
+附上最新的 @test/test_eval_large.scm 中，输入System.eval的代码：
+
+```
+(native System) (push lst count) (display (System.timestamp)) (newline) (set! count (- count 1))
+```
+
+注意这里还测试了通过eval内部的 (set! count (- count 1)) 来修改外面定义的顶层变量。系统中安装了WSL（Ubuntu 24.04），具备gcc、make、gdb等工具。你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以使用 @test/test_eval_large.scm 进行调试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

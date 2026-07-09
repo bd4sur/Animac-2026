@@ -1403,6 +1403,52 @@ static int32_t eval_append_ilcode(am_process_t *proc, am_instruction_t *new_ilco
 }
 
 
+// 创建 System.eval 清理记录。
+// 记录为 6 元素列表：
+//   [ret_iaddr, saved_opstack_len, first_handle, last_handle, old_ilcode_length, old_var_vocab_len]
+// 该对象不标记为 static，但会设置 keepalive，避免在 evalcleanup 执行前被 GC 回收。
+static am_handle_t eval_create_cleanup_record(am_process_t *proc, am_iaddr_t ret_iaddr,
+                                              size_t saved_opstack_len,
+                                              am_handle_t first_handle,
+                                              am_handle_t last_handle,
+                                              am_iaddr_t old_ilcode_length,
+                                              size_t old_var_vocab_len) {
+    if (!proc || !proc->heap) return AM_HANDLE_NULL;
+
+    am_list_t *rec = am_list_create(proc->heap_alloc, 5, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    if (!rec) return AM_HANDLE_NULL;
+
+    rec = am_list_push(proc->heap_alloc, rec, am_make_value_of_iaddr(ret_iaddr));
+    if (!rec) return AM_HANDLE_NULL;
+    rec = am_list_push(proc->heap_alloc, rec, am_make_value_of_uint((am_uint_t)saved_opstack_len));
+    if (!rec) return AM_HANDLE_NULL;
+    rec = am_list_push(proc->heap_alloc, rec, am_make_value_of_handle(first_handle));
+    if (!rec) return AM_HANDLE_NULL;
+    rec = am_list_push(proc->heap_alloc, rec, am_make_value_of_handle(last_handle));
+    if (!rec) return AM_HANDLE_NULL;
+    rec = am_list_push(proc->heap_alloc, rec, am_make_value_of_uint((am_uint_t)old_ilcode_length));
+    if (!rec) return AM_HANDLE_NULL;
+    rec = am_list_push(proc->heap_alloc, rec, am_make_value_of_uint((am_uint_t)old_var_vocab_len));
+    if (!rec) return AM_HANDLE_NULL;
+
+    am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
+    if (hd == AM_HANDLE_NULL) {
+        am_list_destroy(proc->heap_alloc, rec);
+        return AM_HANDLE_NULL;
+    }
+
+    if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, hd,
+                    am_make_value_of_ptr((am_object_t *)rec)) != 0) {
+        am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
+        am_list_destroy(proc->heap_alloc, rec);
+        return AM_HANDLE_NULL;
+    }
+
+    am_object_set_keepalive((am_object_t *)rec, 0);
+    return hd;
+}
+
+
 // (System.eval codestr:String) : void
 // 运行时动态编译并执行 Scheme 代码字符串。仅捕获当前进程的顶级变量绑定。
 int32_t am_native_System_eval(am_runtime_t *rt, am_process_t *proc) {
@@ -1455,6 +1501,13 @@ int32_t am_native_System_eval(am_runtime_t *rt, am_process_t *proc) {
     am_map_t *var_mapping = NULL;
     am_module_t *mod = NULL;
     eval_copy_ctx_t copy_ctx = { 0 };
+    am_handle_t cleanup_rec_h = AM_HANDLE_NULL;
+
+    // 记录 eval 调用前的操作数栈高度，用于执行完毕后恢复
+    size_t saved_opstack_len = am_process_length_of_opstack(proc);
+
+    // 记录 eval 前 proc 的 var_vocab 长度，用于事后清理编译期引入的 ILTEMP 临时变量
+    size_t old_var_vocab_len = proc->var_vocab ? proc->var_vocab->length : 0;
 
     // 建立 symbol / var 映射
     if (eval_build_symbol_mapping(proc, evalee, &symbol_mapping) != 0) goto fail;
@@ -1469,6 +1522,9 @@ int32_t am_native_System_eval(am_runtime_t *rt, am_process_t *proc) {
     // 计算偏移和返回地址
     am_iaddr_t offset = proc->ilcode_length;
     am_iaddr_t ret = proc->PC + 1;
+
+    // 记录 eval 即将在 proc->heap 中分配的首个把柄，用于事后清理静态标记
+    am_handle_t eval_first_handle = proc->heap->handle_counter;
 
     // 记录编译前 evalee 的 var_vocab 长度，编译器可能引入 ILTEMP 临时变量
     size_t old_evalee_var_vocab_len = evalee->var_vocab ? evalee->var_vocab->length : 0;
@@ -1494,6 +1550,24 @@ int32_t am_native_System_eval(am_runtime_t *rt, am_process_t *proc) {
 
     if (eval_remap_il_operands(&copy_ctx, var_mapping, mod->ilcode, mod->ilcode_length) != 0) goto fail;
 
+    // 记录 eval 在 proc->heap 中分配的最后一个把柄
+    am_handle_t eval_last_handle = (proc->heap->handle_counter > 0)
+                                       ? proc->heap->handle_counter - 1
+                                       : 0;
+
+    // 创建清理记录，并在 IL 中将返回处的 goto 替换为 evalcleanup
+    cleanup_rec_h = eval_create_cleanup_record(proc, ret, saved_opstack_len,
+                                               eval_first_handle, eval_last_handle,
+                                               offset, old_var_vocab_len);
+    if (cleanup_rec_h == AM_HANDLE_NULL) goto fail;
+
+    if (mod->ilcode_length < 2 || mod->ilcode[1].opcode != AM_VM_OP_goto) {
+        fprintf(stderr, "[System.eval] 无法插入 evalcleanup 指令\n");
+        goto fail;
+    }
+    mod->ilcode[1].opcode = AM_VM_OP_evalcleanup;
+    mod->ilcode[1].operand = am_make_value_of_handle(cleanup_rec_h);
+
     // 追加 IL 到 proc
     if (eval_append_ilcode(proc, mod->ilcode, mod->ilcode_length) != 0) {
         fprintf(stderr, "[System.eval] 追加 IL 代码失败\n");
@@ -1503,8 +1577,11 @@ int32_t am_native_System_eval(am_runtime_t *rt, am_process_t *proc) {
     // 跳转到 evalee 入口
     proc->PC = offset;
 
-    // 清理临时资源（mod 的 ilcode 已追加到 proc，置空避免重复释放）
-    mod->ilcode = NULL;
+    // 清理临时资源：mod 的 ilcode 已复制到 proc，释放原始块，再释放 mod 结构体
+    if (mod->ilcode) {
+        am_free(proc->vm_alloc, mod->ilcode);
+        mod->ilcode = NULL;
+    }
     am_free(proc->vm_alloc, mod);
     am_map_destroy(proc->vm_alloc, copy_ctx.handle_mapping);
     am_map_destroy(proc->vm_alloc, symbol_mapping);
@@ -1516,11 +1593,17 @@ int32_t am_native_System_eval(am_runtime_t *rt, am_process_t *proc) {
     return 0;
 
 fail:
+    if (cleanup_rec_h != AM_HANDLE_NULL) {
+        am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, cleanup_rec_h);
+    }
     if (copy_ctx.handle_mapping) am_map_destroy(proc->vm_alloc, copy_ctx.handle_mapping);
     if (symbol_mapping) am_map_destroy(proc->vm_alloc, symbol_mapping);
     if (var_mapping) am_map_destroy(proc->vm_alloc, var_mapping);
     if (mod) {
-        mod->ilcode = NULL;
+        if (mod->ilcode) {
+            am_free(proc->vm_alloc, mod->ilcode);
+            mod->ilcode = NULL;
+        }
         am_free(proc->vm_alloc, mod);
     }
     am_ast_destroy(evalee);
