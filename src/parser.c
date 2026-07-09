@@ -350,6 +350,7 @@ static int32_t append_child_to_top(parser_ctx_t *ctx) {
     if (new_lst != lst) {
         if (am_heap_set(ctx->ast->alloc, ctx->ast->alloc, ctx->ast->nodes, parent_handle,
                         am_make_value_of_ptr((am_object_t *)new_lst)) != 0) {
+            am_list_destroy(ctx->ast->alloc, new_lst);
             parser_set_error(ctx, L"failed to update parent node");
             return -1;
         }
@@ -385,6 +386,7 @@ static int32_t add_parameter_to_top_lambda(parser_ctx_t *ctx, am_value_t param) 
     if (new_lst != lst) {
         if (am_heap_set(ctx->ast->alloc, ctx->ast->alloc, ctx->ast->nodes, lambda_handle,
                         am_make_value_of_ptr((am_object_t *)new_lst)) != 0) {
+            am_list_destroy(ctx->ast->alloc, new_lst);
             parser_set_error(ctx, L"failed to update lambda node");
             return -1;
         }
@@ -420,6 +422,7 @@ static int32_t add_body_to_top_lambda(parser_ctx_t *ctx, am_value_t body) {
     if (new_lst != lst) {
         if (am_heap_set(ctx->ast->alloc, ctx->ast->alloc, ctx->ast->nodes, lambda_handle,
                         am_make_value_of_ptr((am_object_t *)new_lst)) != 0) {
+            am_list_destroy(ctx->ast->alloc, new_lst);
             parser_set_error(ctx, L"failed to update lambda node");
             return -1;
         }

@@ -151,6 +151,7 @@ int32_t am_native_Table_set(am_runtime_t *rt, am_process_t *proc) {
             // map 对象已扩容并重新分配，需要更新 heap 中 handle 的绑定
             if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, tbl_h,
                             am_make_value_of_ptr((am_object_t *)new_map)) != 0) {
+                am_map_destroy(proc->heap_alloc, new_map);
                 return -1;
             }
         }

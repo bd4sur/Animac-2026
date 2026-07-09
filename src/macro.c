@@ -93,7 +93,10 @@ static int macro_list_push(am_ast_t *ast, am_handle_t h, am_value_t item, am_lis
     if (!old_lst) return -1;
     am_list_t *lst = am_list_push(ast->alloc, old_lst, item);
     if (!lst) return -1;
-    if (macro_update_list_handle(ast, h, old_lst, lst) != 0) return -1;
+    if (macro_update_list_handle(ast, h, old_lst, lst) != 0) {
+        am_list_destroy(ast->alloc, lst);
+        return -1;
+    }
     if (out_lst) *out_lst = lst;
     return 0;
 }
@@ -104,7 +107,11 @@ static int macro_lambda_add_param(am_ast_t *ast, am_handle_t h, am_varid_t param
     if (!old_lst) return -1;
     am_list_t *lst = am_list_lambda_add_parameter(ast->alloc, old_lst, am_make_value_of_varid(param));
     if (!lst) return -1;
-    return macro_update_list_handle(ast, h, old_lst, lst);
+    if (macro_update_list_handle(ast, h, old_lst, lst) != 0) {
+        am_list_destroy(ast->alloc, lst);
+        return -1;
+    }
+    return 0;
 }
 
 
@@ -113,7 +120,10 @@ static int macro_lambda_add_body(am_ast_t *ast, am_handle_t h, am_value_t body, 
     if (!old_lst) return -1;
     am_list_t *lst = am_list_lambda_add_body(ast->alloc, old_lst, body);
     if (!lst) return -1;
-    if (macro_update_list_handle(ast, h, old_lst, lst) != 0) return -1;
+    if (macro_update_list_handle(ast, h, old_lst, lst) != 0) {
+        am_list_destroy(ast->alloc, lst);
+        return -1;
+    }
     if (out_lst) *out_lst = lst;
     return 0;
 }

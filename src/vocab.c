@@ -198,17 +198,23 @@ am_vocab_t *am_vocab_insert(am_allocator_t *alloc, am_vocab_t *vocab, wchar_t *w
         return vocab;
     }
 
-    vocab = am_vocab_grow_if_needed(alloc, vocab);
-    if (!vocab) return NULL;
-
+    /* 先复制待插入的字符串：如果这里分配失败，不会破坏原 vocab。
+     * 注意：必须在扩容前完成，因为 am_vocab_grow_if_needed 会释放旧 vocab。 */
     size_t len = wcslen(word);
-    vocab->words[vocab->length] = (wchar_t *)am_malloc(alloc, (len + 1) * sizeof(wchar_t));
-    if (!vocab->words[vocab->length]) return NULL;
+    wchar_t *word_copy = (wchar_t *)am_malloc(alloc, (len + 1) * sizeof(wchar_t));
+    if (!word_copy) return NULL;
+    wcscpy(word_copy, word);
 
-    wcscpy(vocab->words[vocab->length], word);
-    if (out_index) *out_index = vocab->length;
-    vocab->length++;
-    return vocab;
+    am_vocab_t *new_vocab = am_vocab_grow_if_needed(alloc, vocab);
+    if (!new_vocab) {
+        am_free(alloc, word_copy);
+        return NULL;
+    }
+
+    new_vocab->words[new_vocab->length] = word_copy;
+    if (out_index) *out_index = new_vocab->length;
+    new_vocab->length++;
+    return new_vocab;
 }
 
 

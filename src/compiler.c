@@ -347,8 +347,7 @@ static int32_t compile_value(am_compiler_ctx_t *ctx, am_value_t v) {
         int32_t kind = compiler_node_kind(ctx, h);
         switch (kind) {
             case AM_COMPILER_NODE_KIND_LAMBDA:
-                return emit_instruction(ctx, AM_VM_OP_loadclosure,
-                                       am_compiler_make_label(ctx, v));
+                return emit_instruction(ctx, AM_VM_OP_loadclosure, am_compiler_make_label(ctx, v));
             case AM_COMPILER_NODE_KIND_QUOTE:
             case AM_COMPILER_NODE_KIND_STRING:
                 return emit_instruction(ctx, AM_VM_OP_push, v);
@@ -498,11 +497,6 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
             if (compiler_varid_name_equals(ctx, first_varid, L"call/cc") == 0) {
                 return compile_callcc(ctx, handle);
             }
-            // 特殊Builtin：fork
-            if (compiler_varid_name_equals(ctx, first_varid, L"fork") == 0) {
-                if (node->length < 2) return -1;
-                return emit_instruction(ctx, AM_VM_OP_fork, am_list_get(ctx->ast->alloc, node, 1));
-            }
         }
 
         // 处理参数列表
@@ -560,6 +554,10 @@ static int32_t compile_lambda(am_compiler_ctx_t *ctx, am_handle_t handle) {
     // 逐个编译函数体
     for (size_t i = 2 + n_param; i < node->length; i++) {
         if (compile_value(ctx, node->children[i]) != 0) return -1;
+        // 除最后一个子表达式外，其余表达式的结果都pop掉
+        // if (i < node->length - 1) {
+        //     if (emit_instruction(ctx, AM_VM_OP_pop, AM_VALUE_UNDEFINED) != 0) return -1;
+        // }
     }
 
     return emit_instruction(ctx, AM_VM_OP_return, AM_VALUE_UNDEFINED);
@@ -591,8 +589,7 @@ static int32_t compile_callcc(am_compiler_ctx_t *ctx, am_handle_t handle) {
     if (emit_instruction(ctx, AM_VM_OP_load, cont_idx) != 0) return -1;
 
     // 调用thunk
-    if (am_value_is_handle(thunk) &&
-        compiler_node_kind(ctx, am_value_to_handle(thunk)) == AM_COMPILER_NODE_KIND_LAMBDA) {
+    if (am_value_is_handle(thunk) && compiler_node_kind(ctx, am_value_to_handle(thunk)) == AM_COMPILER_NODE_KIND_LAMBDA) {
         if (emit_instruction(ctx, AM_VM_OP_call, am_compiler_make_label(ctx, thunk)) != 0) return -1;
     }
     else if (am_value_is_varid(thunk)) {
@@ -621,8 +618,7 @@ static int32_t compile_define(am_compiler_ctx_t *ctx, am_handle_t handle) {
     if (!am_value_is_varid(left)) return -1;
 
     // 编译右值：lambda节点直接push其标签，其他按普通值编译
-    if (am_value_is_handle(right) &&
-        compiler_node_kind(ctx, am_value_to_handle(right)) == AM_COMPILER_NODE_KIND_LAMBDA) {
+    if (am_value_is_handle(right) && compiler_node_kind(ctx, am_value_to_handle(right)) == AM_COMPILER_NODE_KIND_LAMBDA) {
         if (emit_instruction(ctx, AM_VM_OP_push, am_compiler_make_label(ctx, right)) != 0) return -1;
     }
     else {
@@ -645,8 +641,7 @@ static int32_t compile_set(am_compiler_ctx_t *ctx, am_handle_t handle) {
     if (!am_value_is_varid(left)) return -1;
 
     // 编译右值：lambda节点生成闭包实例，其他按普通值编译
-    if (am_value_is_handle(right) &&
-        compiler_node_kind(ctx, am_value_to_handle(right)) == AM_COMPILER_NODE_KIND_LAMBDA) {
+    if (am_value_is_handle(right) && compiler_node_kind(ctx, am_value_to_handle(right)) == AM_COMPILER_NODE_KIND_LAMBDA) {
         if (emit_instruction(ctx, AM_VM_OP_loadclosure, am_compiler_make_label(ctx, right)) != 0) return -1;
     }
     else {
@@ -667,9 +662,10 @@ static int32_t compile_begin(am_compiler_ctx_t *ctx, am_handle_t handle) {
 
     for (size_t i = 1; i < node->length; i++) {
         if (compile_value(ctx, am_list_get(ctx->ast->alloc, node, i)) != 0) return -1;
-        if (i < node->length - 1) {
-            // if (emit_instruction(ctx, AM_VM_OP_pop, AM_VALUE_UNDEFINED) != 0) return -1;
-        }
+        // 除最后一个子表达式外，其余表达式的结果都pop掉
+        // if (i < node->length - 1) {
+        //     if (emit_instruction(ctx, AM_VM_OP_pop, AM_VALUE_UNDEFINED) != 0) return -1;
+        // }
     }
     return 0;
 }
@@ -947,7 +943,7 @@ static int32_t compiler_stack_effect(am_compiler_ctx_t *ctx, am_iaddr_t iaddr) {
         case AM_VM_OP_pause:       return 0;
         case AM_VM_OP_halt:        return 0;
         case AM_VM_OP_fork:        return 0;
-        case AM_VM_OP_display:     return -1;
+        case AM_VM_OP_display:     return 0;
         case AM_VM_OP_newline:     return 0;
         case AM_VM_OP_add:
         case AM_VM_OP_sub:
@@ -984,15 +980,8 @@ static int32_t compiler_stack_effect(am_compiler_ctx_t *ctx, am_iaddr_t iaddr) {
             return 0;
         case AM_VM_OP_set_item:
             return -2;
-        case AM_VM_OP_concat: {
-            // concat 弹出 count+1 个值并压入 1 个结果；count 由前一条 push 指令给出
-            if (iaddr > 0 && ctx->ilcode[iaddr - 1].opcode == AM_VM_OP_push &&
-                am_value_is_uint(ctx->ilcode[iaddr - 1].operand)) {
-                am_uint_t count = am_value_to_uint(ctx->ilcode[iaddr - 1].operand);
-                return -(am_int_t)count;
-            }
-            return 0; // 保守估计
-        }
+        case AM_VM_OP_concat:
+            return -1;
         default:
             return 0;
     }

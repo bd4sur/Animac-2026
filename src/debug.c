@@ -595,8 +595,13 @@ void am_debug_ast_print_to_stdout(am_ast_t *ast) {
     while ((c = fgetwc(out)) != WEOF) {
         if (len + 1 >= cap) {
             cap *= 2;
-            buf = (wchar_t *)realloc(buf, cap * sizeof(wchar_t));
-            assert(buf != NULL);
+            wchar_t *new_buf = (wchar_t *)realloc(buf, cap * sizeof(wchar_t));
+            if (!new_buf) {
+                free(buf);
+                fclose(out);
+                return;
+            }
+            buf = new_buf;
         }
         buf[len++] = (wchar_t)c;
     }

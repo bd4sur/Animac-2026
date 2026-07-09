@@ -174,6 +174,7 @@ int32_t am_ast_destroy(am_ast_t *ast) {
 
     am_allocator_t *alloc = ast->alloc;
 
+    if (ast->tokens) am_free(alloc, ast->tokens);
     if (ast->module_id) am_free(alloc, ast->module_id);
     if (ast->symbol_vocab) am_vocab_destroy(alloc, ast->symbol_vocab);
     if (ast->var_vocab) am_vocab_destroy(alloc, ast->var_vocab);
@@ -734,6 +735,9 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
         } else if (new_lambda != importer_top_lambda_lst) {
             if (am_heap_set(importer->alloc, importer->alloc, importer->nodes, importer_top_lambda,
                             am_make_value_of_ptr((am_object_t *)new_lambda)) != 0) {
+                /* 扩容成功但 heap 更新失败：新 lambda 已不再被任何 handle 引用，
+                 * 必须释放，否则会造成泄漏。 */
+                am_list_destroy(importer->alloc, new_lambda);
                 set_result = -1;
             }
         }

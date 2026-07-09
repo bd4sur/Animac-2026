@@ -1060,9 +1060,13 @@ static int32_t op_list_push(am_runtime_t *rt, am_process_t *proc, am_value_t ope
     am_list_t *new_lst = am_list_push(proc->heap_alloc, lst, value);
     if (!new_lst) return -1;
     if (new_lst != lst) {
-        am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd,
-                    am_make_value_of_ptr((am_object_t *)new_lst));
+        if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, list_hd,
+                        am_make_value_of_ptr((am_object_t *)new_lst)) != 0) {
+            am_list_destroy(proc->heap_alloc, new_lst);
+            return -1;
+        }
     }
+    // am_process_push_operand(proc, am_make_value_of_uint((am_uint_t)new_lst->length));
     am_process_step(proc);
     return 0;
 }
@@ -1576,8 +1580,8 @@ static int32_t op_fork(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
     (void)rt;
     (void)proc;
     (void)operand;
-    // TODO: 实现 fork
-    fprintf(stderr, "[Runtime] fork 指令尚未实现\n");
+    // NOTE 废弃fork
+    fprintf(stderr, "[Runtime] fork 指令已废弃\n");
     return -1;
 }
 
@@ -1624,8 +1628,7 @@ static int32_t op_newline(am_runtime_t *rt, am_process_t *proc, am_value_t opera
 static int32_t op_read(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)rt;
     (void)operand;
-    // TODO: 端口读取尚未实现
-    am_process_push_operand(proc, AM_VALUE_UNDEFINED);
+    // NOTE 废弃该指令
     am_process_step(proc);
     return 0;
 }
@@ -1634,9 +1637,7 @@ static int32_t op_read(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
 static int32_t op_write(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)rt;
     (void)operand;
-    // TODO: 端口写入尚未实现
-    am_process_pop_operand(proc);
-    am_process_pop_operand(proc);
+    // NOTE 废弃该指令
     am_process_step(proc);
     return 0;
 }

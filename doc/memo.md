@@ -17,7 +17,11 @@ NOTE 回归测试使用哪些用例：
 - test_ipc2.scm
 - test_deadlock.scm
 
+TODO 栈平衡。
+
 TODO 当前dump/load是“内存快照式”实现，严重依赖字长、指针长度、size_t长度和结构体填充，不是与系统字长无关；要在32位MCU与64位宿主之间互导模块，需要引入一层显式的固定宽度磁盘格式。（详见2026-07-08的prompt）
+
+TODO System.eval在运行时追加的ilcode不会自动回收，因此如果频繁调用System.eval会造成内存逐渐耗尽，在ESP32这样的设备上特别明显。
 
 TODO ast->node无法扩容？am_heap_set实现似乎有问题，为什么不调用map现成接口？
 

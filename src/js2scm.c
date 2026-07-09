@@ -14,6 +14,15 @@
 
 static jmp_buf g_err_jmp;
 
+static void *xrealloc(void *p, size_t sz) {
+    void *q = realloc(p, sz);
+    if (!q) {
+        fprintf(stderr, "js2scm: out of memory\n");
+        longjmp(g_err_jmp, 1);
+    }
+    return q;
+}
+
 /* ======================== String builder ======================== */
 
 typedef struct {
@@ -39,7 +48,7 @@ static void sb_grow(SB *sb, size_t need) {
     if (sb->len + need + 1 <= sb->cap) return;
     size_t newcap = sb->cap ? sb->cap * 2 : 256;
     while (newcap < sb->len + need + 1) newcap *= 2;
-    sb->buf = (char *)realloc(sb->buf, newcap);
+    sb->buf = (char *)xrealloc(sb->buf, newcap);
     sb->cap = newcap;
 }
 
@@ -109,7 +118,7 @@ static void tl_init(TokList *tl) {
 static void tl_add(TokList *tl, TokType type, const char *value, int line, int col) {
     if (tl->n + 1 > tl->cap) {
         tl->cap = tl->cap ? tl->cap * 2 : 64;
-        tl->data = (Token *)realloc(tl->data, tl->cap * sizeof(Token));
+        tl->data = (Token *)xrealloc(tl->data, tl->cap * sizeof(Token));
     }
     Token *t = &tl->data[tl->n++];
     t->type = type;
@@ -372,7 +381,7 @@ static void nl_init(NodeList *l) {
 static void nl_add(NodeList *l, Node *n) {
     if (l->n + 1 > l->cap) {
         l->cap = l->cap ? l->cap * 2 : 4;
-        l->data = (Node **)realloc(l->data, l->cap * sizeof(Node *));
+        l->data = (Node **)xrealloc(l->data, l->cap * sizeof(Node *));
     }
     l->data[l->n++] = n;
 }
@@ -392,7 +401,7 @@ static void pl_init(ParamList *p) {
 static void pl_add(ParamList *p, const char *s) {
     if (p->n + 1 > p->cap) {
         p->cap = p->cap ? p->cap * 2 : 4;
-        p->data = (char **)realloc(p->data, p->cap * sizeof(char *));
+        p->data = (char **)xrealloc(p->data, p->cap * sizeof(char *));
     }
     p->data[p->n++] = xstrdup(s);
 }
