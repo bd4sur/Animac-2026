@@ -4,7 +4,7 @@ NOTE 回归测试使用哪些用例：
 
 - test.scm
 - mlp.scm
-- nano_llm_infer.scm
+- llm.scm
 - sleepsort.scm
 - yinyang.scm
 - yinyang_cps.scm
@@ -16,6 +16,7 @@ NOTE 回归测试使用哪些用例：
 - test_ipc1.scm
 - test_ipc2.scm
 - test_deadlock.scm
+- jstest.js
 
 TODO 栈平衡。
 

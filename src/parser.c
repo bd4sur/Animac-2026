@@ -1770,6 +1770,11 @@ static void populate_top_lambda_and_var_top(parser_ctx_t *ctx) {
     if (!ctx || !ctx->ast) return;
     am_ast_t *ast = ctx->ast;
 
+    // 清空 var_top，避免与 macro_rebuild_var_top 重复累积
+    if (ast->var_top) {
+        ast->var_top->length = 0;
+    }
+
     ast->top_lambda_handle = am_ast_get_top_lambda_node_handle(ast);
     if (ast->top_lambda_handle == AM_HANDLE_NULL) {
         parser_set_error(ctx, L"failed to get top lambda handle");

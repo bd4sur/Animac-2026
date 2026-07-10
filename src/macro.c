@@ -54,6 +54,7 @@ typedef struct am_macro_expand_ctx_t {
     am_map_t                *subst;     // pattern varid -> matched value (or list handle for ellipsis)
     am_handle_t              parent;
     int                      error;
+    int                      changed;   // 是否实际发生过宏展开或 define-syntax 消除
     wchar_t                  error_msg[256];
     am_macro_t             **allocated_macros;
     size_t                   allocated_macro_count;
@@ -1288,6 +1289,7 @@ static int macro_expand_body_sequence(am_macro_expand_ctx_t *ctx, am_value_t *bo
         if (am_value_is_handle(body)) {
             am_list_t *body_lst = macro_as_list(ctx->ast, body);
             if (body_lst && macro_is_define_syntax(ctx->ast, body_lst)) {
+                ctx->changed = 1;
                 continue;
             }
         }
@@ -1309,14 +1311,47 @@ static int macro_expand_body_sequence(am_macro_expand_ctx_t *ctx, am_value_t *bo
 
 static am_value_t macro_expand_lambda(am_macro_expand_ctx_t *ctx, am_handle_t old_h, am_list_t *old_lst,
                                        am_macro_env_frame_t *env, am_handle_t parent) {
-    (void)old_h;
+    size_t n_body = 0;
+    am_value_t *bodies = am_list_lambda_get_bodies(ctx->ast->alloc, old_lst, &n_body);
+    am_value_t *new_bodies = NULL;
+    size_t new_n_body = 0;
+    if (bodies) {
+        if (macro_expand_body_sequence(ctx, bodies, n_body, env, old_h, &new_bodies, &new_n_body) != 0) {
+            free(bodies);
+            return AM_VALUE_UNDEFINED;
+        }
+    }
+
+    // 如果 body 没有变化（数量与内容均相同），直接返回原 lambda，避免制造冗余节点
+    int bodies_changed = 0;
+    if (new_n_body != n_body) {
+        bodies_changed = 1;
+    } else if (bodies) {
+        for (size_t i = 0; i < n_body; i++) {
+            if (!am_value_equal(bodies[i], new_bodies[i])) {
+                bodies_changed = 1;
+                break;
+            }
+        }
+    }
+
+    if (!bodies_changed) {
+        free(bodies);
+        free(new_bodies);
+        return am_make_value_of_handle(old_h);
+    }
+
     am_handle_t new_h = am_ast_make_lambda_node(ctx->ast, parent);
     if (new_h == AM_HANDLE_NULL) {
+        free(bodies);
+        free(new_bodies);
         macro_set_error(ctx, L"out of memory expanding lambda");
         return AM_VALUE_UNDEFINED;
     }
 
     if (macro_register_lambda_scope(ctx, new_h, parent) != 0) {
+        free(bodies);
+        free(new_bodies);
         macro_set_error(ctx, L"failed to register expanded lambda scope");
         return AM_VALUE_UNDEFINED;
     }
@@ -1329,57 +1364,78 @@ static am_value_t macro_expand_lambda(am_macro_expand_ctx_t *ctx, am_handle_t ol
     for (size_t i = 0; i < (size_t)n_param; i++) {
         am_value_t p = am_list_get(ctx->ast->alloc, old_lst, 2 + i);
         if (macro_lambda_add_param(ctx->ast, new_h, am_value_to_varid(p)) != 0) {
+            free(bodies);
+            free(new_bodies);
             macro_set_error(ctx, L"failed to copy lambda param");
             return AM_VALUE_UNDEFINED;
         }
         if (macro_lambda_scope_add_var(ctx, new_h, am_value_to_varid(p)) != 0) {
+            free(bodies);
+            free(new_bodies);
             macro_set_error(ctx, L"failed to add expanded lambda param to scope");
             return AM_VALUE_UNDEFINED;
         }
     }
 
-    size_t n_body = 0;
-    am_value_t *bodies = am_list_lambda_get_bodies(ctx->ast->alloc, old_lst, &n_body);
-    if (bodies) {
-        am_value_t *new_bodies = NULL;
-        size_t new_n_body = 0;
-        if (macro_expand_body_sequence(ctx, bodies, n_body, env, new_h, &new_bodies, &new_n_body) != 0) {
-            free(bodies);
-            return AM_VALUE_UNDEFINED;
-        }
-        free(bodies);
+    if (new_bodies) {
         for (size_t i = 0; i < new_n_body; i++) {
             if (macro_lambda_add_body(ctx->ast, new_h, new_bodies[i], NULL) != 0) {
-                macro_set_error(ctx, L"failed to add expanded lambda body");
+                free(bodies);
                 free(new_bodies);
+                macro_set_error(ctx, L"failed to add expanded lambda body");
                 return AM_VALUE_UNDEFINED;
             }
         }
-        free(new_bodies);
     }
 
+    free(bodies);
+    free(new_bodies);
     return am_make_value_of_handle(new_h);
 }
 
 
 static am_value_t macro_expand_slist(am_macro_expand_ctx_t *ctx, am_handle_t old_h, am_list_t *old_lst,
                                       am_macro_env_frame_t *env, am_handle_t parent) {
-    (void)old_h;
+    am_value_t *expanded_children = (am_value_t *)malloc(old_lst->length * sizeof(am_value_t));
+    if (!expanded_children) {
+        macro_set_error(ctx, L"out of memory expanding slist");
+        return AM_VALUE_UNDEFINED;
+    }
+
+    int any_changed = 0;
+    for (size_t i = 0; i < old_lst->length; i++) {
+        am_value_t child = am_list_get(ctx->ast->alloc, old_lst, i);
+        am_value_t expanded = macro_expand_value(ctx, child, env, old_h);
+        if (ctx->error) {
+            free(expanded_children);
+            return AM_VALUE_UNDEFINED;
+        }
+        expanded_children[i] = expanded;
+        if (!any_changed && !am_value_equal(child, expanded)) {
+            any_changed = 1;
+        }
+    }
+
+    if (!any_changed) {
+        free(expanded_children);
+        return am_make_value_of_handle(old_h);
+    }
+
     am_handle_t new_h = am_ast_make_slist_node(ctx->ast, parent, old_lst->type);
     if (new_h == AM_HANDLE_NULL) {
+        free(expanded_children);
         macro_set_error(ctx, L"out of memory expanding slist");
         return AM_VALUE_UNDEFINED;
     }
 
     for (size_t i = 0; i < old_lst->length; i++) {
-        am_value_t child = am_list_get(ctx->ast->alloc, old_lst, i);
-        am_value_t expanded = macro_expand_value(ctx, child, env, new_h);
-        if (ctx->error) return AM_VALUE_UNDEFINED;
-        if (macro_list_push(ctx->ast, new_h, expanded, NULL) != 0) {
+        if (macro_list_push(ctx->ast, new_h, expanded_children[i], NULL) != 0) {
+            free(expanded_children);
             macro_set_error(ctx, L"failed to push expanded child");
             return AM_VALUE_UNDEFINED;
         }
     }
+    free(expanded_children);
 
     return am_make_value_of_handle(new_h);
 }
@@ -1402,6 +1458,7 @@ static am_value_t macro_expand_macro_use(am_macro_expand_ctx_t *ctx, am_handle_t
         ctx->subst = subst;
 
         if (macro_match_value(ctx, macro, clause, clause->pattern, input) == 0) {
+            ctx->changed = 1;
             // 收集模板内绑定
             am_map_t *template_bindings = am_map_create(ctx->ast->alloc, 16);
             if (!template_bindings) {
@@ -1460,6 +1517,7 @@ static am_value_t macro_expand_let_syntax(am_macro_expand_ctx_t *ctx, am_handle_
                                            am_macro_env_frame_t *env, am_handle_t parent, int isrec) {
     (void)isrec;
     (void)h;
+    ctx->changed = 1;
     if (lst->length < 2) {
         macro_set_error(ctx, L"invalid let-syntax form");
         return AM_VALUE_UNDEFINED;
@@ -1737,22 +1795,28 @@ int32_t am_macro_expand(am_ast_t *ast) {
         return -1;
     }
 
-    if (am_ast_set_global_nodes(ast, new_bodies, new_n_body) != 0) {
-        free(new_bodies);
-        for (size_t i = 0; i < ctx.allocated_macro_count; i++) {
-            macro_free_macro(ctx.allocated_macros[i]);
+    // 若实际发生过宏展开或 define-syntax 消除，才替换顶层节点并刷新元数据。
+    // 无宏时直接复用原 AST，避免制造冗余节点与重复元数据。
+    if (ctx.changed) {
+        if (am_ast_set_global_nodes(ast, new_bodies, new_n_body) != 0) {
+            free(new_bodies);
+            for (size_t i = 0; i < ctx.allocated_macro_count; i++) {
+                macro_free_macro(ctx.allocated_macros[i]);
+            }
+            free(ctx.allocated_macros);
+            macro_set_error(&ctx, L"failed to set global nodes");
+            fprintf(stderr, "[Macro Error] %ls\n", ctx.error_msg);
+            return -1;
         }
-        free(ctx.allocated_macros);
-        macro_set_error(&ctx, L"failed to set global nodes");
-        fprintf(stderr, "[Macro Error] %ls\n", ctx.error_msg);
-        return -1;
-    }
-    free(new_bodies);
+        free(new_bodies);
 
-    // 刷新元数据
-    macro_rebuild_lambda_handles(ast);
-    am_parser_tail_call_analysis(ast);
-    macro_rebuild_var_top(ast);
+        // 刷新元数据
+        macro_rebuild_lambda_handles(ast);
+        am_parser_tail_call_analysis(ast);
+        macro_rebuild_var_top(ast);
+    } else {
+        free(new_bodies);
+    }
 
     // 释放宏描述符
     for (size_t i = 0; i < ctx.allocated_macro_count; i++) {

@@ -10,7 +10,7 @@
 (native System)
 
 (import List "list.scm")
-(import NanoModels "nano_llm_model.scm")
+(import NanoModels "llm_model.scm")
 
 (define memstat
   (lambda ()
