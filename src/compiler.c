@@ -281,7 +281,7 @@ static am_varid_t am_compiler_make_temp_varid(am_compiler_ctx_t *ctx, wchar_t *n
 
 static int32_t compile_value(am_compiler_ctx_t *ctx, am_value_t v);
 static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle);
-static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t handle);
+static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t handle, int32_t is_tail);
 static int32_t compile_lambda(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_callcc(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_begin(am_compiler_ctx_t *ctx, am_handle_t handle);
@@ -398,7 +398,7 @@ static int32_t compile_value(am_compiler_ctx_t *ctx, am_value_t v) {
 // Application 编译
 // ===============================================================================
 
-static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
+static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t handle, int32_t is_tail) {
     am_value_t node_val = am_ast_get_node(ctx->ast, handle);
     if (!am_value_is_ptr(node_val)) return -1;
     am_list_t *node = (am_list_t *)am_value_to_ptr(node_val);
@@ -451,7 +451,8 @@ static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t h
     }
 
     // 调用临时lambda
-    return emit_instruction(ctx, AM_VM_OP_call, temp_lambda_label);
+    uint32_t call_opcode = (is_tail == 0) ? AM_VM_OP_tailcall : AM_VM_OP_call;
+    return emit_instruction(ctx, call_opcode, temp_lambda_label);
 }
 
 
@@ -462,6 +463,9 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
     if (node->length == 0) return 0;
 
     am_value_t first = am_list_get(ctx->ast->alloc, node, 0);
+
+    // 尾调用判断
+    int32_t is_tail = compiler_is_tailcall(ctx, handle);
 
     // 特殊形式
     if (am_value_is_symbol(first)) {
@@ -482,10 +486,14 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
         if (sym == am_value_to_symbol(AM_VALUE_KW_or))      return compile_or(ctx, handle);
     }
 
-    // 首项是待求值的Application，需要进行η变换
+    // 首项是待求值的Application，需要进行η变换。
+    // 说明：不能先编译参数、再把首项求值结果存入全局/闭包级临时变量，然后 call 该变量。
+    // 因为 call/cc 捕获的续体会保存当时的闭包/栈状态，若函数值放在可变的临时变量里，
+    // 续体恢复后会读到错误的函数值；而η变换将函数与实参作为临时lambda的参数（局部绑定），
+    // 每次调用都生成新的闭包，续体捕获的是正确的参数绑定，从而保证 yinyang 等用例正确。
     if (am_value_is_handle(first) &&
         compiler_node_kind(ctx, am_value_to_handle(first)) == AM_COMPILER_NODE_KIND_APPLICATION) {
-        return compile_complex_application(ctx, handle);
+        return compile_complex_application(ctx, handle, is_tail);
     }
 
     // 首项是合法的可调用项，包括变量、Native、Builtin、Lambda
@@ -512,8 +520,6 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
             }
         }
 
-        // 尾调用判断
-        int32_t is_tail = compiler_is_tailcall(ctx, handle);
         uint32_t call_opcode = (is_tail == 0) ? AM_VM_OP_tailcall : AM_VM_OP_call;
 
         if (am_value_is_handle(first) &&

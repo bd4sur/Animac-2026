@@ -4300,6 +4300,31 @@ nodes: {
 
 ---------------------
 
+2026-07-10
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。在编译过程中，为了处理首项是Application的Application，我在旧代码中使用了η变换，也就是 (A 1 2 ..) → ((lambda (F x y ..) (F x y ..)) A 1 2 ..) ，这样会临时引入一些额外的中间变量来存储额外生成的闭包。你可以通过git来查看最近一次commit中的 @src/compiler.c 的 compile_application 函数和 compile_complex_application 。
+
+但是，在工作区内最新的 @src/compiler.c 中，我对“首项是Application的Application”这种情况的编译做了简化，详情见最新的代码。
+
+然而， @test/yinyang.scm 测试用例测试不通过。因为这个用例不仅涉及“首项是Application的Application”，还涉及call/cc。
+
+我怀疑可能跟编译过程中临时生成的变量（varid）被遗漏有关，当然也有可能是我写在注释中的编译规则不正确。总之请你复现、定位、修复该问题。
+
+系统中安装了WSL（Ubuntu 24.04），具备gcc、make、gdb等工具。你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以使用 @test/yinyang.scm 等输入进行调试，  @main.c  会输出AST信息供你参考。你可以通过切换 am_macro_expand 是否启用来辅助定位。你可以使用WSL进行编译构建和测试。
+
+
+
+问题确实出在你简化的 `compile_application` 对“首项是 Application 的 Application”的处理上：
+
+- 旧代码使用 η 变换：`(A 1 2 ...) → ((lambda (F x y ...) (F x y ...)) A 1 2 ...)`，函数值和实参都作为**临时 lambda 的参数**（局部绑定）。
+- 新代码把首项（`(f x y)` 的求值结果）先存到一个编译器生成的临时变量 `TEMP_FUNC` 里，再编译参数，最后 `call` / `tailcall` 这个变量。
+
+对于普通调用两者等价，但遇到 `call/cc` 时，续体（continuation）会保存捕获时刻的闭包/栈状态。`TEMP_FUNC` 是当前闭包里的可变绑定，续体恢复后读到的函数值可能是错误的；而 η 变换每次调用都产生一个新的临时 lambda 闭包，函数和实参是局部参数，续体捕获的是正确的绑定。
+
+因此 `@test/yinyang.scm` 这种“嵌套 Application + call/cc”的组合会失败。
+
 
 ---------------------
 
