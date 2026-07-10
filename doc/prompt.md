@@ -4329,6 +4329,294 @@ nodes: {
 ---------------------
 
 
+请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言+双栈式VM架构。请你阅读项目全部代码，重点阅读编译器、VM实现，分析当前实现中栈平衡的情况，并提出详尽的改善建议。
+
+不要修改任何代码，仅在回复中给出分析报告和优化方案即可。
+
+
+
+
+# Animac 2026 栈平衡分析报告
+
+## 1. 执行摘要
+
+本项目采用 **编译器 → 中间语言（IL）→ 双栈式 VM** 的架构。经过对 `compiler.c`、`runtime.c`、`process.c`、`continuation.c`、`closure.c`、`native_System.c`、`linker.c` 等核心文件的完整阅读，当前实现的栈平衡总体处于“**可运行但不够严谨**”的状态：
+
+- **操作数栈（opstack）** 存在明确的中间结果未清理问题，`begin` / `lambda` 体中非最终表达式的求值结果没有被 `pop`，导致栈持续累积。源码中相应 `pop` 指令被注释掉，并留有 `TODO 处理pop问题`。
+- **静态 opstack 深度分析** 总体是保守的（倾向于高估而非低估），但部分指令的栈效应（stack effect）计算有误，存在低估风险。
+- **函数调用栈（fstack）** 配对基本正确，但容量硬编码、无动态扩容。
+- **续体（continuation）** 捕获/恢复机制正确，但非尾位置调用续体时会先压入一个会被覆盖的栈帧，存在冗余。
+- **`System.eval`** 通过 `evalcleanup` 指令恢复栈高，逻辑基本正确但较粗放。
+
+下面按模块给出详细分析与优化建议。
+
+---
+
+## 2. 架构与栈模型回顾
+
+### 2.1 双栈结构
+
+| 栈 | 用途 | 关键文件 |
+|---|---|---|
+| **opstack** | 表达式求值、参数传递、返回值 | `process.h/c`、`runtime.c` |
+| **fstack** | 函数调用帧 `{closure_handle, return_iaddr}`，成对压入/弹出 | `process.h/c` |
+
+### 2.2 调用约定
+
+- 参数由调用者通过 `push` 系列指令压入 `opstack`。
+- 被调用函数入口通过 `store` 指令按逆序将参数弹出到闭包绑定中。
+- 返回值由被调用函数在 `return` 前保留在 `opstack` 栈顶。
+- `call` 会压入 fstack 帧；`tailcall` 不压帧；`return` 弹帧。
+- 函数值本身通常由指令的 `operand` 指定（`iaddr`/`varid`/`label`），而不是放在 `opstack` 上。
+
+### 2.3 关键编译路径
+
+- `compile_begin()` / `compile_lambda()`：顺序编译子表达式。
+- `compile_application()`：处理普通调用、内置操作、`call/cc`、η 变换。
+- `compile_complex_application()`：首项仍是 Application 时做 η 变换，生成临时 lambda。
+- `am_compile()` 末尾调用 `am_compiler_opstack_depth_analysis()` 计算 `mod->opstack_depth`，用于进程创建时分配 `opstack`。
+
+---
+
+## 3. 操作数栈（opstack）平衡分析
+
+### 3.1 核心问题：中间结果未清理（高优先级）
+
+**位置**：`src/compiler.c` 第 561–567 行（`compile_lambda`）、第 669–675 行（`compile_begin`）
+
+当前代码：
+
+```c
+for (size_t i = 2 + n_param; i < node->length; i++) {
+    if (compile_value(ctx, node->children[i]) != 0) return -1;
+    // 除最后一个子表达式外，其余表达式的结果都pop掉
+    // if (i < node->length - 1) {
+    //     if (emit_instruction(ctx, AM_VM_OP_pop, AM_VALUE_UNDEFINED) != 0) return -1;
+    // }
+}
+```
+
+以及 `compile_begin` 中同样的注释掉的 `pop`。
+
+**影响**：
+
+```scheme
+(lambda ()
+  (+ 1 2)    ; 结果 3 留在栈上
+  (+ 3 4))   ; 结果 7 留在栈上
+```
+
+执行后 `opstack` 为 `[3, 7]`，而语义上应该只剩 `[7]`。这导致：
+
+1. **栈泄漏**：每次进入 `begin` / `lambda` 体都会残留 `n-1` 个无用值。
+2. **静态深度被夸大**：`opstack_depth` 被不必要地放大，进程启动时分配更多内存。
+3. **GC 根污染**：残留值被 `am_process_gc_root()` 扫描为 GC 根，可能导致本可回收的对象被保留。
+4. **调用约定被破坏**：如果调用者期望调用后栈顶只有一个返回值，下方的泄漏值会干扰后续所有栈操作。
+
+**建议**：
+
+- 取消注释并启用 `pop`。
+- 同步检查 `compile_cond`、`compile_if` 等分支结构：每个分支最终应只保留一个值；分支之间互斥，但分支内部的中间值同样需要通过 `pop` 清理。
+- 增加编译期栈平衡校验：在 `am_compile_all` 完成后遍历 IL，检查每条控制流路径上 `opstack` 高度变化是否一致。
+
+### 3.2 静态栈深度分析的准确性
+
+**位置**：`src/compiler.c` 第 926–994 行 `compiler_stack_effect()`
+
+当前实现把 `call`、`callnative`、`tailcall` 的栈效应都视为 `0`，这是一种保守假设，会导致高估而非低估，对最大深度估计是安全的。但存在以下**低估**或**错误**：
+
+| 指令 | 当前 stack effect | 实际运行时净变化 | 风险 |
+|---|---|---|---|
+| `set_item` | `-2` | 弹出 `value`、`index`、`list` 共 3 个，无返回值 → **`-3`** | 低估 1 |
+| `list_push` | `-1` | 弹出 `value`、`list` 共 2 个 → **`-2`** | 低估 1 |
+| `callnative`（0 参且返 1 值，如 `System.memstat`、`System.timestamp`） | `0` | `+1` | 低估 |
+| `concat` | `-1` | 弹出 `count` 个元素 + count 值，推 1 个列表 → **`-count`** | 高估（安全） |
+| `write` / `read` | `-2` / `+1` | 已废弃，可忽略 | — |
+
+**建议**：
+
+- 修正 `set_item`、`list_push` 的栈效应为实际值。
+- 对 `callnative` 建立已知 native 函数的签名表，根据参数个数和返回值个数计算净效应；未知 native 保守按 `0` 处理。
+- 对 `concat` 可保留 `-1` 作为保守估计，或在编译期将元素个数写入指令元数据以精确计算。
+- 建议增加指令栈效应单元测试，确保 `compiler_stack_effect()` 与 `runtime.c` 中各 `op_*` 实现一致。
+
+### 3.3 调用指令参数个数无法静态获知
+
+**位置**：`src/compiler.c` 第 1090–1098 行 `compiler_depth_search()`
+
+`call` 指令只知道操作数（函数标签/varid），不知道前面压了多少个参数，因此无法精确计算调用后的栈高度。当前把 `call` 当 `0` 处理，虽然保守，但会显著高估深度。
+
+**建议**：
+
+- **方案 A（推荐，改动最小）**：在 `am_instruction_t` 中增加可选的 `stack_effect_hint` 字段，或在编译期维护一个辅助表，记录每条 `call`/`tailcall` 之前的参数个数。`am_compile_all` 完全掌控代码生成，可以在 emit 调用时顺带记录。
+- **方案 B**：将 `call` 指令的 operand 扩展为复合结构，同时携带函数引用和 arity。这会改变 IL 格式和二进制模块格式，影响较大。
+- **方案 C**：保持保守估计，但依赖动态扩容兜底，适合对内存不敏感的场景。
+
+### 3.4 运行时动态扩容掩盖了静态分析缺陷
+
+**位置**：`src/process.c` 第 387–407 行 `am_process_push_operand()`
+
+```c
+if (used >= proc->opstack_capacity) {
+    size_t new_capacity = proc->opstack_capacity * 2;
+    ...
+    proc->opstack = new_opstack;
+}
+```
+
+当静态深度不足时，运行时会自动扩容。这保证了基本可用性，但：
+
+1. 运行时 realloc 有开销，且可能发生在指令执行中间，与 GC 压缩交互时存在潜在风险。
+2. 无法发现编译器栈平衡 bug，问题被隐藏。
+3. 扩容后 `opstack_top` 指针更新正确，但若在 native 函数或 GC 过程中持有旧指针会出现悬空。
+
+**建议**：
+
+- 保留动态扩容作为**安全兜底**，但增加调试/断言模式：
+  - 在 `am_runtime_execute()` 每条指令前后记录 `opstack` 长度，超过 `opstack_capacity` 时触发断言或错误回调。
+  - 在 `am_process_pop_operand()` 中检测下溢并报告，而不是默默返回 `UINTPTR_MAX`。
+- 在进程创建时根据更精确的分析结果预分配，减少扩容次数。
+
+---
+
+## 4. 函数调用栈（fstack）平衡分析
+
+### 4.1 配对基本正确
+
+- `op_call_async()` 中 `return_target != SIZE_MAX` 时压入 `{current_closure_handle, return_target}`。
+- `op_return()` 从 `fstack` 弹帧并恢复闭包/PC。
+- `tailcall` 不压帧，符合尾调用语义。
+- 顶层 `am_compile_all()` 以 `call top_lambda` 开始，随后 `halt`/`goto ret`，返回地址为 `PC+1`，配对成立。
+
+### 4.2 fstack 容量硬编码
+
+**位置**：`src/process.c` 第 318 行
+
+```c
+proc->fstack_capacity = 2048;
+```
+
+无动态扩容，深度递归会溢出。`op_call_async()` 压帧前检查 `used + 2 > fstack_capacity`，失败返回 `-1`，导致进程停止。
+
+**建议**：
+
+- 引入可配置默认值（例如通过 `AM_FSTACK_DEFAULT_CAPACITY` 宏）。
+- 实现动态扩容：压帧前若空间不足则 `am_realloc`，并更新 `fstack_top`。
+- 与 `opstack` 一样，增加调试模式下深度计数和溢出报告。
+
+---
+
+## 5. 续体（continuation）栈平衡分析
+
+### 5.1 捕获与恢复机制
+
+- `am_process_capture_continuation()` 深拷贝当前 `opstack` 和 `fstack`，连同 `current_closure_handle` 保存到 continuation 对象。
+- `am_process_load_continuation()` 将 `opstack`、`fstack`、`current_closure_handle` 恢复为捕获时的快照。
+- 实现正确，call/cc 语义可成立。
+
+### 5.2 非尾位置调用续体时的冗余栈帧
+
+**位置**：`src/runtime.c` 第 699–710 行
+
+```c
+else if (obj->type == AM_OBJECT_TYPE_CONTINUATION) {
+    if (return_target != SIZE_MAX) {
+        am_value_t closure_val = am_make_value_of_handle(proc->current_closure_handle);
+        am_value_t ret_val = am_make_value_of_iaddr(return_target);
+        if (am_process_push_stack_frame(proc, closure_val, ret_val) != 0) return -1;
+    }
+    am_value_t top = am_process_pop_operand(proc);
+    am_iaddr_t cont_target = am_process_load_continuation(proc, hd);
+    ...
+}
+```
+
+如果 `return_target != SIZE_MAX`（非尾位置调用续体），先压入的帧会立即被 `am_process_load_continuation()` 恢复的 `fstack` 覆盖，完全浪费，且可能让调用者误以为有返回路径。
+
+**建议**：
+
+- 对 continuation 调用直接跳过压帧，因为 `load_continuation` 必然将控制流转移到捕获点，不存在回到当前调用点的路径。
+- 或者：压帧操作应放在 `load_continuation` **之后**（但语义上无意义，不推荐）。
+
+### 5.3 续体占用过大
+
+`opstack` 和 `fstack` 被完整深拷贝到 continuation 对象中。对于深层调用，单次 capture 可能很大。
+
+**建议**（中长期）：
+
+- 考虑实现**分隔式续体（delimited continuation）**或惰性栈切片，只保存实际需要的部分。
+- 或者引入“栈帧链表”替代扁平 fstack，使 continuation 可以共享未变化的帧。
+
+---
+
+## 6. `System.eval` 动态代码的栈处理
+
+### 6.1 当前机制
+
+- `am_native_System_eval()` 保存当前 `opstack` 长度 `saved_opstack_len`。
+- 编译 eval 代码，并在其返回处将 `goto` 替换为 `evalcleanup`，附带清理记录。
+- `op_evalcleanup()` 将 `opstack` 弹出至 `saved_opstack_len`，截断 `ilcode`，清理静态标记和临时变量，跳转回返回地址。
+
+### 6.2 平衡性
+
+- eval 代码被包装为 `((lambda () <code>))`，因此内部调用约定与普通 lambda 一致。
+- `evalcleanup` 把 eval 返回值也丢弃（因为 `System.eval` 返回 void），这是符合当前设计的。
+- 若 eval 代码异常退出或调用续体后未回到 `evalcleanup`，清理不会执行，会导致 IL 和临时变量残留。这是已知限制。
+
+### 6.3 建议
+
+- 在 `evalcleanup` 中增加断言：恢复后的栈高必须严格等于 `saved_opstack_len`，否则报错，帮助发现 eval 代码的栈不平衡。
+- 对 `System.eval` 支持返回值的需求，可考虑保留栈顶一个值而非全部弹空。
+- 将 `eval` 引入的 `ILTEMP` 临时变量清理与栈恢复解耦，提高可维护性。
+
+---
+
+## 7. 链接后的栈深度
+
+**位置**：`src/linker.c` 第 676–680 行
+
+链接合并多个模块后会重新进行尾位置分析，但**不会重新计算 `opstack_depth`**。实际上 `opstack_depth` 是在 `am_compile()` 中计算的，而 `am_compile()` 在 `am_link()` 之后调用，因此当前流程是正确的。
+
+**建议**：
+
+- 在 `am_compile()` 中增加对 `am_compiler_opstack_depth_analysis()` 返回 `SIZE_MAX` 的健壮处理。
+- 如果未来支持从二进制模块加载后再进行动态链接/热更新，需要重新分析合并后的 IL 深度。
+
+---
+
+## 8. 优化建议汇总
+
+| 优先级 | 建议 | 涉及文件 |
+|---|---|---|
+| **高** | 启用 `compile_begin` / `compile_lambda` 中非最终表达式的 `pop` | `compiler.c` |
+| **高** | 修正 `compiler_stack_effect()` 中 `set_item`、`list_push`、`callnative` 等错误 | `compiler.c` |
+| **高** | 增加编译期栈平衡校验 pass | 新增或 `compiler.c` |
+| **中** | 为 `call`/`tailcall` 记录参数个数，精确计算调用后栈高 | `compiler.c` |
+| **中** | `fstack` 支持动态扩容或可配置容量 | `process.c` |
+| **中** | 修复 continuation 非尾调用时的冗余压帧 | `runtime.c` |
+| **中** | `op_evalcleanup` 增加栈高断言 | `runtime.c` |
+| **低** | 调试模式下记录每条指令前后的 opstack 长度 | `runtime.c` |
+| **低** |  native 函数签名表，用于精确 `callnative` 栈效应 | `native.h` / `compiler.c` |
+| **低** | 续体对象实现栈共享/切片，减少内存占用 | `continuation.c` |
+| **低** | 为每条 opcode 建立文档化的栈效应不变式 | `opcode.h` / 文档 |
+
+---
+
+## 9. 结论
+
+当前 Animac VM 的栈平衡机制在**功能层面可以跑通测试用例**，但存在以下必须关注的技术债务：
+
+1. **`begin` / `lambda` 体中不 pop 中间结果**是最突出的栈泄漏源，也是源码 TODO 直接指出的问题。修复后预计可显著降低 `opstack_depth` 预估值，并减少 GC 根污染。
+2. **静态栈深度分析保守有余、精确不足**，部分指令栈效应错误，可能被动态扩容掩盖。
+3. **fstack 硬编码容量**限制了递归深度。
+4. **续体调用和 eval 清理**有冗余和健壮性提升空间。
+
+建议按上表优先级逐步改进，优先修复编译期的 `pop` 和栈效应错误，再增强运行时的栈检查和动态扩容能力。
+
+
+
 ---------------------
 
 
