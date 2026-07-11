@@ -4903,6 +4903,17 @@ int32_t am_runtime_kill_process(am_runtime_t *rt, am_pid_t pid);
 
 ---------------------
 
+# 2026-07-12
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。在 @src/repl.c 和 @include/repl.h 中实现了一个REPL。但是REPL现在有个问题：标准输出和错误输出全部通过 repl_ctx_output_wcs 混在一起输出，am_repl_ctx_t 和 am_repl_result_t 结构体也把标准输出和错误输出混在一起。
+
+我要求你将正常output和error分开，分别接收Runtime的output_fifo和error_fifo两个FIFO的信息。相应的 @main_repl.c 也要修改。
+
+除了 @src/repl.c 、 @include/repl.h 、@main_repl.c ，不要修改其他任何文件。
+
+系统中安装了WSL（Ubuntu 24.04），具备gcc、make、gdb等工具。你可以使用WSL进行编译构建和测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

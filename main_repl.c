@@ -99,14 +99,13 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        if (res.status == AM_REPL_STATUS_OUTPUT) {
+        if (res.status == AM_REPL_STATUS_OUTPUT || res.status == AM_REPL_STATUS_ERROR) {
             if (res.output && res.output[0] != '\0') {
                 printf("%s", res.output);
                 fflush(stdout);
             }
-        } else if (res.status == AM_REPL_STATUS_ERROR) {
-            if (res.output && res.output[0] != '\0') {
-                fprintf(stderr, "%s", res.output);
+            if (res.error && res.error[0] != '\0') {
+                fprintf(stderr, "%s", res.error);
             }
         }
         // AM_REPL_STATUS_CONTINUE：无需输出

@@ -21,6 +21,8 @@
 // 前向声明
 static void repl_ctx_output_wchar(am_repl_ctx_t *ctx, wchar_t c);
 static void repl_ctx_output_wcs(am_repl_ctx_t *ctx, const wchar_t *s);
+static void repl_ctx_error_wchar(am_repl_ctx_t *ctx, wchar_t c);
+static void repl_ctx_error_wcs(am_repl_ctx_t *ctx, const wchar_t *s);
 static void repl_ctx_clear_output(am_repl_ctx_t *ctx);
 static int repl_ctx_accum_append(am_repl_ctx_t *ctx, const wchar_t *line);
 static void repl_ctx_reset_accum(am_repl_ctx_t *ctx);
@@ -35,13 +37,19 @@ static am_repl_result_t repl_ctx_submit(am_repl_ctx_t *ctx);
 
 // 运行时回调：捕获输出到当前上下文的输出缓冲区。
 static void on_tick(am_runtime_t *rt) {
-    if (!rt || !rt->output_fifo) return;
+    if (!rt || !rt->output_fifo || !rt->error_fifo) return;
     am_repl_ctx_t *ctx = (am_repl_ctx_t *)am_get_runtime_host_context(rt);
     if (!ctx) return;
     while (rt->output_fifo->length > 0) {
         am_value_t v = am_list_shift(rt->vm_alloc, rt->output_fifo);
         if (am_value_is_wchar(v)) {
             repl_ctx_output_wchar(ctx, (wchar_t)am_value_to_wchar(v));
+        }
+    }
+    while (rt->error_fifo->length > 0) {
+        am_value_t v = am_list_shift(rt->vm_alloc, rt->error_fifo);
+        if (am_value_is_wchar(v)) {
+            repl_ctx_error_wchar(ctx, (wchar_t)am_value_to_wchar(v));
         }
     }
 }
@@ -319,7 +327,7 @@ static int32_t repl_eval_session(am_repl_ctx_t *ctx, const wchar_t *session_code
 
     wchar_t *display_wrapped = repl_build_session_code(ctx, session_code);
     if (!display_wrapped) {
-        repl_ctx_output_wcs(ctx, L"[REPL] 语法解析失败\n");
+        repl_ctx_error_wcs(ctx, L"[REPL] 语法解析失败\n");
         return -1;
     }
 
@@ -333,14 +341,14 @@ static int32_t repl_eval_session(am_repl_ctx_t *ctx, const wchar_t *session_code
     am_free(ctx->vm_alloc, path_buf);
     am_free(ctx->vm_alloc, display_wrapped);
     if (!ast) {
-        repl_ctx_output_wcs(ctx, L"[REPL] 语法解析失败\n");
+        repl_ctx_error_wcs(ctx, L"[REPL] 语法解析失败\n");
         return -1;
     }
 
     am_module_t *mod = am_compile(ast, 0, 0);
     if (!mod) {
         am_ast_destroy(ast);
-        repl_ctx_output_wcs(ctx, L"[REPL] 编译失败\n");
+        repl_ctx_error_wcs(ctx, L"[REPL] 编译失败\n");
         return -1;
     }
 
@@ -349,7 +357,7 @@ static int32_t repl_eval_session(am_repl_ctx_t *ctx, const wchar_t *session_code
         if (mod->ilcode) am_free(ctx->vm_alloc, mod->ilcode);
         if (mod->ast) am_ast_destroy(mod->ast);
         am_free(ctx->vm_alloc, mod);
-        repl_ctx_output_wcs(ctx, L"[REPL] 加载进程失败\n");
+        repl_ctx_error_wcs(ctx, L"[REPL] 加载进程失败\n");
         return -1;
     }
 
@@ -382,27 +390,48 @@ static am_module_t *repl_create_initial_module(am_repl_ctx_t *ctx) {
 // 输出缓冲区操作
 static void repl_ctx_clear_output(am_repl_ctx_t *ctx) {
     if (!ctx) return;
-    ctx->output_len = 0;
-    if (ctx->output_buf) ctx->output_buf[0] = '\0';
+    ctx->stdout_len = 0;
+    if (ctx->stdout_buf) ctx->stdout_buf[0] = '\0';
     ctx->output = NULL;
+    ctx->stderr_len = 0;
+    if (ctx->stderr_buf) ctx->stderr_buf[0] = '\0';
+    ctx->error = NULL;
 }
 
 static void repl_ctx_output_mb(am_repl_ctx_t *ctx, const char *s) {
     if (!ctx || !s) return;
     size_t len = strlen(s);
-    size_t need = ctx->output_len + len + 1;
-    if (need > ctx->output_cap) {
-        size_t new_cap = ctx->output_cap ? ctx->output_cap * 2 : 256;
+    size_t need = ctx->stdout_len + len + 1;
+    if (need > ctx->stdout_cap) {
+        size_t new_cap = ctx->stdout_cap ? ctx->stdout_cap * 2 : 256;
         while (new_cap < need) new_cap *= 2;
-        char *new_buf = (char *)realloc(ctx->output_buf, new_cap);
+        char *new_buf = (char *)realloc(ctx->stdout_buf, new_cap);
         if (!new_buf) return;
-        ctx->output_buf = new_buf;
-        ctx->output_cap = new_cap;
+        ctx->stdout_buf = new_buf;
+        ctx->stdout_cap = new_cap;
     }
-    memcpy(ctx->output_buf + ctx->output_len, s, len);
-    ctx->output_len += len;
-    ctx->output_buf[ctx->output_len] = '\0';
-    ctx->output = ctx->output_buf;
+    memcpy(ctx->stdout_buf + ctx->stdout_len, s, len);
+    ctx->stdout_len += len;
+    ctx->stdout_buf[ctx->stdout_len] = '\0';
+    ctx->output = ctx->stdout_buf;
+}
+
+static void repl_ctx_error_mb(am_repl_ctx_t *ctx, const char *s) {
+    if (!ctx || !s) return;
+    size_t len = strlen(s);
+    size_t need = ctx->stderr_len + len + 1;
+    if (need > ctx->stderr_cap) {
+        size_t new_cap = ctx->stderr_cap ? ctx->stderr_cap * 2 : 256;
+        while (new_cap < need) new_cap *= 2;
+        char *new_buf = (char *)realloc(ctx->stderr_buf, new_cap);
+        if (!new_buf) return;
+        ctx->stderr_buf = new_buf;
+        ctx->stderr_cap = new_cap;
+    }
+    memcpy(ctx->stderr_buf + ctx->stderr_len, s, len);
+    ctx->stderr_len += len;
+    ctx->stderr_buf[ctx->stderr_len] = '\0';
+    ctx->error = ctx->stderr_buf;
 }
 
 static void repl_ctx_output_wchar(am_repl_ctx_t *ctx, wchar_t c) {
@@ -413,11 +442,27 @@ static void repl_ctx_output_wchar(am_repl_ctx_t *ctx, wchar_t c) {
     repl_ctx_output_mb(ctx, mb);
 }
 
+static void repl_ctx_error_wchar(am_repl_ctx_t *ctx, wchar_t c) {
+    char mb[MB_CUR_MAX + 1];
+    int n = wctomb(mb, c);
+    if (n <= 0) return;
+    mb[n] = '\0';
+    repl_ctx_error_mb(ctx, mb);
+}
+
 static void repl_ctx_output_wcs(am_repl_ctx_t *ctx, const wchar_t *s) {
     if (!ctx || !s) return;
     char *mb = wchar_to_mb(s);
     if (!mb) return;
     repl_ctx_output_mb(ctx, mb);
+    free(mb);
+}
+
+static void repl_ctx_error_wcs(am_repl_ctx_t *ctx, const wchar_t *s) {
+    if (!ctx || !s) return;
+    char *mb = wchar_to_mb(s);
+    if (!mb) return;
+    repl_ctx_error_mb(ctx, mb);
     free(mb);
 }
 
@@ -477,6 +522,7 @@ static am_repl_result_t repl_result_from_ctx(am_repl_ctx_t *ctx) {
     am_repl_result_t res;
     res.status = ctx ? ctx->status : AM_REPL_STATUS_ERROR;
     res.output = ctx ? ctx->output : NULL;
+    res.error = ctx ? ctx->error : NULL;
     res.indent = ctx ? ctx->indent : 0;
     return res;
 }
@@ -594,7 +640,7 @@ static am_repl_result_t repl_ctx_eval_js_accum(am_repl_ctx_t *ctx, int force) {
         if (force) {
             repl_ctx_reset_accum(ctx);
             ctx->status = AM_REPL_STATUS_ERROR;
-            repl_ctx_output_wcs(ctx, L"[REPL] JS 翻译失败\n");
+            repl_ctx_error_wcs(ctx, L"[REPL] JS 翻译失败\n");
         } else {
             ctx->status = AM_REPL_STATUS_CONTINUE;
             ctx->indent = js_indent;
@@ -611,7 +657,7 @@ static am_repl_result_t repl_ctx_eval_js_accum(am_repl_ctx_t *ctx, int force) {
         free(scheme);
         repl_ctx_reset_accum(ctx);
         ctx->status = AM_REPL_STATUS_ERROR;
-        repl_ctx_output_wcs(ctx, L"[REPL] 内存不足\n");
+        repl_ctx_error_wcs(ctx, L"[REPL] 内存不足\n");
         return repl_result_from_ctx(ctx);
     }
     wcscpy(scheme_copy, unwrapped);
@@ -637,7 +683,7 @@ static am_repl_result_t repl_ctx_submit(am_repl_ctx_t *ctx) {
     if (!repl_ctx_session_append(ctx, ctx->accum, ctx->accum_len)) {
         repl_ctx_reset_accum(ctx);
         ctx->status = AM_REPL_STATUS_ERROR;
-        repl_ctx_output_wcs(ctx, L"[REPL] 内存不足\n");
+        repl_ctx_error_wcs(ctx, L"[REPL] 内存不足\n");
         return repl_result_from_ctx(ctx);
     }
     repl_ctx_reset_accum(ctx);
@@ -665,7 +711,7 @@ static am_repl_result_t repl_ctx_submit(am_repl_ctx_t *ctx) {
         am_free(ctx->vm_alloc, new_mod);
         repl_ctx_rollback_session(ctx, submitted_len);
         ctx->status = AM_REPL_STATUS_ERROR;
-        repl_ctx_output_wcs(ctx, L"[REPL] 加载新进程失败\n");
+        repl_ctx_error_wcs(ctx, L"[REPL] 加载新进程失败\n");
         return repl_result_from_ctx(ctx);
     }
 
@@ -806,7 +852,8 @@ void am_repl_ctx_destroy(am_repl_ctx_t *ctx) {
     if (ctx->pool) am_allocator_pool_destroy(ctx->pool);
     free(ctx->accum);
     free(ctx->session);
-    free(ctx->output_buf);
+    free(ctx->stdout_buf);
+    free(ctx->stderr_buf);
     free(ctx);
 }
 
@@ -828,7 +875,7 @@ static am_repl_result_t am_repl_ctx_feed_scheme(am_repl_ctx_t *ctx, const char *
         if (status == -1) {
             repl_ctx_reset_accum(ctx);
             ctx->status = AM_REPL_STATUS_ERROR;
-            repl_ctx_output_wcs(ctx, L"[REPL] 括号不匹配\n");
+            repl_ctx_error_wcs(ctx, L"[REPL] 括号不匹配\n");
             return repl_result_from_ctx(ctx);
         }
         // status == 0，fall through 到提交
@@ -836,7 +883,7 @@ static am_repl_result_t am_repl_ctx_feed_scheme(am_repl_ctx_t *ctx, const char *
         wchar_t *line_w = mb_to_wchar(input);
         if (!line_w) {
             ctx->status = AM_REPL_STATUS_ERROR;
-            repl_ctx_output_wcs(ctx, L"[REPL] 输入编码失败\n");
+            repl_ctx_error_wcs(ctx, L"[REPL] 输入编码失败\n");
             return repl_result_from_ctx(ctx);
         }
 
@@ -855,7 +902,7 @@ static am_repl_result_t am_repl_ctx_feed_scheme(am_repl_ctx_t *ctx, const char *
         if (!repl_ctx_accum_append(ctx, line_w)) {
             free(line_w);
             ctx->status = AM_REPL_STATUS_ERROR;
-            repl_ctx_output_wcs(ctx, L"[REPL] 内存不足\n");
+            repl_ctx_error_wcs(ctx, L"[REPL] 内存不足\n");
             return repl_result_from_ctx(ctx);
         }
         free(line_w);
@@ -869,7 +916,7 @@ static am_repl_result_t am_repl_ctx_feed_scheme(am_repl_ctx_t *ctx, const char *
         if (status == -1) {
             repl_ctx_reset_accum(ctx);
             ctx->status = AM_REPL_STATUS_ERROR;
-            repl_ctx_output_wcs(ctx, L"[REPL] 括号不匹配\n");
+            repl_ctx_error_wcs(ctx, L"[REPL] 括号不匹配\n");
             return repl_result_from_ctx(ctx);
         }
         // status == 0，fall through 到提交
@@ -894,7 +941,7 @@ static am_repl_result_t am_repl_ctx_feed_js(am_repl_ctx_t *ctx, const char *inpu
     wchar_t *line_w = mb_to_wchar(input);
     if (!line_w) {
         ctx->status = AM_REPL_STATUS_ERROR;
-        repl_ctx_output_wcs(ctx, L"[REPL] 输入编码失败\n");
+        repl_ctx_error_wcs(ctx, L"[REPL] 输入编码失败\n");
         return repl_result_from_ctx(ctx);
     }
 
@@ -913,7 +960,7 @@ static am_repl_result_t am_repl_ctx_feed_js(am_repl_ctx_t *ctx, const char *inpu
     if (!repl_ctx_accum_append(ctx, line_w)) {
         free(line_w);
         ctx->status = AM_REPL_STATUS_ERROR;
-        repl_ctx_output_wcs(ctx, L"[REPL] 内存不足\n");
+        repl_ctx_error_wcs(ctx, L"[REPL] 内存不足\n");
         return repl_result_from_ctx(ctx);
     }
     free(line_w);
@@ -936,6 +983,7 @@ am_repl_result_t am_repl_ctx_feed(am_repl_ctx_t *ctx, const char *input) {
     ctx->status = AM_REPL_STATUS_CONTINUE;
     ctx->indent = 0;
     ctx->output = NULL;
+    ctx->error = NULL;
     ctx->should_stop = 0;
 
     if (ctx->js_mode) {

@@ -46,10 +46,15 @@ typedef struct repl_ctx {
     size_t accum_len;
     int multiline;
 
-    // 输出缓冲区（由上下文拥有，有效到下一次 feed 或 destroy）
-    char *output_buf;
-    size_t output_cap;
-    size_t output_len;
+    // 标准输出缓冲区（由上下文拥有，有效到下一次 feed 或 destroy）
+    char *stdout_buf;
+    size_t stdout_cap;
+    size_t stdout_len;
+
+    // 错误输出缓冲区（由上下文拥有，有效到下一次 feed 或 destroy）
+    char *stderr_buf;
+    size_t stderr_cap;
+    size_t stderr_len;
 
     // 模式与提示符
     int js_mode;
@@ -58,14 +63,16 @@ typedef struct repl_ctx {
 
     // 供外层读取的内部状态
     am_repl_status_t status;
-    const char *output;  // 指向 output_buf 或 NULL
+    const char *output;  // 指向 stdout_buf 或 NULL
+    const char *error;   // 指向 stderr_buf 或 NULL
     int indent;          // 建议的续行缩进层级
 } am_repl_ctx_t;
 
-// 一次 feed 的返回结果。output 指向 ctx 内部缓冲区，调用者无需释放。
+// 一次 feed 的返回结果。output/error 均指向 ctx 内部缓冲区，调用者无需释放。
 typedef struct {
     am_repl_status_t status;
     const char *output;
+    const char *error;
     int indent;
 } am_repl_result_t;
 

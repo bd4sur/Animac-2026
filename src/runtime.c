@@ -492,8 +492,9 @@ static int32_t op_load(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
     am_value_t value = am_process_dereference(proc, varid);
     if (value == (am_value_t)UINTPTR_MAX) {
         wchar_t *name = am_vocab_get(proc->vm_alloc, proc->var_vocab, &varid);
-        fprintf(stderr, "[Runtime] load: 变量未定义 varid=%zu name=%ls\n",
-                (size_t)varid, name ? name : L"?");
+        wchar_t errmsg[256];
+        swprintf(errmsg, 256, L"[Runtime] load: 变量 %ls 未定义\n", name ? name : L"?");
+        am_runtime_error(rt, errmsg);
         return -1;
     }
 
@@ -652,10 +653,10 @@ static int32_t op_call_async(am_runtime_t *rt, am_process_t *proc, am_value_t op
         else {
             target = am_process_dereference(proc, varid);
             if (target == (am_value_t)UINTPTR_MAX) {
-                // fprintf(stderr, "[Runtime] call: 变量未定义 varid=%zu name=%ls\n", varid);
                 wchar_t *name = am_vocab_get(proc->vm_alloc, proc->var_vocab, &varid);
-                fprintf(stderr, "[Runtime] call: 变量未定义 varid=%zu name=%ls\n",
-                        (size_t)varid, name ? name : L"?");
+                wchar_t errmsg[256];
+                swprintf(errmsg, 256, L"[Runtime] call: 变量 %ls 未定义\n", name ? name : L"?");
+                am_runtime_error(rt, errmsg);
                 return -1;
             }
         }
@@ -723,7 +724,7 @@ static int32_t op_call_async(am_runtime_t *rt, am_process_t *proc, am_value_t op
             return 0;
         }
         else {
-            fprintf(stderr, "[Runtime] call: 目标对象类型错误\n");
+            am_runtime_error(rt, L"[Runtime] call: 目标对象类型错误\n");
             return -1;
         }
     }
@@ -734,7 +735,8 @@ static int32_t op_call_async(am_runtime_t *rt, am_process_t *proc, am_value_t op
             return am_runtime_op_dispatch(rt, proc, (uint32_t)opcode, operand);
     }
 
-    fprintf(stderr, "[Runtime] call: 非法调用目标\n");
+    am_runtime_error(rt, L"[Runtime] call: 错误的调用目标\n");
+
     return -1;
 }
 
@@ -762,11 +764,11 @@ static int32_t op_callnative(am_runtime_t *rt, am_process_t *proc, am_value_t op
     // 变量名应为 "LibID.funcName" 形式，且只能有一个点号
     wchar_t *dot = wcschr(name, L'.');
     if (!dot || dot == name || dot[1] == L'\0') {
-        fprintf(stderr, "[Runtime] callnative: 非法native变量名\n");
+        am_runtime_error(rt, L"[Runtime] callnative: 错误的native变量名\n");
         return -1;
     }
     if (wcschr(dot + 1, L'.')) {
-        fprintf(stderr, "[Runtime] callnative: native变量名包含多个点号\n");
+        am_runtime_error(rt, L"[Runtime] callnative: native变量名包含多个点号\n");
         return -1;
     }
 
@@ -782,7 +784,9 @@ static int32_t op_callnative(am_runtime_t *rt, am_process_t *proc, am_value_t op
 
     am_native_func_t func = am_native_find_func(prefix, suffix);
     if (!func) {
-        fprintf(stderr, "[Runtime] callnative: 未找到native函数 %ls.%ls\n", prefix, suffix);
+        wchar_t errmsg[256];
+        swprintf(errmsg, 256, L"[Runtime] callnative: 未找到native函数 %ls.%ls\n", prefix, suffix);
+        am_runtime_error(rt, errmsg);
         am_free(proc->vm_alloc, buf);
         return -1;
     }
@@ -798,7 +802,7 @@ static int32_t op_return(am_runtime_t *rt, am_process_t *proc, am_value_t operan
 
     am_value_t closure_val, ret_val;
     if (am_process_pop_stack_frame(proc, &closure_val, &ret_val) != 0) {
-        fprintf(stderr, "[Runtime] return: 函数调用栈为空\n");
+        am_runtime_error(rt, L"[Runtime] return: 函数调用栈为空\n");
         return -1;
     }
 
@@ -1457,7 +1461,7 @@ static int32_t op_div(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
     am_float_t fa = runtime_number_to_float(a);
     if (fa == 0.0) {
-        fprintf(stderr, "[Runtime] 除零错误\n");
+        am_runtime_error(rt, L"[Runtime] 除零错误\n");
         return -1;
     }
     am_float_t result = runtime_number_to_float(b) / fa;
@@ -1765,7 +1769,7 @@ static int32_t op_fork(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
     (void)proc;
     (void)operand;
     // NOTE 废弃fork
-    fprintf(stderr, "[Runtime] fork 指令已废弃\n");
+    am_runtime_error(rt, L"[Runtime] fork 指令已废弃\n");
     return -1;
 }
 
@@ -2465,9 +2469,12 @@ int32_t am_runtime_op_dispatch(am_runtime_t *rt, am_process_t *proc, uint32_t op
         case AM_VM_OP_concat:      return op_concat(rt, proc, operand);
         case AM_VM_OP_duplicate:   return op_duplicate(rt, proc, operand);
         case AM_VM_OP_evalcleanup: return op_evalcleanup(rt, proc, operand);
-        default:
-            fprintf(stderr, "[Runtime] 未知指令: %u\n", opcode);
+        default: {
+            wchar_t errmsg[256];
+            swprintf(errmsg, 256, L"[Runtime] 未知指令: %u\n", opcode);
+            am_runtime_error(rt, errmsg);
             return -1;
+        }
     }
 }
 
@@ -2556,7 +2563,9 @@ int32_t am_runtime_tick(am_runtime_t *rt, uint32_t timeslice) {
         if (am_runtime_execute(rt, proc) != 0) {
             proc->state = AM_PROCESS_STATE_STOPPED;
             if (rt->callback_on_error) rt->callback_on_error(rt);
-            fprintf(stderr, "[Runtime] 指令执行异常: PID=%zu PC=%zu\n", (size_t)pid, (size_t)proc->PC);
+            wchar_t errmsg[256];
+            swprintf(errmsg, 256, L"[Runtime] 指令执行异常: PID=%zu PC=%zu\n", (size_t)pid, (size_t)proc->PC);
+            am_runtime_error(rt, errmsg);
             break;
         }
         timeslice--;
@@ -2817,7 +2826,6 @@ void am_runtime_output(am_runtime_t *rt, const wchar_t *str) {
 
 void am_runtime_error(am_runtime_t *rt, const wchar_t *str) {
     if (!rt || !str) return;
-    fprintf(stderr, "%ls", str);
 
     if (rt->error_fifo) {
         size_t len = wcslen(str);
@@ -2827,4 +2835,6 @@ void am_runtime_error(am_runtime_t *rt, const wchar_t *str) {
             if (new_fifo) rt->error_fifo = new_fifo;
         }
     }
+
+    if (rt->callback_on_error) rt->callback_on_error(rt);
 }

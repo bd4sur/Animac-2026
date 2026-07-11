@@ -64,7 +64,6 @@ static am_allocator_t *heap_alloc = NULL;
 // ===============================================================================
 
 static int test_halt_called = 0;
-static int test_error_called = 0;
 
 static void on_halt(am_runtime_t *rt) {
     (void)rt;
@@ -73,17 +72,27 @@ static void on_halt(am_runtime_t *rt) {
 
 static void on_error(am_runtime_t *rt) {
     (void)rt;
-    test_error_called = 1;
+    // TODO
+    return;
 }
 
 static void on_tick(am_runtime_t *rt) {
-    if (!rt || !rt->output_fifo) return;
+    if (!rt || !rt->output_fifo || !rt->error_fifo) return;
+
     while (rt->output_fifo->length > 0) {
         am_value_t v = am_list_shift(rt->vm_alloc, rt->output_fifo);
         if (am_value_is_wchar(v)) {
             printf("%lc", (wchar_t)am_value_to_wchar(v));
         }
     }
+
+    while (rt->error_fifo->length > 0) {
+        am_value_t v = am_list_shift(rt->vm_alloc, rt->error_fifo);
+        if (am_value_is_wchar(v)) {
+            printf("%lc", (wchar_t)am_value_to_wchar(v));
+        }
+    }
+
     fflush(stdout);
 }
 
@@ -136,7 +145,6 @@ static wchar_t *read_file_as_wstring(const wchar_t *path) {
 static void test_runtime_load_from_wstring(wchar_t *code, char *path) {
     printf("test_runtime_load_from_string ... \n");
     test_halt_called = 0;
-    test_error_called = 0;
 
     char *base_dir = am_path_dirname((char*)path);
 
