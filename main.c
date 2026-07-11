@@ -143,8 +143,8 @@ static void test_runtime_load_from_wstring(wchar_t *code, char *path) {
     wchar_t *path_w = (wchar_t *)am_malloc(vm_alloc, 256 * sizeof(wchar_t));
     wchar_t *base_dir_w = (wchar_t *)am_malloc(vm_alloc, 256 * sizeof(wchar_t));
 
-    _mbstowcs(path_w, path, 256);
-    _mbstowcs(base_dir_w, base_dir, 256);
+    am_mbstowcs(path_w, path, 256);
+    am_mbstowcs(base_dir_w, base_dir, 256);
 
     am_ast_t *ast = am_parse(vm_alloc, code, path_w, 0);
     assert(ast != NULL);
@@ -239,7 +239,7 @@ static void test_runtime_load_from_wstring(wchar_t *code, char *path) {
 
     /* base_dir_w 已随 VM 清空而失效，用栈缓冲区重新转换供 runtime 使用 */
     wchar_t base_dir_w_reload[256];
-    _mbstowcs(base_dir_w_reload, base_dir, 256);
+    am_mbstowcs(base_dir_w_reload, base_dir, 256);
 
     /* =============================================================
      * 4. 从转储缓冲区加载模块，然后创建 runtime 并运行
@@ -294,7 +294,7 @@ static void test_runtime_load_from_file(char *path) {
     am_allocator_pool_reset_heap(g_pool);
 
     wchar_t path_w_stack[256];
-    _mbstowcs(path_w_stack, path, 256);
+    am_mbstowcs(path_w_stack, path, 256);
     wchar_t *file_content = read_file_as_wstring(path_w_stack);
     assert(file_content != NULL);
 
@@ -348,7 +348,7 @@ int main(int argc, char* argv[]) {
         am_allocator_pool_reset_heap(g_pool);
 
         wchar_t path_w_stack[256];
-        _mbstowcs(path_w_stack, argv[1], 256);
+        am_mbstowcs(path_w_stack, argv[1], 256);
         wchar_t *file_content = read_file_as_wstring(path_w_stack);
         assert(file_content != NULL);
 

@@ -3773,7 +3773,7 @@ return 0;
   根因猜测：`am_macro_expand` 依赖“顶层 lambda bodies”收集 `define-syntax`，而 `System.eval` 用的 `isolated=1` AST 在顶层 lambda 判定或 body 序列划分上和普通模块不一致，导致宏注册到了环境帧里但后续展开没生效。
 
 - **`main` 对不带目录斜杠的相对路径会段错误**  
-  例如 `./main test_eval.scm` 会 segfault，而 `./main test/test_eval.scm` 正常。原因是 `main.c` 调用 `am_path_dirname` 后直接传给 `_mbstowcs`，而 `am_path_dirname` 对不含 `/` 的路径返回 `NULL`，没有做空指针保护。这是测试/入口程序的 bug，不是语言核心。
+  例如 `./main test_eval.scm` 会 segfault，而 `./main test/test_eval.scm` 正常。原因是 `main.c` 调用 `am_path_dirname` 后直接传给 `am_mbstowcs`，而 `am_path_dirname` 对不含 `/` 的路径返回 `NULL`，没有做空指针保护。这是测试/入口程序的 bug，不是语言核心。
 
 - **`System.eval` 的错误信息具有误导性**  
   上面宏未展开的情况，报错是“未定义的变量”，容易让人以为是变量捕获失败，实际上是宏没展开。类似地，如果 eval 字符串本身词法/语法有错，也可能被包装成运行时异常。调试体验不佳。

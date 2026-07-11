@@ -8,7 +8,7 @@
 
 // 将 UTF-32 码点（wchar_t）数组转换为 UTF-8 字符串
 // 注意：此函数假设 wchar_t 为 32 位（即 UTF-32），符合 ESP32 的配置（通常 -fshort-wchar 未启用）
-uint32_t _wcstombs(char *dest, const wchar_t *src, uint32_t dest_size) {
+uint32_t am_wcstombs(char *dest, const wchar_t *src, uint32_t dest_size) {
     const wchar_t *p = src;
     char *q = dest;
     uint32_t dest_len = 0;
@@ -46,7 +46,7 @@ uint32_t _wcstombs(char *dest, const wchar_t *src, uint32_t dest_size) {
 // 将 UTF-8 字符串转换为 null-terminated 的 UTF-32 (wchar_t) 字符串
 // 返回值：成功转换的 wchar_t 字符数量（不包括结尾的 L'\0'）
 // 注意：dest 必须有至少 (length + 1) 个 wchar_t 的空间（最坏情况）
-uint32_t _mbstowcs(wchar_t *dest, const char *src, uint32_t length) {
+uint32_t am_mbstowcs(wchar_t *dest, const char *src, uint32_t length) {
     const uint8_t *p = (const uint8_t *)src;
     const uint8_t *end = p + length;
     wchar_t *out = dest;
@@ -117,7 +117,7 @@ invalid:
  * @return 成功时返回动态分配的 wchar_t*（以 L'\0' 结尾），失败返回 NULL。
  *         调用者需用 free() 释放返回值。
  */
-wchar_t* read_file_to_wchar(char* filename) {
+wchar_t* am_read_file_to_wchar(char* filename) {
     if (!filename) return NULL;
 
     // 打开文件（当前工作目录）
@@ -164,7 +164,7 @@ wchar_t* read_file_to_wchar(char* filename) {
     }
 
     // 执行实际转换（length 为 buffer 中实际字节数，不含结尾额外 \0）
-    (void)_mbstowcs(wstr, buffer, size);
+    (void)am_mbstowcs(wstr, buffer, size);
     free(buffer);
 
     return wstr; // 调用者负责 free()

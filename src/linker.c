@@ -47,7 +47,7 @@ static wchar_t *linker_wcsdup(am_allocator_t *alloc, const wchar_t *s) {
 
 
 // 将 UTF-32 宽字符路径转换为多字节路径后读取文件内容。
-// 返回 read_file_to_wchar 分配的 wchar_t* 源码字符串（调用者仍需用 free 释放）；失败返回 NULL。
+// 返回 am_read_file_to_wchar 分配的 wchar_t* 源码字符串（调用者仍需用 free 释放）；失败返回 NULL。
 static wchar_t *linker_read_file(am_allocator_t *alloc, const wchar_t *path) {
     size_t path_len = wcstombs(NULL, path, 0);
     if (path_len == (size_t)-1) return NULL;
@@ -56,7 +56,7 @@ static wchar_t *linker_read_file(am_allocator_t *alloc, const wchar_t *path) {
     if (!mb_path) return NULL;
     wcstombs(mb_path, path, path_len + 1);
 
-    wchar_t *code = read_file_to_wchar(mb_path);
+    wchar_t *code = am_read_file_to_wchar(mb_path);
     am_free(alloc, mb_path);
     return code;
 }
