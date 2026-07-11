@@ -9,7 +9,7 @@ all: main repl
 main: main.c $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-repl: repl.c $(SRCS)
+repl: repl.c main_repl.c $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 clean:
