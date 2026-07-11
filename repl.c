@@ -2,10 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
-#include <wctype.h>
 #include <locale.h>
-#include <assert.h>
+#include <signal.h>
 #include <unistd.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 
 #include "utils.h"
 #include "parser.h"
@@ -16,476 +17,319 @@
 #include "runtime.h"
 #include "debug.h"
 #include "ast.h"
+#include "list.h"
+#include "vocab.h"
+#include "heap.h"
+#include "object.h"
 
 #include "native_System.h"
 #include "native_Math.h"
 #include "native_String.h"
+#include "native_LLM.h"
 #include "native_Table.h"
 
 #ifndef AM_ALLOCATOR_POOL_SIZE
-#define AM_ALLOCATOR_POOL_SIZE ((size_t)(128ULL * 1024 * 1024))
+#define AM_ALLOCATOR_POOL_SIZE ((size_t)(256ULL * 1024 * 1024))
 #endif
 
-#define AM_REPL_VERSION L"2026.7"
-#define AM_REPL_BASE_DIR_BUF_SIZE 512
-
 static am_allocator_pool_t *g_pool = NULL;
-static am_allocator_t *vm_alloc = NULL;
-static am_allocator_t *heap_alloc = NULL;
+static am_allocator_t *g_vm_alloc = NULL;
+static am_allocator_t *g_heap_alloc = NULL;
+static am_runtime_t *g_rt = NULL;
+static volatile int g_should_stop = 0;
+static volatile int g_runtime_error = 0;
 
-static wchar_t g_base_dir_w[AM_REPL_BASE_DIR_BUF_SIZE];
-
-static wchar_t *g_all_code = NULL;
-static size_t g_all_code_len = 0;
-static size_t g_all_code_cap = 0;
-
-typedef struct {
-    wchar_t **lines;
-    size_t length;
-    size_t capacity;
-} am_repl_input_buffer_t;
-
-static am_repl_input_buffer_t g_input_buffer = { NULL, 0, 0 };
-
-static int g_running = 1;
-static int g_should_print_prompt = 1;
-
-// ===============================================================================
-// 宽字符串工具
-// ===============================================================================
-
-static wchar_t *am_repl_wcs_dup(const wchar_t *s) {
-    if (!s) return NULL;
-    size_t len = wcslen(s);
-    wchar_t *buf = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
-    if (!buf) return NULL;
-    memcpy(buf, s, (len + 1) * sizeof(wchar_t));
-    return buf;
-}
-
-static wchar_t *am_repl_wcs_trim(const wchar_t *s) {
-    if (!s) return am_repl_wcs_dup(L"");
-    const wchar_t *start = s;
-    while (*start && iswspace((wint_t)*start)) start++;
-    const wchar_t *end = s + wcslen(s);
-    while (end > start && iswspace((wint_t)*(end - 1))) end--;
-    size_t len = (size_t)(end - start);
-    wchar_t *buf = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
-    if (!buf) return NULL;
-    memcpy(buf, start, len * sizeof(wchar_t));
-    buf[len] = L'\0';
-    return buf;
-}
-
-// ===============================================================================
-// 输入缓冲区
-// ===============================================================================
-
-static int32_t am_repl_input_buffer_push(am_repl_input_buffer_t *buf, wchar_t *line) {
-    if (!buf || !line) return -1;
-    if (buf->length >= buf->capacity) {
-        size_t new_cap = buf->capacity ? buf->capacity * 2 : 4;
-        wchar_t **new_lines = (wchar_t **)realloc(buf->lines, new_cap * sizeof(wchar_t *));
-        if (!new_lines) return -1;
-        buf->lines = new_lines;
-        buf->capacity = new_cap;
-    }
-    buf->lines[buf->length++] = line;
-    return 0;
-}
-
-static void am_repl_input_buffer_clear(am_repl_input_buffer_t *buf) {
-    if (!buf) return;
-    for (size_t i = 0; i < buf->length; i++) {
-        free(buf->lines[i]);
-        buf->lines[i] = NULL;
-    }
-    buf->length = 0;
-}
-
-static wchar_t *am_repl_input_buffer_join(const am_repl_input_buffer_t *buf) {
-    if (!buf) return NULL;
-    size_t total = 0;
-    for (size_t i = 0; i < buf->length; i++) {
-        total += wcslen(buf->lines[i]);
-    }
-    wchar_t *result = (wchar_t *)malloc((total + 1) * sizeof(wchar_t));
-    if (!result) return NULL;
-    size_t pos = 0;
-    for (size_t i = 0; i < buf->length; i++) {
-        size_t len = wcslen(buf->lines[i]);
-        memcpy(result + pos, buf->lines[i], len * sizeof(wchar_t));
-        pos += len;
-    }
-    result[pos] = L'\0';
-    return result;
-}
-
-// ===============================================================================
-// 历史代码缓冲区
-// ===============================================================================
-
-static int32_t am_repl_append_all_code(const wchar_t *code) {
-    if (!code) return -1;
-    size_t len = wcslen(code);
-    size_t need = g_all_code_len + len + 2; // 结尾空格 + 结尾 '\0'
-    if (need > g_all_code_cap) {
-        size_t new_cap = g_all_code_cap ? g_all_code_cap * 2 : 1024;
-        while (new_cap < need) new_cap *= 2;
-        wchar_t *new_buf = (wchar_t *)realloc(g_all_code, new_cap * sizeof(wchar_t));
-        if (!new_buf) return -1;
-        g_all_code = new_buf;
-        g_all_code_cap = new_cap;
-    }
-    for (size_t i = 0; i < len; i++) {
-        g_all_code[g_all_code_len++] = code[i];
-    }
-    g_all_code[g_all_code_len++] = L' ';
-    g_all_code[g_all_code_len] = L'\0';
-    return 0;
-}
-
-static void am_repl_clear_all_code(void) {
-    free(g_all_code);
-    g_all_code = NULL;
-    g_all_code_len = 0;
-    g_all_code_cap = 0;
-}
-
-// ===============================================================================
-// 括号计数与副作用语句检测
-// ===============================================================================
-
-static int32_t am_repl_count_brackets(const wchar_t *s) {
-    if (!s) return 0;
-    int32_t count = 0;
-    for (size_t i = 0; s[i] != L'\0'; i++) {
-        if (s[i] == L'(' || s[i] == L'{') count++;
-        else if (s[i] == L')' || s[i] == L'}') count--;
-    }
-    return count;
-}
-
-static bool am_repl_should_retain_input(const wchar_t *input) {
-    if (!input) return false;
-    return wcsstr(input, L"define") != NULL ||
-           wcsstr(input, L"set!") != NULL ||
-           wcsstr(input, L"native") != NULL ||
-           wcsstr(input, L"import") != NULL;
-}
-
-// ===============================================================================
-// 运行时回调
-// ===============================================================================
-
-static void am_repl_flush_output_fifo(am_runtime_t *rt) {
+static void on_tick(am_runtime_t *rt) {
     if (!rt || !rt->output_fifo) return;
     while (rt->output_fifo->length > 0) {
         am_value_t v = am_list_shift(rt->vm_alloc, rt->output_fifo);
         if (am_value_is_wchar(v)) {
-            putwchar((wchar_t)am_value_to_wchar(v));
+            printf("%lc", (wchar_t)am_value_to_wchar(v));
         }
     }
     fflush(stdout);
 }
 
-static void am_repl_on_tick(am_runtime_t *rt) {
-    am_repl_flush_output_fifo(rt);
+static void on_halt(am_runtime_t *rt) { (void)rt; }
+static void on_error(am_runtime_t *rt) { (void)rt; g_runtime_error = 1; }
+
+static void signal_handler(int sig) {
+    (void)sig;
+    g_should_stop = 1;
 }
 
-static void am_repl_on_error(am_runtime_t *rt) {
-    (void)rt;
+static wchar_t *mb_to_wchar(const char *src) {
+    if (!src) return NULL;
+    size_t len = mbstowcs(NULL, src, 0);
+    if (len == (size_t)-1) return NULL;
+    wchar_t *dst = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
+    if (!dst) return NULL;
+    mbstowcs(dst, src, len + 1);
+    return dst;
 }
 
-static void am_repl_on_halt(am_runtime_t *rt) {
-    am_repl_flush_output_fifo(rt);
-    am_process_t *proc = am_runtime_get_process(rt, 0);
-    if (proc && proc->state == AM_PROCESS_STATE_SLEEPING) {
-        return;
+static char *wchar_to_mb(const wchar_t *src) {
+    if (!src) return NULL;
+    size_t len = wcstombs(NULL, src, 0);
+    if (len == (size_t)-1) return NULL;
+    char *dst = (char *)malloc(len + 1);
+    if (!dst) return NULL;
+    wcstombs(dst, src, len + 1);
+    return dst;
+}
+
+// 检查代码是否构成完整的 S-表达式。
+// 返回值： 0 完整；1 未完成（需要更多输入）；-1 括号不匹配等明显错误。
+// 若 out_indent 非空，则写入建议的续行缩进层级（未闭合的左括号数）。
+static int check_expression_complete(const wchar_t *code, int *out_indent) {
+    int depth = 0;
+    int in_string = 0;
+    int escape = 0;
+    int line_comment = 0;
+
+    for (size_t i = 0; code[i] != L'\0'; i++) {
+        wchar_t c = code[i];
+
+        if (line_comment) {
+            if (c == L'\n') line_comment = 0;
+            continue;
+        }
+
+        if (in_string) {
+            if (escape) {
+                escape = 0;
+                continue;
+            }
+            if (c == L'\\') {
+                escape = 1;
+                continue;
+            }
+            if (c == L'"') {
+                in_string = 0;
+            }
+            continue;
+        }
+
+        if (c == L';') {
+            line_comment = 1;
+            continue;
+        }
+        if (c == L'"') {
+            in_string = 1;
+            continue;
+        }
+
+        if (c == L'(' || c == L'[' || c == L'{') {
+            depth++;
+        } else if (c == L')' || c == L']' || c == L'}') {
+            depth--;
+            if (depth < 0) return -1;
+        }
     }
-    g_should_print_prompt = 1;
+
+    if (in_string) return 1;
+    if (depth > 0) {
+        if (out_indent) *out_indent = depth;
+        return 1;
+    }
+    if (out_indent) *out_indent = 0;
+    return 0;
 }
 
-// ===============================================================================
-// 执行用户输入
-// ===============================================================================
+// 构造 eval 代码的临时绝对路径：base_dir/__repl__.scm
+static wchar_t *repl_make_path(am_allocator_t *alloc, const wchar_t *base_dir) {
+    if (!alloc) return NULL;
+    const wchar_t *filename = L"__repl__.scm";
+    size_t base_len = base_dir ? wcslen(base_dir) : 0;
+    size_t file_len = wcslen(filename);
+    int need_sep = (base_len > 0 && base_dir[base_len - 1] != L'/' && base_dir[base_len - 1] != L'\\');
+    wchar_t *path = (wchar_t *)am_malloc(alloc,
+                                          (base_len + (need_sep ? 1 : 0) + file_len + 1) * sizeof(wchar_t));
+    if (!path) return NULL;
+    if (base_len > 0) wcscpy(path, base_dir);
+    if (need_sep) path[base_len] = L'/';
+    wcscpy(path + base_len + (need_sep ? 1 : 0), filename);
+    return path;
+}
 
-static int32_t am_repl_run(const wchar_t *code) {
-    if (!code) return -1;
+
+// 判断节点是否是 define / set! / display / newline 调用，这些不再额外包装 display。
+static int repl_last_expr_has_side_effect(am_ast_t *ast, am_handle_t node_handle) {
+    if (!ast || node_handle == AM_HANDLE_NULL) return 0;
+    am_value_t node_val = am_ast_get_node(ast, node_handle);
+    if (!am_value_is_ptr(node_val)) return 0;
+    am_object_t *obj = am_value_to_ptr(node_val);
+    if (obj->type != AM_OBJECT_TYPE_LIST) return 0;
+    am_list_t *lst = (am_list_t *)obj;
+    if (lst->length == 0) return 0;
+    am_value_t first = am_list_get(ast->alloc, lst, 0);
+
+    if (am_value_is_symbol(first)) {
+        if (first == AM_VALUE_KW_define || first == AM_VALUE_KW_set) return 1;
+    }
+    if (am_value_is_varid(first)) {
+        am_varid_t varid = am_value_to_varid(first);
+        wchar_t *word = am_vocab_get(ast->alloc, ast->var_vocab, &varid);
+        if (word) {
+            if (wcscmp(word, L"display") == 0) return 1;
+            if (wcscmp(word, L"newline") == 0) return 1;
+        }
+    }
+    return 0;
+}
+
+// 若用户输入的最后一个顶层表达式不是定义/赋值/输出，则将其包装为 (display <expr>) (newline)。
+// 返回新分配的 wchar_t* 代码（调用者负责释放），失败返回 NULL。
+// 关键：直接从原始 session_code 切分最后一个表达式，避免 ARN 后的内部变量名污染。
+static wchar_t *repl_build_session_code(am_allocator_t *alloc, const wchar_t *session_code) {
+    if (!alloc || !session_code) return NULL;
 
     const wchar_t *prefix = L"((lambda () \n";
-    const wchar_t *display_prefix = L"(display ";
-    const wchar_t *display_suffix = L") (newline)";
     const wchar_t *suffix = L"\n))";
-
     size_t prefix_len = wcslen(prefix);
-    size_t dp_len = wcslen(display_prefix);
-    size_t ds_len = wcslen(display_suffix);
     size_t suffix_len = wcslen(suffix);
-    size_t all_len = g_all_code_len;
-    size_t code_len = wcslen(code);
-    size_t total = prefix_len + all_len + dp_len + code_len + ds_len + suffix_len;
+    size_t session_len = wcslen(session_code);
+    size_t wrapped_len = prefix_len + session_len + suffix_len;
 
-    wchar_t *full_code = (wchar_t *)am_malloc(vm_alloc, (total + 1) * sizeof(wchar_t));
-    if (!full_code) return -1;
+    wchar_t *wrapped_code = (wchar_t *)am_malloc(alloc, (wrapped_len + 1) * sizeof(wchar_t));
+    if (!wrapped_code) return NULL;
+    wcscpy(wrapped_code, prefix);
+    wcscat(wrapped_code, session_code);
+    wcscat(wrapped_code, suffix);
 
-    size_t pos = 0;
-    memcpy(full_code + pos, prefix, prefix_len * sizeof(wchar_t));
-    pos += prefix_len;
-    if (all_len > 0) {
-        memcpy(full_code + pos, g_all_code, all_len * sizeof(wchar_t));
-        pos += all_len;
-    }
-    memcpy(full_code + pos, display_prefix, dp_len * sizeof(wchar_t));
-    pos += dp_len;
-    memcpy(full_code + pos, code, code_len * sizeof(wchar_t));
-    pos += code_len;
-    memcpy(full_code + pos, display_suffix, ds_len * sizeof(wchar_t));
-    pos += ds_len;
-    memcpy(full_code + pos, suffix, suffix_len * sizeof(wchar_t));
-    pos += suffix_len;
-    full_code[pos] = L'\0';
-
-    size_t base_len = wcslen(g_base_dir_w);
-    const wchar_t *repl_name = L"/repl.scm";
-    size_t name_len = wcslen(repl_name);
-    wchar_t *module_path = (wchar_t *)am_malloc(vm_alloc, (base_len + name_len + 1) * sizeof(wchar_t));
-    if (!module_path) {
-        am_allocator_pool_reset_vm(g_pool);
-        return -1;
-    }
-    pos = 0;
-    if (base_len > 0) {
-        memcpy(module_path + pos, g_base_dir_w, base_len * sizeof(wchar_t));
-        pos += base_len;
-    }
-    memcpy(module_path + pos, repl_name, name_len * sizeof(wchar_t));
-    pos += name_len;
-    module_path[pos] = L'\0';
-
-    am_ast_t *ast = am_parse(vm_alloc, full_code, module_path, 0);
+    wchar_t *path_buf = repl_make_path(alloc, L".");
+    am_ast_t *ast = am_parse(alloc, wrapped_code, path_buf, 0);
+    am_free(alloc, path_buf);
     if (!ast) {
-        fwprintf(stderr, L"[REPL Error] 解析失败\n");
-        fflush(stderr);
-        am_allocator_pool_reset_vm(g_pool);
+        am_free(alloc, wrapped_code);
+        return NULL;
+    }
+
+    am_value_t *bodies = am_ast_get_global_nodes(ast);
+    size_t n_body = 0;
+    if (bodies) {
+        am_value_t lambda_val = am_ast_get_node(ast, ast->top_lambda_handle);
+        if (am_value_is_ptr(lambda_val)) {
+            am_list_t *lambda = (am_list_t *)am_value_to_ptr(lambda_val);
+            n_body = am_list_lambda_get_body_number(ast->alloc, lambda);
+        }
+    }
+
+    if (n_body == 0 || repl_last_expr_has_side_effect(ast, am_value_to_handle(bodies[n_body - 1]))) {
+        if (bodies) free(bodies);
+        am_ast_destroy(ast);
+        return wrapped_code; // 无需包装，调用者负责释放
+    }
+
+    am_handle_t last_handle = am_value_to_handle(bodies[n_body - 1]);
+    size_t last_token_idx = am_ast_get_node_token_index(ast, last_handle);
+    size_t char_index = 0;
+    if (last_token_idx != SIZE_MAX && last_token_idx < ast->token_count) {
+        char_index = ast->tokens[last_token_idx].index;
+    }
+
+    if (bodies) free(bodies);
+    am_ast_destroy(ast);
+
+    // char_index 是最后一个表达式在 wrapped_code 中的起始字符偏移。
+    // 转换到 session_code 中的起始偏移。
+    size_t session_start = 0;
+    if (last_token_idx != SIZE_MAX && char_index >= prefix_len) {
+        session_start = char_index - prefix_len;
+    } else {
+        // 对于没有 token 映射的原子表达式（如单独的数字/字符串），回退到整个 session_code
+        char_index = prefix_len;
+    }
+    // 最后一个表达式在 session_code 中的结束偏移，忽略尾部空白。
+    size_t session_end = session_len;
+    while (session_end > session_start &&
+           (session_code[session_end - 1] == L'\n' ||
+            session_code[session_end - 1] == L'\r' ||
+            session_code[session_end - 1] == L' ' ||
+            session_code[session_end - 1] == L'\t')) {
+        session_end--;
+    }
+    size_t last_expr_len = (session_end > session_start) ? (session_end - session_start) : 0;
+
+    size_t new_len = char_index + wcslen(L"\n(display ") + last_expr_len + wcslen(L")\n(newline)") + suffix_len + 8;
+    wchar_t *new_code = (wchar_t *)am_malloc(alloc, (new_len + 1) * sizeof(wchar_t));
+    if (!new_code) {
+        am_free(alloc, wrapped_code);
+        return NULL;
+    }
+
+    wcsncpy(new_code, wrapped_code, char_index);
+    new_code[char_index] = L'\0';
+    wcscat(new_code, L"\n(display ");
+    wcsncat(new_code, session_code + session_start, last_expr_len);
+    wcscat(new_code, L")\n(newline)");
+    wcscat(new_code, suffix);
+
+    am_free(alloc, wrapped_code);
+    return new_code;
+}
+
+// 编译并执行完整的 REPL 会话代码。成功返回 0，失败返回 -1。
+static int32_t repl_eval_session(const wchar_t *session_code, am_module_t **out_mod, am_process_t **out_proc) {
+    if (!g_rt || !session_code || !out_mod || !out_proc) return -1;
+
+    wchar_t *display_wrapped = repl_build_session_code(g_vm_alloc, session_code);
+    if (!display_wrapped) return -1;
+
+    wchar_t *path_buf = repl_make_path(g_vm_alloc, L".");
+    if (!path_buf) {
+        am_free(g_vm_alloc, display_wrapped);
         return -1;
     }
 
-    am_ast_t *linked = am_link(ast, g_base_dir_w);
-    if (!linked) {
-        fwprintf(stderr, L"[REPL Error] 链接失败\n");
-        fflush(stderr);
-        am_allocator_pool_reset_vm(g_pool);
+    am_ast_t *ast = am_parse(g_vm_alloc, display_wrapped, path_buf, 0);
+    am_free(g_vm_alloc, path_buf);
+    am_free(g_vm_alloc, display_wrapped);
+    if (!ast) {
+        fwprintf(stderr, L"[REPL] 语法解析失败\n");
         return -1;
     }
 
-    am_module_t *mod = am_compile(linked, 0, 0);
+    am_module_t *mod = am_compile(ast, 0, 0);
     if (!mod) {
-        fwprintf(stderr, L"[REPL Error] 编译失败\n");
-        fflush(stderr);
-        am_allocator_pool_reset_vm(g_pool);
+        am_ast_destroy(ast);
+        fwprintf(stderr, L"[REPL] 编译失败\n");
         return -1;
     }
 
-    size_t dump_size = am_module_dump(vm_alloc, vm_alloc, mod, NULL, 0);
-    if (dump_size == SIZE_MAX) {
-        fwprintf(stderr, L"[REPL Error] 模块转储失败\n");
-        fflush(stderr);
-        am_allocator_pool_reset_vm(g_pool);
+    am_process_t *proc = am_process_load_from_module(g_vm_alloc, g_heap_alloc, mod);
+    if (!proc) {
+        if (mod->ilcode) am_free(g_vm_alloc, mod->ilcode);
+        if (mod->ast) am_ast_destroy(mod->ast);
+        am_free(g_vm_alloc, mod);
+        fwprintf(stderr, L"[REPL] 加载进程失败\n");
         return -1;
     }
 
-    uint8_t *module_buffer = (uint8_t *)malloc(dump_size);
-    if (!module_buffer) {
-        am_allocator_pool_reset_vm(g_pool);
-        return -1;
-    }
-    memset(module_buffer, 0, dump_size);
-
-    size_t written = am_module_dump(vm_alloc, vm_alloc, mod, module_buffer, 0);
-    if (written != dump_size) {
-        fwprintf(stderr, L"[REPL Error] 模块转储写入失败\n");
-        fflush(stderr);
-        free(module_buffer);
-        am_allocator_pool_reset_vm(g_pool);
-        return -1;
-    }
-
-    am_allocator_pool_reset_vm(g_pool);
-
-    am_module_t *mod_loaded = am_module_load(vm_alloc, heap_alloc, module_buffer, 0);
-    if (!mod_loaded) {
-        fwprintf(stderr, L"[REPL Error] 模块加载失败\n");
-        fflush(stderr);
-        free(module_buffer);
-        return -1;
-    }
-
-    am_runtime_t *rt = am_runtime_create(vm_alloc, heap_alloc, g_base_dir_w);
-    if (!rt) {
-        fwprintf(stderr, L"[REPL Error] 运行时创建失败\n");
-        fflush(stderr);
-        free(module_buffer);
-        return -1;
-    }
-
-    am_runtime_register_native_lib(rt, &am_native_System_lib);
-    am_runtime_register_native_lib(rt, &am_native_Math_lib);
-    am_runtime_register_native_lib(rt, &am_native_String_lib);
-    am_runtime_register_native_lib(rt, &am_native_Table_lib);
-
-    rt->callback_on_tick = am_repl_on_tick;
-    rt->callback_on_halt = am_repl_on_halt;
-    rt->callback_on_error = am_repl_on_error;
-
-    am_pid_t pid = am_runtime_load_module(rt, mod_loaded);
-    if (pid == (am_pid_t)-1) {
-        fwprintf(stderr, L"[REPL Error] 加载模块到运行时失败\n");
-        fflush(stderr);
-        am_runtime_destroy(rt);
-        free(module_buffer);
-        return -1;
-    }
-
-    g_should_print_prompt = 0;
-    am_runtime_start(rt);
-    am_repl_flush_output_fifo(rt);
-
-    am_runtime_destroy(rt);
-    free(module_buffer);
+    *out_mod = mod;
+    *out_proc = proc;
 
     return 0;
 }
 
-// ===============================================================================
-// REPL 命令与行读取
-// ===============================================================================
 
-static void am_repl_print_help(void) {
-    wprintf(L"Animac Scheme V%ls\n", AM_REPL_VERSION);
-    wprintf(L"Copyright (c) 2018~2026 BD4SUR\n");
-    wprintf(L"https://github.com/bd4sur/Animac\n");
-    wprintf(L"\n");
-    wprintf(L"REPL Command Reference:\n");
-    wprintf(L"  .exit     exit the REPL.\n");
-    wprintf(L"  .reset    reset the REPL to initial state.\n");
-    wprintf(L"  .help     show usage and copyright information.\n");
-    wprintf(L"\n");
-    fflush(stdout);
-}
+static am_module_t *repl_create_initial_module(void) {
+    const wchar_t *init_code = L"((lambda () (begin)))";
+    wchar_t *path_buf = repl_make_path(g_vm_alloc, L".");
+    if (!path_buf) return NULL;
 
-static void am_repl_print_continuation_prompt(int32_t indent_level) {
-    wchar_t prompt[64];
-    prompt[0] = L'\0';
-    wcscat(prompt, L"...");
-    for (int32_t i = 1; i < indent_level; i++) {
-        wcscat(prompt, L"..");
-    }
-    wcscat(prompt, L" ");
-    wprintf(L"%ls", prompt);
-    fflush(stdout);
-}
+    am_ast_t *ast = am_parse(g_vm_alloc, (wchar_t *)init_code, path_buf, 0);
+    am_free(g_vm_alloc, path_buf);
+    if (!ast) return NULL;
 
-static void am_repl_eval(const wchar_t *input) {
-    if (!input) return;
-
-    wchar_t *trimmed = am_repl_wcs_trim(input);
-    if (!trimmed) return;
-
-    if (wcscmp(trimmed, L".help") == 0) {
-        am_repl_print_help();
-        free(trimmed);
-        g_should_print_prompt = 1;
-        return;
-    }
-    else if (wcscmp(trimmed, L".exit") == 0) {
-        free(trimmed);
-        g_running = 0;
-        return;
-    }
-    else if (wcscmp(trimmed, L".reset") == 0) {
-        am_repl_clear_all_code();
-        am_repl_input_buffer_clear(&g_input_buffer);
-        wprintf(L"REPL已重置。\n");
-        fflush(stdout);
-        free(trimmed);
-        g_should_print_prompt = 1;
-        return;
-    }
-    free(trimmed);
-
-    wchar_t *line_copy = am_repl_wcs_dup(input);
-    if (!line_copy) return;
-    if (am_repl_input_buffer_push(&g_input_buffer, line_copy) != 0) {
-        free(line_copy);
-        return;
-    }
-
-    wchar_t *code = am_repl_input_buffer_join(&g_input_buffer);
-    if (!code) return;
-
-    int32_t indent_level = am_repl_count_brackets(code);
-    if (indent_level > 0) {
-        am_repl_print_continuation_prompt(indent_level);
-        free(code);
-        g_should_print_prompt = 0;
-        return;
-    }
-    else if (indent_level < 0) {
-        wprintf(L"[REPL Error] 括号不匹配\n");
-        fflush(stdout);
-        am_repl_input_buffer_clear(&g_input_buffer);
-        free(code);
-        g_should_print_prompt = 1;
-        return;
-    }
-
-    am_repl_input_buffer_clear(&g_input_buffer);
-
-    int32_t run_ok = am_repl_run(code);
-    if (run_ok == 0) {
-        if (am_repl_should_retain_input(code)) {
-            am_repl_append_all_code(code);
-        }
-    }
-    else {
-        if (wcsstr(code, L"define") != NULL) {
-            am_repl_append_all_code(code);
-        }
-    }
-    free(code);
-}
-
-static wchar_t *am_repl_read_line(void) {
-    size_t cap = 256;
-    wchar_t *buf = (wchar_t *)malloc(cap * sizeof(wchar_t));
-    if (!buf) return NULL;
-    size_t len = 0;
-    wint_t c;
-    while ((c = getwchar()) != WEOF && c != L'\n') {
-        if (len + 1 >= cap) {
-            size_t new_cap = cap * 2;
-            wchar_t *new_buf = (wchar_t *)realloc(buf, new_cap * sizeof(wchar_t));
-            if (!new_buf) {
-                free(buf);
-                return NULL;
-            }
-            buf = new_buf;
-            cap = new_cap;
-        }
-        buf[len++] = (wchar_t)c;
-    }
-    if (c == WEOF && len == 0) {
-        free(buf);
+    am_module_t *mod = am_compile(ast, 0, 0);
+    if (!mod) {
+        am_ast_destroy(ast);
         return NULL;
     }
-    buf[len] = L'\0';
-    return buf;
-}
 
-// ===============================================================================
-// 入口
-// ===============================================================================
+    return mod;
+}
 
 int main(int argc, char *argv[]) {
     (void)argc;
@@ -496,52 +340,264 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    signal(SIGINT, signal_handler);
+
     g_pool = am_allocator_pool_create(AM_ALLOCATOR_POOL_SIZE);
     if (!g_pool) {
         fprintf(stderr, "Failed to create allocator pool\n");
         return 1;
     }
-    vm_alloc = am_allocator_pool_get_vm(g_pool);
-    heap_alloc = am_allocator_pool_get_heap(g_pool);
+    g_vm_alloc = am_allocator_pool_get_vm(g_pool);
+    g_heap_alloc = am_allocator_pool_get_heap(g_pool);
 
-    char cwd[AM_REPL_BASE_DIR_BUF_SIZE];
-    if (getcwd(cwd, sizeof(cwd)) == NULL) {
-        fprintf(stderr, "Failed to get current working directory\n");
+    wchar_t cwd_w[2] = { L'.', L'\0' };
+    g_rt = am_runtime_create(g_vm_alloc, g_heap_alloc, cwd_w);
+    if (!g_rt) {
+        fprintf(stderr, "Failed to create runtime\n");
         am_allocator_pool_destroy(g_pool);
         return 1;
     }
-    _mbstowcs(g_base_dir_w, cwd, AM_REPL_BASE_DIR_BUF_SIZE - 1);
 
-    wprintf(L"Animac Scheme V%ls\n", AM_REPL_VERSION);
-    wprintf(L"Copyright (c) 2018~2026 BD4SUR\n");
-    wprintf(L"Type \".help\" for more information.\n");
-    wprintf(L"> ");
-    fflush(stdout);
-    g_should_print_prompt = 0;
+    am_runtime_set_default_timeslice(g_rt, 8192);
+    am_set_runtime_host_context(g_rt, NULL);
 
-    while (g_running) {
-        wchar_t *line = am_repl_read_line();
-        if (!line) {
+    am_runtime_register_native_lib(g_rt, &am_native_System_lib);
+    am_runtime_register_native_lib(g_rt, &am_native_Math_lib);
+    am_runtime_register_native_lib(g_rt, &am_native_String_lib);
+    am_runtime_register_native_lib(g_rt, &am_native_LLM_lib);
+    am_runtime_register_native_lib(g_rt, &am_native_Table_lib);
+
+    g_rt->callback_on_halt = on_halt;
+    g_rt->callback_on_error = on_error;
+    g_rt->callback_on_tick = on_tick;
+
+    am_module_t *mod = repl_create_initial_module();
+    if (!mod) {
+        fprintf(stderr, "Failed to create initial REPL module\n");
+        am_runtime_destroy(g_rt);
+        am_allocator_pool_destroy(g_pool);
+        return 1;
+    }
+
+    am_pid_t pid = am_runtime_load_module(g_rt, mod);
+    if (pid == (am_pid_t)-1) {
+        fprintf(stderr, "Failed to load initial process into runtime\n");
+        if (mod->ilcode) am_free(g_vm_alloc, mod->ilcode);
+        if (mod->ast) am_ast_destroy(mod->ast);
+        am_free(g_vm_alloc, mod);
+        am_runtime_destroy(g_rt);
+        am_allocator_pool_destroy(g_pool);
+        return 1;
+    }
+
+    if (mod->ilcode) {
+        am_free(g_vm_alloc, mod->ilcode);
+        mod->ilcode = NULL;
+    }
+    if (mod->ast) {
+        am_ast_destroy(mod->ast);
+        mod->ast = NULL;
+    }
+    am_free(g_vm_alloc, mod);
+
+    printf("Animac REPL\n");
+    printf("输入 Scheme 表达式，空行或 Ctrl+D 退出。\n\n");
+
+    wchar_t *session = NULL;
+    size_t session_len = 0;
+    wchar_t *accum = NULL;
+    size_t accum_len = 0;
+    int multiline = 0;
+
+    while (!g_should_stop) {
+        int indent = 0;
+        int status = 0;
+        if (accum_len > 0 && accum) {
+            status = check_expression_complete(accum, &indent);
+        }
+
+        char prompt[64];
+        if (!multiline && (!accum || accum_len == 0 || status == 0 || status == -1)) {
+            snprintf(prompt, sizeof(prompt), "animac> ");
+        } else {
+            int spaces = indent * 2;
+            if (spaces < 0) spaces = 0;
+            if (spaces > 32) spaces = 32;
+            snprintf(prompt, sizeof(prompt), "... %*s", spaces, "");
+        }
+
+        char *line_mb = readline(prompt);
+        if (line_mb == NULL) {
+            printf("\n");
             break;
         }
-        am_repl_eval(line);
-        free(line);
 
-        if (g_should_print_prompt) {
-            wprintf(L"> ");
-            fflush(stdout);
-            g_should_print_prompt = 0;
+        if (line_mb[0] == '\0' && (!accum || accum_len == 0)) {
+            free(line_mb);
+            continue;
+        }
+
+        if (line_mb[0] == '\0' && accum && accum_len > 0) {
+            free(line_mb);
+            status = check_expression_complete(accum, &indent);
+            if (status == 1) {
+                continue;
+            }
+            if (status == -1) {
+                fwprintf(stderr, L"[REPL] 括号不匹配\n");
+                free(accum);
+                accum = NULL;
+                accum_len = 0;
+                multiline = 0;
+                continue;
+            }
+            // 追加到 session
+            goto submit;
+        }
+
+        if (line_mb[0] != '\0') {
+            add_history(line_mb);
+        }
+
+        wchar_t *line_w = mb_to_wchar(line_mb);
+        free(line_mb);
+        if (!line_w) continue;
+
+        if (!multiline && (!accum || accum_len == 0)) {
+            if (wcscmp(line_w, L"exit") == 0 ||
+                wcscmp(line_w, L"quit") == 0 ||
+                wcscmp(line_w, L"(exit)") == 0 ||
+                wcscmp(line_w, L"(System.exit)") == 0) {
+                free(line_w);
+                break;
+            }
+        }
+
+        size_t line_len = wcslen(line_w);
+        size_t new_len = accum_len + (accum_len > 0 ? 1 : 0) + line_len;
+        wchar_t *new_accum = (wchar_t *)realloc(accum, (new_len + 1) * sizeof(wchar_t));
+        if (!new_accum) {
+            free(line_w);
+            continue;
+        }
+        accum = new_accum;
+        if (accum_len > 0) {
+            accum[accum_len] = L'\n';
+            accum_len++;
+        }
+        memcpy(accum + accum_len, line_w, line_len * sizeof(wchar_t));
+        accum_len += line_len;
+        accum[accum_len] = L'\0';
+        free(line_w);
+
+        multiline = 1;
+        status = check_expression_complete(accum, &indent);
+
+        if (status == 0 && accum_len > 0) {
+submit:
+            // 追加到 session
+            size_t need = session_len + (session_len > 0 ? 1 : 0) + accum_len;
+            wchar_t *new_session = (wchar_t *)realloc(session, (need + 1) * sizeof(wchar_t));
+            if (!new_session) {
+                fwprintf(stderr, L"[REPL] 内存不足\n");
+                free(accum);
+                accum = NULL;
+                accum_len = 0;
+                multiline = 0;
+                continue;
+            }
+            session = new_session;
+            if (session_len > 0) {
+                session[session_len] = L'\n';
+                session_len++;
+            }
+            memcpy(session + session_len, accum, accum_len * sizeof(wchar_t));
+            session_len += accum_len;
+            session[session_len] = L'\0';
+
+            size_t submitted_len = accum_len;
+            free(accum);
+            accum = NULL;
+            accum_len = 0;
+            multiline = 0;
+
+            // 编译执行新的 session
+            am_module_t *new_mod = NULL;
+            am_process_t *new_proc = NULL;
+            if (repl_eval_session(session, &new_mod, &new_proc) != 0) {
+                // 执行失败：回滚 session 到最后一次成功状态
+                if (session_len > submitted_len) {
+                    session_len -= submitted_len + 1; // 去掉 '\n' + 本次输入
+                } else {
+                    session_len = 0;
+                }
+                session[session_len] = L'\0';
+                continue;
+            }
+
+            // 加载并执行新进程；若运行时出错则回滚 session，保留旧进程
+            g_runtime_error = 0;
+            am_pid_t new_pid = am_runtime_load_module(g_rt, new_mod);
+
+            if (new_pid == (am_pid_t)-1) {
+                if (new_mod->ilcode) {
+                    am_free(g_vm_alloc, new_mod->ilcode);
+                    new_mod->ilcode = NULL;
+                }
+                if (new_mod->ast) {
+                    am_ast_destroy(new_mod->ast);
+                    new_mod->ast = NULL;
+                }
+                am_free(g_vm_alloc, new_mod);
+                fwprintf(stderr, L"[REPL] 加载新进程失败\n");
+                break;
+            }
+
+            if (new_mod->ilcode) {
+                am_free(g_vm_alloc, new_mod->ilcode);
+                new_mod->ilcode = NULL;
+            }
+            if (new_mod->ast) {
+                am_ast_destroy(new_mod->ast);
+                new_mod->ast = NULL;
+            }
+            am_free(g_vm_alloc, new_mod);
+
+            int32_t running = 1;
+            while (running && !g_should_stop) {
+                running = am_runtime_tick(g_rt, g_rt->timeslice);
+            }
+
+            if (g_runtime_error) {
+                // 运行时错误：杀掉新进程，回滚本次输入，保留旧进程
+                am_runtime_kill_process(g_rt, new_pid);
+                if (session_len > submitted_len) {
+                    session_len -= submitted_len + 1;
+                } else {
+                    session_len = 0;
+                }
+                session[session_len] = L'\0';
+                continue;
+            }
+
+            // 成功：替换为新的持久状态
+            am_runtime_kill_process(g_rt, pid);
+            pid = new_pid;
+        } else if (status == -1) {
+            fwprintf(stderr, L"[REPL] 括号不匹配\n");
+            free(accum);
+            accum = NULL;
+            accum_len = 0;
+            multiline = 0;
         }
     }
 
-    am_repl_clear_all_code();
-    am_repl_input_buffer_clear(&g_input_buffer);
-    free(g_input_buffer.lines);
+    if (accum) free(accum);
+    if (session) free(session);
 
+    am_runtime_kill_process(g_rt, pid);
+    am_runtime_destroy(g_rt);
     am_allocator_pool_destroy(g_pool);
-    g_pool = NULL;
-    vm_alloc = NULL;
-    heap_alloc = NULL;
 
     return 0;
 }
