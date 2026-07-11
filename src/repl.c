@@ -19,24 +19,24 @@
 #endif
 
 // 前向声明
-static void repl_ctx_output_wchar(repl_ctx_t *ctx, wchar_t c);
-static void repl_ctx_output_wcs(repl_ctx_t *ctx, const wchar_t *s);
-static void repl_ctx_clear_output(repl_ctx_t *ctx);
-static int repl_ctx_accum_append(repl_ctx_t *ctx, const wchar_t *line);
-static void repl_ctx_reset_accum(repl_ctx_t *ctx);
-static int repl_ctx_session_append(repl_ctx_t *ctx, const wchar_t *code, size_t len);
-static repl_result_t repl_result_from_ctx(repl_ctx_t *ctx);
-static int32_t repl_eval_session(repl_ctx_t *ctx, const wchar_t *session_code,
+static void repl_ctx_output_wchar(am_repl_ctx_t *ctx, wchar_t c);
+static void repl_ctx_output_wcs(am_repl_ctx_t *ctx, const wchar_t *s);
+static void repl_ctx_clear_output(am_repl_ctx_t *ctx);
+static int repl_ctx_accum_append(am_repl_ctx_t *ctx, const wchar_t *line);
+static void repl_ctx_reset_accum(am_repl_ctx_t *ctx);
+static int repl_ctx_session_append(am_repl_ctx_t *ctx, const wchar_t *code, size_t len);
+static am_repl_result_t repl_result_from_ctx(am_repl_ctx_t *ctx);
+static int32_t repl_eval_session(am_repl_ctx_t *ctx, const wchar_t *session_code,
                                   am_module_t **out_mod, am_process_t **out_proc);
-static am_module_t *repl_create_initial_module(repl_ctx_t *ctx);
+static am_module_t *repl_create_initial_module(am_repl_ctx_t *ctx);
 static int repl_ctx_js_indent(const wchar_t *code);
-static repl_result_t repl_ctx_eval_js_accum(repl_ctx_t *ctx, int force);
-static repl_result_t repl_ctx_submit(repl_ctx_t *ctx);
+static am_repl_result_t repl_ctx_eval_js_accum(am_repl_ctx_t *ctx, int force);
+static am_repl_result_t repl_ctx_submit(am_repl_ctx_t *ctx);
 
 // 运行时回调：捕获输出到当前上下文的输出缓冲区。
 static void on_tick(am_runtime_t *rt) {
     if (!rt || !rt->output_fifo) return;
-    repl_ctx_t *ctx = (repl_ctx_t *)am_get_runtime_host_context(rt);
+    am_repl_ctx_t *ctx = (am_repl_ctx_t *)am_get_runtime_host_context(rt);
     if (!ctx) return;
     while (rt->output_fifo->length > 0) {
         am_value_t v = am_list_shift(rt->vm_alloc, rt->output_fifo);
@@ -50,7 +50,7 @@ static void on_halt(am_runtime_t *rt) { (void)rt; }
 
 static void on_error(am_runtime_t *rt) {
     if (!rt) return;
-    repl_ctx_t *ctx = (repl_ctx_t *)am_get_runtime_host_context(rt);
+    am_repl_ctx_t *ctx = (am_repl_ctx_t *)am_get_runtime_host_context(rt);
     if (ctx) ctx->runtime_error = 1;
 }
 
@@ -223,7 +223,7 @@ static int repl_last_expr_has_side_effect(am_ast_t *ast, am_handle_t node_handle
 // 若用户输入的最后一个顶层表达式不是定义/赋值/输出，则将其包装为 (display <expr>) (newline)。
 // 返回新分配的 wchar_t* 代码（调用者负责释放），失败返回 NULL。
 // 关键：直接从原始 session_code 切分最后一个表达式，避免 ARN 后的内部变量名污染。
-static wchar_t *repl_build_session_code(repl_ctx_t *ctx, const wchar_t *session_code) {
+static wchar_t *repl_build_session_code(am_repl_ctx_t *ctx, const wchar_t *session_code) {
     if (!ctx || !session_code) return NULL;
     am_allocator_t *alloc = ctx->vm_alloc;
 
@@ -313,7 +313,7 @@ static wchar_t *repl_build_session_code(repl_ctx_t *ctx, const wchar_t *session_
 }
 
 // 编译并执行完整的 REPL 会话代码。成功返回 0，失败返回 -1。
-static int32_t repl_eval_session(repl_ctx_t *ctx, const wchar_t *session_code,
+static int32_t repl_eval_session(am_repl_ctx_t *ctx, const wchar_t *session_code,
                                   am_module_t **out_mod, am_process_t **out_proc) {
     if (!ctx || !session_code || !out_mod || !out_proc) return -1;
 
@@ -360,7 +360,7 @@ static int32_t repl_eval_session(repl_ctx_t *ctx, const wchar_t *session_code,
 }
 
 
-static am_module_t *repl_create_initial_module(repl_ctx_t *ctx) {
+static am_module_t *repl_create_initial_module(am_repl_ctx_t *ctx) {
     if (!ctx) return NULL;
     const wchar_t *init_code = L"((lambda () (begin)))";
     wchar_t *path_buf = repl_make_path(ctx->vm_alloc, L".");
@@ -380,14 +380,14 @@ static am_module_t *repl_create_initial_module(repl_ctx_t *ctx) {
 }
 
 // 输出缓冲区操作
-static void repl_ctx_clear_output(repl_ctx_t *ctx) {
+static void repl_ctx_clear_output(am_repl_ctx_t *ctx) {
     if (!ctx) return;
     ctx->output_len = 0;
     if (ctx->output_buf) ctx->output_buf[0] = '\0';
     ctx->output = NULL;
 }
 
-static void repl_ctx_output_mb(repl_ctx_t *ctx, const char *s) {
+static void repl_ctx_output_mb(am_repl_ctx_t *ctx, const char *s) {
     if (!ctx || !s) return;
     size_t len = strlen(s);
     size_t need = ctx->output_len + len + 1;
@@ -405,7 +405,7 @@ static void repl_ctx_output_mb(repl_ctx_t *ctx, const char *s) {
     ctx->output = ctx->output_buf;
 }
 
-static void repl_ctx_output_wchar(repl_ctx_t *ctx, wchar_t c) {
+static void repl_ctx_output_wchar(am_repl_ctx_t *ctx, wchar_t c) {
     char mb[MB_CUR_MAX + 1];
     int n = wctomb(mb, c);
     if (n <= 0) return;
@@ -413,7 +413,7 @@ static void repl_ctx_output_wchar(repl_ctx_t *ctx, wchar_t c) {
     repl_ctx_output_mb(ctx, mb);
 }
 
-static void repl_ctx_output_wcs(repl_ctx_t *ctx, const wchar_t *s) {
+static void repl_ctx_output_wcs(am_repl_ctx_t *ctx, const wchar_t *s) {
     if (!ctx || !s) return;
     char *mb = wchar_to_mb(s);
     if (!mb) return;
@@ -422,7 +422,7 @@ static void repl_ctx_output_wcs(repl_ctx_t *ctx, const wchar_t *s) {
 }
 
 // 累积输入与会话操作
-static int repl_ctx_accum_append(repl_ctx_t *ctx, const wchar_t *line) {
+static int repl_ctx_accum_append(am_repl_ctx_t *ctx, const wchar_t *line) {
     if (!ctx || !line) return 0;
     size_t line_len = wcslen(line);
     size_t need = ctx->accum_len + (ctx->accum_len > 0 ? 1 : 0) + line_len;
@@ -439,7 +439,7 @@ static int repl_ctx_accum_append(repl_ctx_t *ctx, const wchar_t *line) {
     return 1;
 }
 
-static void repl_ctx_reset_accum(repl_ctx_t *ctx) {
+static void repl_ctx_reset_accum(am_repl_ctx_t *ctx) {
     if (!ctx) return;
     free(ctx->accum);
     ctx->accum = NULL;
@@ -447,7 +447,7 @@ static void repl_ctx_reset_accum(repl_ctx_t *ctx) {
     ctx->multiline = 0;
 }
 
-static int repl_ctx_session_append(repl_ctx_t *ctx, const wchar_t *code, size_t len) {
+static int repl_ctx_session_append(am_repl_ctx_t *ctx, const wchar_t *code, size_t len) {
     if (!ctx || !code) return 0;
     size_t need = ctx->session_len + (ctx->session_len > 0 ? 1 : 0) + len;
     wchar_t *new_session = (wchar_t *)realloc(ctx->session, (need + 1) * sizeof(wchar_t));
@@ -463,7 +463,7 @@ static int repl_ctx_session_append(repl_ctx_t *ctx, const wchar_t *code, size_t 
     return 1;
 }
 
-static void repl_ctx_rollback_session(repl_ctx_t *ctx, size_t submitted_len) {
+static void repl_ctx_rollback_session(am_repl_ctx_t *ctx, size_t submitted_len) {
     if (!ctx) return;
     if (ctx->session_len > submitted_len) {
         ctx->session_len -= submitted_len + 1;
@@ -473,9 +473,9 @@ static void repl_ctx_rollback_session(repl_ctx_t *ctx, size_t submitted_len) {
     if (ctx->session) ctx->session[ctx->session_len] = L'\0';
 }
 
-static repl_result_t repl_result_from_ctx(repl_ctx_t *ctx) {
-    repl_result_t res;
-    res.status = ctx ? ctx->status : REPL_STATUS_ERROR;
+static am_repl_result_t repl_result_from_ctx(am_repl_ctx_t *ctx) {
+    am_repl_result_t res;
+    res.status = ctx ? ctx->status : AM_REPL_STATUS_ERROR;
     res.output = ctx ? ctx->output : NULL;
     res.indent = ctx ? ctx->indent : 0;
     return res;
@@ -578,13 +578,13 @@ static int repl_ctx_js_indent(const wchar_t *code) {
 // 将当前 accum 中的 JS 代码翻译成 Scheme 并执行。
 // force=0 时翻译失败仅表示代码尚不完整，返回 CONTINUE；
 // force=1 时（空行触发）翻译失败则报错误并清空 accum。
-static repl_result_t repl_ctx_eval_js_accum(repl_ctx_t *ctx, int force) {
+static am_repl_result_t repl_ctx_eval_js_accum(am_repl_ctx_t *ctx, int force) {
     if (!ctx) return repl_result_from_ctx(ctx);
 
     // 非强制提交时，若 JS 代码括号/花括号明显未闭合，暂不翻译，避免打印错误信息。
     int js_indent = repl_ctx_js_indent(ctx->accum);
     if (!force && js_indent > 0) {
-        ctx->status = REPL_STATUS_CONTINUE;
+        ctx->status = AM_REPL_STATUS_CONTINUE;
         ctx->indent = js_indent;
         return repl_result_from_ctx(ctx);
     }
@@ -593,10 +593,10 @@ static repl_result_t repl_ctx_eval_js_accum(repl_ctx_t *ctx, int force) {
     if (!scheme) {
         if (force) {
             repl_ctx_reset_accum(ctx);
-            ctx->status = REPL_STATUS_ERROR;
+            ctx->status = AM_REPL_STATUS_ERROR;
             repl_ctx_output_wcs(ctx, L"[REPL] JS 翻译失败\n");
         } else {
-            ctx->status = REPL_STATUS_CONTINUE;
+            ctx->status = AM_REPL_STATUS_CONTINUE;
             ctx->indent = js_indent;
         }
         return repl_result_from_ctx(ctx);
@@ -610,7 +610,7 @@ static repl_result_t repl_ctx_eval_js_accum(repl_ctx_t *ctx, int force) {
     if (!scheme_copy) {
         free(scheme);
         repl_ctx_reset_accum(ctx);
-        ctx->status = REPL_STATUS_ERROR;
+        ctx->status = AM_REPL_STATUS_ERROR;
         repl_ctx_output_wcs(ctx, L"[REPL] 内存不足\n");
         return repl_result_from_ctx(ctx);
     }
@@ -622,7 +622,7 @@ static repl_result_t repl_ctx_eval_js_accum(repl_ctx_t *ctx, int force) {
     ctx->accum_len = unwrapped_len;
     ctx->multiline = 0;
 
-    repl_result_t res = repl_ctx_submit(ctx);
+    am_repl_result_t res = repl_ctx_submit(ctx);
 
     // submit 已释放 scheme_copy 并清空 accum；仍需释放原始 JS 累积缓冲区。
     free(js_accum);
@@ -630,13 +630,13 @@ static repl_result_t repl_ctx_eval_js_accum(repl_ctx_t *ctx, int force) {
 }
 
 // 提交当前 accum 到 session 并执行。
-static repl_result_t repl_ctx_submit(repl_ctx_t *ctx) {
+static am_repl_result_t repl_ctx_submit(am_repl_ctx_t *ctx) {
     if (!ctx) return repl_result_from_ctx(ctx);
 
     size_t submitted_len = ctx->accum_len;
     if (!repl_ctx_session_append(ctx, ctx->accum, ctx->accum_len)) {
         repl_ctx_reset_accum(ctx);
-        ctx->status = REPL_STATUS_ERROR;
+        ctx->status = AM_REPL_STATUS_ERROR;
         repl_ctx_output_wcs(ctx, L"[REPL] 内存不足\n");
         return repl_result_from_ctx(ctx);
     }
@@ -646,7 +646,7 @@ static repl_result_t repl_ctx_submit(repl_ctx_t *ctx) {
     am_process_t *new_proc = NULL;
     if (repl_eval_session(ctx, ctx->session, &new_mod, &new_proc) != 0) {
         repl_ctx_rollback_session(ctx, submitted_len);
-        ctx->status = REPL_STATUS_ERROR;
+        ctx->status = AM_REPL_STATUS_ERROR;
         return repl_result_from_ctx(ctx);
     }
 
@@ -664,7 +664,7 @@ static repl_result_t repl_ctx_submit(repl_ctx_t *ctx) {
         }
         am_free(ctx->vm_alloc, new_mod);
         repl_ctx_rollback_session(ctx, submitted_len);
-        ctx->status = REPL_STATUS_ERROR;
+        ctx->status = AM_REPL_STATUS_ERROR;
         repl_ctx_output_wcs(ctx, L"[REPL] 加载新进程失败\n");
         return repl_result_from_ctx(ctx);
     }
@@ -690,19 +690,19 @@ static repl_result_t repl_ctx_submit(repl_ctx_t *ctx) {
     if (ctx->runtime_error) {
         am_runtime_kill_process(ctx->rt, new_pid);
         repl_ctx_rollback_session(ctx, submitted_len);
-        ctx->status = REPL_STATUS_ERROR;
+        ctx->status = AM_REPL_STATUS_ERROR;
         return repl_result_from_ctx(ctx);
     }
 
     am_runtime_kill_process(ctx->rt, ctx->pid);
     ctx->pid = new_pid;
-    ctx->status = REPL_STATUS_OUTPUT;
+    ctx->status = AM_REPL_STATUS_OUTPUT;
     return repl_result_from_ctx(ctx);
 }
 
 // 建立 REPL 上下文。
-repl_ctx_t *repl_ctx_create(void) {
-    repl_ctx_t *ctx = (repl_ctx_t *)calloc(1, sizeof(repl_ctx_t));
+am_repl_ctx_t *am_repl_ctx_create(void) {
+    am_repl_ctx_t *ctx = (am_repl_ctx_t *)calloc(1, sizeof(am_repl_ctx_t));
     if (!ctx) return NULL;
 
     ctx->pid = (am_pid_t)-1;
@@ -765,7 +765,7 @@ repl_ctx_t *repl_ctx_create(void) {
     }
     am_free(ctx->vm_alloc, mod);
 
-    ctx->status = REPL_STATUS_CONTINUE;
+    ctx->status = AM_REPL_STATUS_CONTINUE;
     ctx->output = NULL;
     ctx->indent = 0;
     ctx->js_mode = 0;
@@ -777,12 +777,12 @@ repl_ctx_t *repl_ctx_create(void) {
 }
 
 // 请求停止 REPL 运行。
-void repl_ctx_interrupt(repl_ctx_t *ctx) {
+void am_repl_ctx_interrupt(am_repl_ctx_t *ctx) {
     if (ctx) ctx->should_stop = 1;
 }
 
 // 设置 JS 解释器模式。
-void repl_ctx_set_js_mode(repl_ctx_t *ctx, int js_mode) {
+void am_repl_ctx_set_js_mode(am_repl_ctx_t *ctx, int js_mode) {
     if (!ctx) return;
     ctx->js_mode = js_mode ? 1 : 0;
     if (ctx->js_mode) {
@@ -795,7 +795,7 @@ void repl_ctx_set_js_mode(repl_ctx_t *ctx, int js_mode) {
 }
 
 // 销毁 REPL 上下文。
-void repl_ctx_destroy(repl_ctx_t *ctx) {
+void am_repl_ctx_destroy(am_repl_ctx_t *ctx) {
     if (!ctx) return;
     if (ctx->rt) {
         if (ctx->pid != (am_pid_t)-1) {
@@ -811,23 +811,23 @@ void repl_ctx_destroy(repl_ctx_t *ctx) {
 }
 
 // Scheme 模式：逐行累积并检查 S-表达式完整性。
-static repl_result_t repl_ctx_feed_scheme(repl_ctx_t *ctx, const char *input) {
+static am_repl_result_t am_repl_ctx_feed_scheme(am_repl_ctx_t *ctx, const char *input) {
     if (!ctx) return repl_result_from_ctx(ctx);
 
     // 空行：尝试提交已累积的输入
     if (!input || input[0] == '\0') {
         if (!ctx->accum || ctx->accum_len == 0) {
-            ctx->status = REPL_STATUS_CONTINUE;
+            ctx->status = AM_REPL_STATUS_CONTINUE;
             return repl_result_from_ctx(ctx);
         }
         int status = check_expression_complete(ctx->accum, &ctx->indent);
         if (status == 1) {
-            ctx->status = REPL_STATUS_CONTINUE;
+            ctx->status = AM_REPL_STATUS_CONTINUE;
             return repl_result_from_ctx(ctx);
         }
         if (status == -1) {
             repl_ctx_reset_accum(ctx);
-            ctx->status = REPL_STATUS_ERROR;
+            ctx->status = AM_REPL_STATUS_ERROR;
             repl_ctx_output_wcs(ctx, L"[REPL] 括号不匹配\n");
             return repl_result_from_ctx(ctx);
         }
@@ -835,7 +835,7 @@ static repl_result_t repl_ctx_feed_scheme(repl_ctx_t *ctx, const char *input) {
     } else {
         wchar_t *line_w = mb_to_wchar(input);
         if (!line_w) {
-            ctx->status = REPL_STATUS_ERROR;
+            ctx->status = AM_REPL_STATUS_ERROR;
             repl_ctx_output_wcs(ctx, L"[REPL] 输入编码失败\n");
             return repl_result_from_ctx(ctx);
         }
@@ -847,14 +847,14 @@ static repl_result_t repl_ctx_feed_scheme(repl_ctx_t *ctx, const char *input) {
                 wcscmp(line_w, L"(exit)") == 0 ||
                 wcscmp(line_w, L"(System.exit)") == 0) {
                 free(line_w);
-                ctx->status = REPL_STATUS_EXIT;
+                ctx->status = AM_REPL_STATUS_EXIT;
                 return repl_result_from_ctx(ctx);
             }
         }
 
         if (!repl_ctx_accum_append(ctx, line_w)) {
             free(line_w);
-            ctx->status = REPL_STATUS_ERROR;
+            ctx->status = AM_REPL_STATUS_ERROR;
             repl_ctx_output_wcs(ctx, L"[REPL] 内存不足\n");
             return repl_result_from_ctx(ctx);
         }
@@ -863,12 +863,12 @@ static repl_result_t repl_ctx_feed_scheme(repl_ctx_t *ctx, const char *input) {
         int status = check_expression_complete(ctx->accum, &ctx->indent);
         if (status == 1) {
             ctx->multiline = 1;
-            ctx->status = REPL_STATUS_CONTINUE;
+            ctx->status = AM_REPL_STATUS_CONTINUE;
             return repl_result_from_ctx(ctx);
         }
         if (status == -1) {
             repl_ctx_reset_accum(ctx);
-            ctx->status = REPL_STATUS_ERROR;
+            ctx->status = AM_REPL_STATUS_ERROR;
             repl_ctx_output_wcs(ctx, L"[REPL] 括号不匹配\n");
             return repl_result_from_ctx(ctx);
         }
@@ -879,13 +879,13 @@ static repl_result_t repl_ctx_feed_scheme(repl_ctx_t *ctx, const char *input) {
 }
 
 // JS 模式：逐行累积 JS，每次尝试翻译成 Scheme；翻译成功则执行。
-static repl_result_t repl_ctx_feed_js(repl_ctx_t *ctx, const char *input) {
+static am_repl_result_t am_repl_ctx_feed_js(am_repl_ctx_t *ctx, const char *input) {
     if (!ctx) return repl_result_from_ctx(ctx);
 
     // 空行：强制尝试翻译一次
     if (!input || input[0] == '\0') {
         if (!ctx->accum || ctx->accum_len == 0) {
-            ctx->status = REPL_STATUS_CONTINUE;
+            ctx->status = AM_REPL_STATUS_CONTINUE;
             return repl_result_from_ctx(ctx);
         }
         return repl_ctx_eval_js_accum(ctx, 1);
@@ -893,7 +893,7 @@ static repl_result_t repl_ctx_feed_js(repl_ctx_t *ctx, const char *input) {
 
     wchar_t *line_w = mb_to_wchar(input);
     if (!line_w) {
-        ctx->status = REPL_STATUS_ERROR;
+        ctx->status = AM_REPL_STATUS_ERROR;
         repl_ctx_output_wcs(ctx, L"[REPL] 输入编码失败\n");
         return repl_result_from_ctx(ctx);
     }
@@ -905,14 +905,14 @@ static repl_result_t repl_ctx_feed_js(repl_ctx_t *ctx, const char *input) {
             wcscmp(line_w, L"(exit)") == 0 ||
             wcscmp(line_w, L"(System.exit)") == 0) {
             free(line_w);
-            ctx->status = REPL_STATUS_EXIT;
+            ctx->status = AM_REPL_STATUS_EXIT;
             return repl_result_from_ctx(ctx);
         }
     }
 
     if (!repl_ctx_accum_append(ctx, line_w)) {
         free(line_w);
-        ctx->status = REPL_STATUS_ERROR;
+        ctx->status = AM_REPL_STATUS_ERROR;
         repl_ctx_output_wcs(ctx, L"[REPL] 内存不足\n");
         return repl_result_from_ctx(ctx);
     }
@@ -923,25 +923,25 @@ static repl_result_t repl_ctx_feed_js(repl_ctx_t *ctx, const char *input) {
 }
 
 // 向 REPL 上下文传入一个字符串（通常是一行输入），返回结果并更新上下文内部状态。
-repl_result_t repl_ctx_feed(repl_ctx_t *ctx, const char *input) {
+am_repl_result_t am_repl_ctx_feed(am_repl_ctx_t *ctx, const char *input) {
     if (!ctx) {
-        repl_result_t res;
-        res.status = REPL_STATUS_ERROR;
+        am_repl_result_t res;
+        res.status = AM_REPL_STATUS_ERROR;
         res.output = NULL;
         res.indent = 0;
         return res;
     }
 
     repl_ctx_clear_output(ctx);
-    ctx->status = REPL_STATUS_CONTINUE;
+    ctx->status = AM_REPL_STATUS_CONTINUE;
     ctx->indent = 0;
     ctx->output = NULL;
     ctx->should_stop = 0;
 
     if (ctx->js_mode) {
-        return repl_ctx_feed_js(ctx, input);
+        return am_repl_ctx_feed_js(ctx, input);
     }
-    return repl_ctx_feed_scheme(ctx, input);
+    return am_repl_ctx_feed_scheme(ctx, input);
 }
 
 

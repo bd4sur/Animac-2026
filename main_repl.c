@@ -46,14 +46,14 @@ int main(int argc, char *argv[]) {
     rl_event_hook = repl_event_hook;
     rl_set_keyboard_input_timeout(100000);  // 100 ms
 
-    repl_ctx_t *ctx = repl_ctx_create();
+    am_repl_ctx_t *ctx = am_repl_ctx_create();
     if (!ctx) {
         fprintf(stderr, "Failed to create REPL context\n");
         return 1;
     }
 
     if (js_mode) {
-        repl_ctx_set_js_mode(ctx, 1);
+        am_repl_ctx_set_js_mode(ctx, 1);
         printf("Animac REPL (JavaScript interpreter mode)\n");
         printf("输入 JavaScript 表达式，将先翻译为 Scheme 再执行。\n");
         printf("空行或 Ctrl+C 退出。\n\n");
@@ -92,26 +92,26 @@ int main(int argc, char *argv[]) {
             add_history(line_mb);
         }
 
-        repl_result_t res = repl_ctx_feed(ctx, line_mb);
+        am_repl_result_t res = am_repl_ctx_feed(ctx, line_mb);
         free(line_mb);
 
-        if (res.status == REPL_STATUS_EXIT || g_should_stop) {
+        if (res.status == AM_REPL_STATUS_EXIT || g_should_stop) {
             break;
         }
 
-        if (res.status == REPL_STATUS_OUTPUT) {
+        if (res.status == AM_REPL_STATUS_OUTPUT) {
             if (res.output && res.output[0] != '\0') {
                 printf("%s", res.output);
                 fflush(stdout);
             }
-        } else if (res.status == REPL_STATUS_ERROR) {
+        } else if (res.status == AM_REPL_STATUS_ERROR) {
             if (res.output && res.output[0] != '\0') {
                 fprintf(stderr, "%s", res.output);
             }
         }
-        // REPL_STATUS_CONTINUE：无需输出
+        // AM_REPL_STATUS_CONTINUE：无需输出
     }
 
-    repl_ctx_destroy(ctx);
+    am_repl_ctx_destroy(ctx);
     return 0;
 }

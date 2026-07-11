@@ -10,7 +10,7 @@ all: main repl
 main: main.c $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-repl: repl.c main_repl.c $(SRCS)
+repl: main_repl.c $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lreadline
 
 clean:
