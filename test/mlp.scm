@@ -1,6 +1,7 @@
 ;; 多层感知机训练与推理
 ;; 2025-06-28
 
+(native System)
 (native Math)
 (import List "list.scm")
 
@@ -470,6 +471,13 @@
 
 (define run
   (lambda () {
+    (display "Animac测试用例：基于3层感知机的鸢尾花分类模型训练与测试\n  (c) 2025-06-28 BD4SUR\n")
+    ;; 运行12s后退出，防止无限循环。若需要长时间验证，可禁用这段定时器。
+    (System.set_timeout 12000 (lambda ()
+        (display "\n超时正常退出\n")
+        (System.exit)
+    ))
+
     (train IRIS_TRAINSET_X IRIS_TRAINSET_Y 120 IRIS_VALIDSET_X IRIS_VALIDSET_Y 30)
   })
 )

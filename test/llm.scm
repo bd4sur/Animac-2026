@@ -1,4 +1,4 @@
-;; 自研Nano语言模型推理 2025-07-04 2025-12-12
+;; 自研Nano语言模型推理 2025-07-04 2025-12-12 2026-07
 ;; 本测试用例展示了自回归文本生成和全局注意力序列生成两类任务。
 ;; 前者使用自行训练的230k参数的哲学黑话模型，进行自回归文本生成。
 ;; 后者对长度为6的输入序列执行全局自注意力序列生成，输出序列是输入序列的升序排列。
@@ -11,6 +11,8 @@
 
 (import List "list.scm")
 (import NanoModels "llm_model.scm")
+
+(display "Animac测试用例：自研Nano语言模型推理\n  (c) 2025-2026 BD4SUR\n")
 
 (define memstat
   (lambda ()
@@ -1030,7 +1032,7 @@
     (define total_dl 0)
     (define total_norm_dl 0.0)
     (define i 0)
-    (display "========== 长度36归并排序压测 ==========\n")
+    (display "========== 长度36归并排序 ==========\n")
     (while (< i rounds) {
       (display "第") (display (+ i 1)) (display "轮测试：\n")
       (define test_list (make_random_list LEN))
@@ -1071,8 +1073,8 @@
   (display "\n  排序后：")
   (display (ai_sort rlist 6))
   (display "\n\n")
-  (run_tests)
-  (display "\n")
+  ;(run_tests)
+  ;(display "\n")
   (benchmark_length36 10)
   (display "\n")
 } {

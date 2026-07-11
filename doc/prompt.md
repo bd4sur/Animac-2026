@@ -4619,9 +4619,223 @@ else if (obj->type == AM_OBJECT_TYPE_CONTINUATION) {
 
 ---------------------
 
+2026-07-11
+
+请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言+双栈式VM架构。
+
+请你阅读 @src/native_System.c 和 @include/native_System.h ，了解本地宿主函数的设计套路，并实现以下需求：
+
+实现一个本地宿主函数 (System.exit) ， 无参数，功能是立即停止当前process。也就是将当前进程置为停止状态。这并不会影响已经存在的异步任务。
+
+系统中安装了WSL（Ubuntu 24.04），具备gcc、make、gdb等工具。你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以自行构造测试用例进行测试。你可以使用WSL进行编译构建和测试。
+
 
 ---------------------
 
+2026-07-11
+
+OK，在 @src/runtime.c 和 @include/runtime.h 中实现一个彻底销毁某个 am_process_t 的虚拟机runtime API，其功能是：
+
+- 设置其状态为KILLED（约等于Linux的僵尸进程）
+- 深度销毁其heap指向的全部堆对象
+- 深度销毁其am_process_t中所有的容器类复杂数据结构，如heap、stack、AST相关符号表等
+- 深度销毁其创建的所有异步任务（如果能确定是它创建的话）
+- 保留其am_process_t数据结构备查
+
+请先给出详细设计方案，如有问题先问我澄清，得到我的批准后再开始实现。
+
+
+
+下面是我针对这个“彻底销毁进程但保留 `am_process_t` 壳”API 的详细设计方案。先给出设计，再列出需要你拍板的关键问题，**你批准（或修改后批准）我再开始实现**。
+
+## 一、设计目标
+
+新增 runtime API：
+
+```c
+int32_t am_runtime_kill_process(am_runtime_t *rt, am_pid_t pid);
+```
+
+语义：
+
+1. 将目标进程状态置为新增的 `AM_PROCESS_STATE_KILLED`（类似 Linux 僵尸进程，但进程控制块仍在）。
+2. 深度释放该进程占用的所有用户资源：
+   - `proc->heap` 及其指向的全部堆对象；
+   - `proc->strindex`、`var_vocab`、`symbol_vocab`、`var_type`、`natives`、`var_top`、`var_arn_mapping`；
+   - `proc->ilcode`、`opstack`、`fstack`；
+   - 重置 `current_closure_handle` 等执行上下文。
+3. 清理“由该进程产生/关联”的异步任务：
+   - 运行时定时器链表中所有 `timer->pid == pid` 的 `am_timer_t`；
+   - 各 IPC 队列 `send_waiters` / `recv_waiters` 中所有 `w->pid == pid` 的等待节点；
+   - 调度队列 `rt->process_queue` 中所有待调度的该 pid 条目。
+4. 保留 `am_process_t` 结构体本身（pid、parent_pid、state 等少量元数据）供外部查询。
+
+## 二、新增/修改的接口与常量
+
+### 1. 进程状态常量（`include/process.h`）
+
+在现有状态后追加：
+
+```c
+#define AM_PROCESS_STATE_KILLED    (7)
+```
+
+数值不与现有 1–6 冲突。
+
+### 2. Runtime 公开 API（`include/runtime.h`）
+
+```c
+// 彻底终止指定 PID 的进程，释放其堆、栈、AST 相关表及异步任务。
+// 保留 am_process_t 结构体本身（状态置为 KILLED）供查。
+// 成功返回 0；pid 无效或进程已是 KILLED 返回 -1。
+int32_t am_runtime_kill_process(am_runtime_t *rt, am_pid_t pid);
+```
+
+### 3. Runtime 内部需要配合修改的位置
+
+| 位置 | 修改 |
+|---|---|
+| `am_runtime_tick` | 执行完一条指令后，若 `proc->state == AM_PROCESS_STATE_KILLED`，不再将其重新入队。 |
+| `runtime_fire_expired_timers` | 跳过或忽略 `pid` 为 KILLED 的定时器（kill 时已清理，此处作为防御性检查）。 |
+| `runtime_queue_check_waiters` | 跳过或忽略 `pid` 为 KILLED 的等待者（kill 时已清理，防御性检查）。 |
+| `runtime_has_nonblocked_timer` | 跳过 KILLED 进程关联的定时器，避免事件循环空转。 |
+| `am_runtime_destroy` | 销毁 runtime 时，对 KILLED 进程壳无需重复释放堆资源（指针已置 NULL）。 |
+
+## 三、实现细节
+
+### 3.1 进程资源释放顺序
+
+封装一个内部辅助函数 `runtime_process_gut()`（或放在 `src/process.c` 中作为 `am_process_gut()`）
+
+> 说明：这部分逻辑基本等价于现有 `am_process_destroy()` 的前半段，只是**不调用最后的 `am_free(proc->vm_alloc, proc)`**。
+
+### 3.2 异步任务清理
+
+#### 3.2.1 定时器清理
+
+遍历 `rt->timer_list`，删除 `timer->pid == pid` 的节点。
+
+#### 3.2.2 队列等待者清理
+
+遍历 `rt->queue_list` 中的每个队列，从 `send_waiters` 和 `recv_waiters` 中移除 `pid` 匹配的节点。被移除的 waiter 不唤醒，直接释放。
+
+#### 3.2.3 调度队列清理
+
+从 `rt->process_queue` 中删除所有该 pid 条目。由于 `am_list_t` 不支持按值删除，需要创建新列表或实现一个按条件过滤的辅助函数。
+
+> 也可以新增一个 `am_list_filter` 风格辅助函数，但直接原地压缩最简单。
+
+### 3.3 主 API 流程
+
+
+## 四、边界与安全性考虑
+
+### 4.1 调用时机限制
+
+如果 `am_runtime_kill_process` 在**目标进程自己的 native 函数执行期间**被调用（例如未来做一个 `System.kill` 自己），会出现：
+
+- native 返回后，执行器继续用 `proc->state` 判断；
+- kill 已经销毁了 opstack/fstack/heap；
+- 但 native 函数本身可能仍持有局部变量/句柄指向这些内存。
+
+**建议**：本 API 设计为“外部/宿主编排接口”，**不推荐在目标进程自己的 native 调用中同步调用**。如果未来需要 `System.kill` 自杀，应改为设置一个“待 kill 标记”，由调度器在 tick 安全点执行实际清理。
+
+> 需要确认：你接受这个限制，还是希望我实现延迟清理机制？
+
+### 4.2 跨进程引用
+
+当前 Animac 的堆是**进程私有的**，不同进程之间不直接共享堆对象（`System.fork` 是深拷贝）。因此销毁一个进程的 heap 不会导致其他进程出现悬空 handle。唯一需要担心的是：
+
+- 队列 `items` 中可能保存了来自被杀进程的 handle 值。但这些值在被杀进程的堆被释放后将失效。如果其他进程随后 `read` 该队列并尝试使用该 handle，会失败（handle 无效）。这是符合语义的：被杀进程发送的数据应被视为失效。
+
+### 4.3 与现有 STOPPED 状态的区别
+
+| 状态 | 含义 | 调度行为 |
+|---|---|---|
+| `STOPPED` | 暂停，可被 timer 唤醒 | timer 到期后重新入队执行 |
+| `KILLED` | 已终结，资源已释放 | 永不入队、永不唤醒 |
+
+## 五、待你确认的关键问题
+
+在实现前，请你确认/拍板以下几点：
+
+1. **状态命名与数值**：`AM_PROCESS_STATE_KILLED = 7` 是否合适？还是你倾向于 `ZOMBIE`/`TERMINATED` 等其他名字？
+2. **队列等待者处理**：被杀进程在各队列中的 `send_waiters` / `recv_waiters` 直接删除、不唤醒，是否可接受？
+3. **队列本身是否销毁**：`System.make_queue` 创建的队列是 runtime 全局 IPC 资源，**不因某个进程被杀而销毁**，这样理解对吗？
+4. **调用时机**：本 API 是否允许在目标进程自己的 native 调用中同步调用？如果允许，我需要实现“延迟 kill”（先标记，后由调度器安全点执行）；如果不允许，我会把这一点写入注释。
+5. **保留字段**：除了 `pid`、`parent_pid`、`state` 外，`am_process_t` 中还希望保留哪些字段用于“备查”？例如：
+   - kill 时间戳（需要新增字段）？
+   - `vm_alloc` / `heap_alloc` 指针（保留，便于最终 runtime 销毁）？
+   - `host_context`（宿主 opaque，**不应释放**，但要不要置 NULL）？
+6. **返回值语义**：进程已是 KILLED 时返回 -1（幂等失败）是否合适？还是返回 0（幂等成功）？
+
+
+
+我的答复：
+
+- 状态命名与数值：AM_PROCESS_STATE_KILLED = 7 合适。
+- 队列等待者处理：可接受被杀进程在各队列中的 send_waiters / recv_waiters 直接删除、不唤醒。
+- 队列本身是否销毁：System.make_queue 创建的队列是 runtime 全局 IPC 资源，不因某个进程被杀而销毁，你的理解正确。
+- 调用时机：允许在目标进程自己的 native 调用中同步调用，因此需实现延迟kill机制。
+- 保留字段：认可你的设计，补充说明：host_context，无论是其字段还是其内容，都不要做任何处理。
+- 返回值语义：成功返回0，失败返回-1。
+
+
+
+已实现 `am_runtime_kill_process` API，并通过回归测试与自定义测试验证。
+
+## 修改内容
+
+### 1. 进程模型扩展（`include/process.h`）
+
+- 新增状态常量：`AM_PROCESS_STATE_KILLED = 7`
+- 在 `am_process_t` 中新增 `bool pending_kill` 字段，用于实现延迟 kill
+
+### 2. Runtime API（`include/runtime.h` / `src/runtime.c`）
+
+新增公开 API：
+
+```c
+int32_t am_runtime_kill_process(am_runtime_t *rt, am_pid_t pid);
+```
+
+实现要点：
+
+- 立即设置进程状态为 `KILLED`
+- 立即清理该进程的异步任务：
+  - 删除 `rt->timer_list` 中所有 `timer->pid == pid` 的定时器
+  - 删除所有 IPC 队列 `send_waiters` / `recv_waiters` 中该 pid 的等待节点
+  - 从 `rt->process_queue` 中移除该 pid 的待调度条目
+- 深度释放进程内部资源：
+  - `heap`（含全部堆对象）
+  - `strindex`、`var_vocab`、`symbol_vocab`、`var_type`、`natives`、`var_top`、`var_arn_mapping`
+  - `ilcode`、`opstack`、`fstack`
+  - 重置 `PC`、`current_closure_handle`、`gc_count`
+- 保留 `am_process_t` 壳（`pid`、`parent_pid`、`state`、`vm_alloc`/`heap_alloc`、`host_context` 等）
+- **延迟 kill 机制**：若调用时目标进程正处于 `RUNNING` 状态（例如在自己的 native 调用中自杀），则标记 `pending_kill = true`，由 `am_runtime_tick` 在当前 tick 结束的安全点完成实际销毁
+
+### 3. 调度器防御性处理
+- `am_runtime_tick`：tick 结束时处理 `pending_kill`，完成延迟销毁；KILLED 进程不再入队
+- `runtime_fire_expired_timers`：跳过/清理 KILLED 进程的残留定时器
+- `runtime_has_nonblocked_timer`：忽略 KILLED 进程的定时器
+- `runtime_queue_check_waiters`：跳过 KILLED 进程的等待者
+
+### 4. Scheme 绑定（用于测试）
+在 `native_System.c` / `native_System.h` 中新增 `System.kill`：
+
+```scheme
+(System.kill pid)
+```
+
+返回 `#t` / `#f`。
+
+## 设计约束说明
+
+- `host_context` 字段及其指向的内容未被触碰；
+- `System.make_queue` 创建的队列作为 runtime 全局 IPC 资源，不因某个进程被杀而销毁；
+- 被杀进程在 `am_runtime_destroy` 时会由 `am_process_destroy` 安全释放其剩余的壳结构。
 
 ---------------------
 

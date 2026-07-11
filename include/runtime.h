@@ -210,6 +210,11 @@ am_pid_t am_runtime_load_module(am_runtime_t *rt, am_module_t *mod);
 // 根据 PID 获取进程。成功返回进程指针，失败返回 NULL。
 am_process_t *am_runtime_get_process(am_runtime_t *rt, am_pid_t pid);
 
+// 彻底终止指定 PID 的进程：释放其堆、栈、AST 相关表及异步任务，但保留 am_process_t 壳。
+// 允许在目标进程自己的 native 调用中同步调用，此时会标记为延迟销毁，由调度器安全点完成。
+// 成功返回 0；pid 无效或进程已是 KILLED 返回 -1。
+int32_t am_runtime_kill_process(am_runtime_t *rt, am_pid_t pid);
+
 // 直接设置 rt->timeslice 字段（单位：VM指令周期数）
 void am_runtime_set_default_timeslice(am_runtime_t *rt, uint32_t ticks);
 

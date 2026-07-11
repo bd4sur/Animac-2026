@@ -94,6 +94,7 @@
 (define run
   (lambda () {
     (display "解数独测试：") (newline)
+    (display "  注意：因问题为随机生成，在有限内存下可能因VM区耗尽而失败，此为正常现象。") (newline)
     (display "是否有解？")
     (if (solve_shudu board) {
         (display "有解，解为：")

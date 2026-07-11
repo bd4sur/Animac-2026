@@ -1,3 +1,8 @@
+(native System)
+
+;; 运行5ms后退出，防止无限循环
+(System.set_timeout 5 (lambda () (display "\n超时正常退出\n") (System.exit)))
+
 (define Yinyang
 (lambda ()
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

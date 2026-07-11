@@ -522,6 +522,38 @@ static am_pid_t am_fork_runtime_add_process(am_runtime_t *rt, am_process_t *proc
 // Native 函数实现
 // ===============================================================================
 
+// (System.exit) : void
+// 立即停止当前进程，将其状态置为 STOPPED。不影响已存在的异步任务。
+int32_t am_native_System_exit(am_runtime_t *rt, am_process_t *proc) {
+    (void)rt;
+    if (!proc) return -1;
+    am_process_set_state(proc, AM_PROCESS_STATE_STOPPED);
+    return 0;
+}
+
+
+// (System.kill pid:Number) : Boolean
+// 彻底终止指定 PID 的进程：释放其堆、栈、AST 相关表及异步任务，但保留 am_process_t 壳。
+int32_t am_native_System_kill(am_runtime_t *rt, am_process_t *proc) {
+    if (!rt || !proc) return -1;
+
+    am_float_t pid_f;
+    if (!native_pop_number(proc, &pid_f)) return -1;
+
+    if (isnan(pid_f) || pid_f < 0.0) {
+        if (am_process_push_operand(proc, AM_VALUE_FALSE) != 0) return -1;
+        am_process_step(proc);
+        return 0;
+    }
+
+    int32_t ret = am_runtime_kill_process(rt, (am_pid_t)pid_f);
+
+    if (am_process_push_operand(proc, ret == 0 ? AM_VALUE_TRUE : AM_VALUE_FALSE) != 0) return -1;
+    am_process_step(proc);
+    return 0;
+}
+
+
 // ===============================================================================
 // System.exec 内部辅助函数
 // ===============================================================================
@@ -1615,6 +1647,8 @@ fail:
 
 
 static const am_native_func_entry_t am_native_System_funcs[] = {
+    { L"exit",         am_native_System_exit },
+    { L"kill",         am_native_System_kill },
     { L"exec",         am_native_System_exec },
     { L"set_timeout",  am_native_System_set_timeout },
     { L"set_interval", am_native_System_set_interval },

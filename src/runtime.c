@@ -111,6 +111,13 @@ static void runtime_queue_check_waiters(am_runtime_t *rt) {
         am_queue_waiter_t **cur = &q->send_waiters;
         while (*cur) {
             am_queue_waiter_t *w = *cur;
+            // 防御性检查：进程已被 kill，直接丢弃等待者而不唤醒
+            am_process_t *wproc = am_runtime_get_process(rt, w->pid);
+            if (wproc && wproc->state == AM_PROCESS_STATE_KILLED) {
+                *cur = w->next;
+                am_free(rt->vm_alloc, w);
+                continue;
+            }
             if (w->deadline_ms <= now) {
                 *cur = w->next;
                 runtime_queue_wake_process(rt, w->pid, AM_VALUE_FALSE);
@@ -123,6 +130,12 @@ static void runtime_queue_check_waiters(am_runtime_t *rt) {
         cur = &q->recv_waiters;
         while (*cur) {
             am_queue_waiter_t *w = *cur;
+            am_process_t *wproc = am_runtime_get_process(rt, w->pid);
+            if (wproc && wproc->state == AM_PROCESS_STATE_KILLED) {
+                *cur = w->next;
+                am_free(rt->vm_alloc, w);
+                continue;
+            }
             if (w->deadline_ms <= now) {
                 *cur = w->next;
                 runtime_queue_wake_process(rt, w->pid, AM_VALUE_UNDEFINED);
@@ -2069,6 +2082,7 @@ static bool runtime_has_nonblocked_timer(am_runtime_t *rt, am_timestamp_t *neare
     for (am_timer_t *t = rt->timer_list; t; t = t->next) {
         am_process_t *proc = am_runtime_get_process(rt, t->pid);
         if (proc && proc->state == AM_PROCESS_STATE_BLOCKED) continue;
+        if (proc && proc->state == AM_PROCESS_STATE_KILLED) continue;
         if (nearest && (!has || t->expire_ms < *nearest)) *nearest = t->expire_ms;
         has = true;
     }
@@ -2094,6 +2108,14 @@ static void runtime_fire_expired_timers(am_runtime_t *rt) {
             // 进程正在执行阻塞式队列操作：用户定时器暂不触发，避免破坏队列操作状态
             if (proc->state == AM_PROCESS_STATE_BLOCKED) {
                 cur = &timer->next;
+                continue;
+            }
+
+            // 防御性检查：进程已被 kill，清理残留定时器
+            if (proc->state == AM_PROCESS_STATE_KILLED) {
+                am_timer_t *to_free = *cur;
+                *cur = (*cur)->next;
+                am_free(rt->vm_alloc, to_free);
                 continue;
             }
 
@@ -2125,6 +2147,144 @@ static void runtime_fire_expired_timers(am_runtime_t *rt) {
             am_free(rt->vm_alloc, timer);
         }
     }
+}
+
+
+// ===============================================================================
+// 进程 kill 内部辅助函数
+// ===============================================================================
+
+// 释放进程内部资源，但保留 am_process_t 壳（pid/state 等）供外部查检。
+static int32_t runtime_process_gut(am_process_t *proc) {
+    if (!proc) return -1;
+
+    if (proc->ilcode) {
+        am_free(proc->vm_alloc, proc->ilcode);
+        proc->ilcode = NULL;
+    }
+    proc->ilcode_length = 0;
+
+    if (proc->opstack) {
+        am_free(proc->vm_alloc, proc->opstack);
+        proc->opstack = NULL;
+        proc->opstack_top = NULL;
+    }
+    proc->opstack_capacity = 0;
+
+    if (proc->fstack) {
+        am_free(proc->vm_alloc, proc->fstack);
+        proc->fstack = NULL;
+        proc->fstack_top = NULL;
+    }
+    proc->fstack_capacity = 0;
+
+    if (proc->var_type) {
+        am_list_destroy(proc->vm_alloc, proc->var_type);
+        proc->var_type = NULL;
+    }
+    if (proc->natives) {
+        am_map_destroy(proc->vm_alloc, proc->natives);
+        proc->natives = NULL;
+    }
+    if (proc->var_top) {
+        am_list_destroy(proc->vm_alloc, proc->var_top);
+        proc->var_top = NULL;
+    }
+    if (proc->var_arn_mapping) {
+        am_map_destroy(proc->vm_alloc, proc->var_arn_mapping);
+        proc->var_arn_mapping = NULL;
+    }
+    if (proc->strindex) {
+        am_strindex_destroy(proc->vm_alloc, proc->strindex);
+        proc->strindex = NULL;
+    }
+    if (proc->var_vocab) {
+        am_vocab_destroy(proc->vm_alloc, proc->var_vocab);
+        proc->var_vocab = NULL;
+    }
+    if (proc->symbol_vocab) {
+        am_vocab_destroy(proc->vm_alloc, proc->symbol_vocab);
+        proc->symbol_vocab = NULL;
+    }
+    if (proc->heap) {
+        am_heap_destroy(proc->vm_alloc, proc->heap_alloc, proc->heap);
+        proc->heap = NULL;
+    }
+
+    proc->PC = 0;
+    proc->current_closure_handle = AM_HANDLE_NULL;
+    proc->gc_count = 0;
+    proc->pending_kill = false;
+
+    return 0;
+}
+
+
+// 删除运行时定时器链表中所有属于指定 pid 的定时器。
+static void runtime_kill_timers_for_pid(am_runtime_t *rt, am_pid_t pid) {
+    if (!rt) return;
+    am_timer_t **cur = &rt->timer_list;
+    while (*cur) {
+        if ((*cur)->pid == pid) {
+            am_timer_t *to_free = *cur;
+            *cur = (*cur)->next;
+            am_free(rt->vm_alloc, to_free);
+        } else {
+            cur = &(*cur)->next;
+        }
+    }
+}
+
+
+// 删除所有 IPC 队列中属于指定 pid 的等待者节点。
+static void runtime_kill_queue_waiters_for_pid(am_runtime_t *rt, am_pid_t pid) {
+    if (!rt || !rt->queue_list) return;
+    for (size_t i = 0; i < rt->queue_list->length; i++) {
+        am_value_t qv = am_list_get(rt->vm_alloc, rt->queue_list, i);
+        if (!am_value_is_ptr(qv)) continue;
+        am_queue_t *q = (am_queue_t *)am_value_to_ptr(qv);
+        if (!q) continue;
+
+        am_queue_waiter_t **cur = &q->send_waiters;
+        while (*cur) {
+            if ((*cur)->pid == pid) {
+                am_queue_waiter_t *w = *cur;
+                *cur = w->next;
+                am_free(rt->vm_alloc, w);
+            } else {
+                cur = &(*cur)->next;
+            }
+        }
+
+        cur = &q->recv_waiters;
+        while (*cur) {
+            if ((*cur)->pid == pid) {
+                am_queue_waiter_t *w = *cur;
+                *cur = w->next;
+                am_free(rt->vm_alloc, w);
+            } else {
+                cur = &(*cur)->next;
+            }
+        }
+    }
+}
+
+
+// 从调度队列中移除指定 pid 的所有待调度条目。
+static void runtime_process_queue_remove_pid(am_runtime_t *rt, am_pid_t pid) {
+    if (!rt || !rt->process_queue) return;
+    size_t write = 0;
+    for (size_t i = 0; i < rt->process_queue->length; i++) {
+        am_value_t v = am_list_get(rt->vm_alloc, rt->process_queue, i);
+        if (am_value_is_uint(v) && (am_pid_t)am_value_to_uint(v) == pid) {
+            continue;
+        }
+        if (write != i) {
+            am_list_set(rt->vm_alloc, rt->process_queue, write, v);
+        }
+        write++;
+    }
+    rt->process_queue->length = write;
 }
 
 
@@ -2174,6 +2334,31 @@ am_pid_t am_runtime_load_module(am_runtime_t *rt, am_module_t *mod) {
 am_process_t *am_runtime_get_process(am_runtime_t *rt, am_pid_t pid) {
     if (!rt || pid >= rt->process_poll_counter) return NULL;
     return rt->process_pool[pid];
+}
+
+
+int32_t am_runtime_kill_process(am_runtime_t *rt, am_pid_t pid) {
+    if (!rt || pid >= rt->process_poll_counter) return -1;
+
+    am_process_t *proc = rt->process_pool[pid];
+    if (!proc || proc->state == AM_PROCESS_STATE_KILLED) return -1;
+
+    int32_t old_state = proc->state;
+    am_process_set_state(proc, AM_PROCESS_STATE_KILLED);
+
+    // 立即清理异步任务与调度队列，避免被后续事件触发
+    runtime_kill_timers_for_pid(rt, pid);
+    runtime_kill_queue_waiters_for_pid(rt, pid);
+    runtime_process_queue_remove_pid(rt, pid);
+
+    if (old_state == AM_PROCESS_STATE_RUNNING) {
+        // 目标进程正在执行本 native：延迟到调度器安全点再销毁资源
+        proc->pending_kill = true;
+    } else {
+        runtime_process_gut(proc);
+    }
+
+    return 0;
 }
 
 
@@ -2386,6 +2571,11 @@ int32_t am_runtime_tick(am_runtime_t *rt, uint32_t timeslice) {
             return AM_VM_STATE_IDLE;
         }
         rt->process_queue = new_queue;
+    }
+
+    // 在 tick 结束的安全点完成延迟 kill
+    if (proc->state == AM_PROCESS_STATE_KILLED && proc->pending_kill) {
+        runtime_process_gut(proc);
     }
 
     rt->tick_counter++;

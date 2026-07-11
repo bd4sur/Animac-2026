@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -31,6 +32,7 @@ extern "C" {
 #define AM_PROCESS_STATE_SUSPENDED (4)
 #define AM_PROCESS_STATE_STOPPED   (5)
 #define AM_PROCESS_STATE_BLOCKED   (6)
+#define AM_PROCESS_STATE_KILLED    (7)
 
 
 ///////////////////////////////////////////
@@ -72,6 +74,8 @@ typedef struct am_process_t {
     am_map_t *var_arn_mapping; // 变量ARN（Alpha-renaming）前后的映射（内容同AST）
 
     am_handle_t current_closure_handle; // 指向当前闭包的把柄
+
+    bool pending_kill; // 延迟kill标记：在进程自己的native调用中触发kill时，由调度器安全点完成实际销毁
 
     size_t gc_count; // GC 触发次数，用于控制标记-压缩频率
 
