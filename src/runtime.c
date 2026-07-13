@@ -2115,6 +2115,16 @@ static int32_t op_fork(am_runtime_t *rt, am_process_t *proc, am_value_t operand)
 }
 
 
+static int32_t op_display_scalar(am_runtime_t *rt, am_process_t *proc, am_value_t content) {
+    // 把大缓冲区放在单独的函数帧中，避免在显示列表（尤其是递归字符串化）的路径上占用栈空间
+    wchar_t buf[1024];
+    value_to_wchar_buf(proc, content, buf, 1024);
+    am_runtime_output(rt, buf);
+    am_process_step(proc);
+    return 0;
+}
+
+
 static int32_t op_display(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)operand;
     am_value_t content = am_process_pop_operand(proc);
@@ -2138,11 +2148,7 @@ static int32_t op_display(am_runtime_t *rt, am_process_t *proc, am_value_t opera
         }
     }
 
-    wchar_t buf[1024];
-    value_to_wchar_buf(proc, content, buf, 1024);
-    am_runtime_output(rt, buf);
-    am_process_step(proc);
-    return 0;
+    return op_display_scalar(rt, proc, content);
 }
 
 
