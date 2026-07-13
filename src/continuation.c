@@ -15,7 +15,8 @@
 // opstack 与 fstack 按值拷贝到柔性数组 stacks 中；传入的数组指针在拷贝后不再被引用。
 am_continuation_t *am_continuation_create(
     am_allocator_t *alloc, am_iaddr_t cont_return_target, am_handle_t current_closure_handle,
-    am_value_t *opstack, size_t opstack_length, am_value_t *fstack, size_t fstack_length) {
+    am_value_t *opstack, size_t opstack_length, am_value_t *fstack, size_t fstack_length,
+    am_handle_t dynamic_wind_stack_handle) {
     if (!alloc) return NULL;
 
     size_t total_length = opstack_length + fstack_length;
@@ -31,6 +32,10 @@ am_continuation_t *am_continuation_create(
     cont->fstack_offset = opstack_length;
     cont->cont_return_target = cont_return_target;
     cont->current_closure_handle = current_closure_handle;
+    cont->dynamic_wind_stack_handle = dynamic_wind_stack_handle;
+    cont->dynamic_wind_after_stack_handle = AM_HANDLE_NULL;
+    cont->current_dynamic_wind_entry_handle = AM_HANDLE_NULL;
+    cont->current_dynamic_wind_thunk_handle = AM_HANDLE_NULL;
 
     if (opstack_length > 0) {
         memcpy(&cont->stacks[0], opstack, opstack_length * sizeof(am_value_t));
@@ -69,7 +74,8 @@ am_continuation_t *am_continuation_copy(am_allocator_t *alloc, am_continuation_t
     am_continuation_t *copy = am_continuation_create(
         alloc, obj->cont_return_target, obj->current_closure_handle,
         &obj->stacks[0], opstack_length,
-        &obj->stacks[obj->fstack_offset], fstack_length);
+        &obj->stacks[obj->fstack_offset], fstack_length,
+        obj->dynamic_wind_stack_handle);
 
     if (!copy) return NULL;
 

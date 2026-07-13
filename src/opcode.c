@@ -41,4 +41,5 @@ const int32_t AM_BUILTIN_OPCODE_MAP[AM_GLOBAL_BUILTIN_VAR_NUM] = {
     [33] = AM_VM_OP_read,        // read
     [34] = -1,                   // call/cc
     [35] = AM_VM_OP_fork,        // fork
+    [36] = -1,                   // dynamic-wind
 };

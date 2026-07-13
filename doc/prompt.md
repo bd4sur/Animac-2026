@@ -4917,6 +4917,489 @@ int32_t am_runtime_kill_process(am_runtime_t *rt, am_pid_t pid);
 
 ---------------------
 
+# 2026-07-13
+
+请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。请你阅读项目全部代码和文档，理解解释器的整体设计，给出 dynamic-wind 的详细设计实现方案。
+
+现有虚拟机为栈式虚拟机，有opstack和fstack两个栈，闭包是堆对象，闭包之间通过逻辑地址相互引用，具备call/cc，其实现方式是将当前进程的opstack、fstack和当前闭包地址保存下来，作为一等对象，保存在堆中。
+
+只阅读代码并输出详细设计方案，不得修改代码。
+
+
+
+
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。请你阅读项目代码和文档，理解解释器的整体设计，参考下面的设计方案，在 Animac 解释器中实现 R5RS 风格的 `dynamic-wind`。
+
+系统中安装了WSL（Ubuntu 24.04），具备gcc、make、gdb等工具。你可以使用WSL进行编译构建和测试。你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。你可以自行构造测试用例进行测试。你可以使用WSL进行编译构建和测试。
+
+## 1. 设计目标
+
+在 Animac 解释器中实现 R5RS 风格的 `dynamic-wind`：
+
+```scheme
+(dynamic-wind before thunk after)
+```
+
+语义要点：
+
+- 进入 `thunk` 的动态作用域前调用 `(before)`；
+- 退出 `thunk` 的动态作用域后调用 `(after)`；
+- 通过 `call/cc` 跳出或重新进入 `thunk` 作用域时，必须按正确顺序补调 `after` / `before`；
+- `before`、`after`、`thunk` 均为无参过程（thunk）。
+
+实现约束：
+
+- 不破坏现有 call/cc、continuation、闭包、GC、fork 等机制；
+- 与现有栈式 VM（opstack + fstack）及堆对象模型兼容；
+- 尽量复用现有 `am_list_t`、`am_continuation_t`、`am_obj_closure_t` 等数据结构。
+
+## 2. 与现有架构的对接点
+
+### 2.1 进程状态 `am_process_t`
+
+现有进程已包含：
+
+- `opstack` / `fstack`：操作数栈与函数调用栈；
+- `current_closure_handle`：当前闭包；
+- `heap`：进程私有堆，闭包、continuation 等均为堆对象；
+- 已有 `am_process_capture_continuation` / `am_process_load_continuation` 实现 call/cc。
+
+需要扩展：
+
+- **dynamic-wind 栈**：记录当前处于哪些 `dynamic-wind` 作用域内；
+- **wind 跳板状态**：在 continuation 恢复时，若当前栈与目标栈不一致，需要一段“跳板代码”依次执行 `after` / `before` thunk，最后再真正恢复 continuation。
+
+### 2.2 续体对象 `am_continuation_t`
+
+现有续体保存：
+
+- `cont_return_target`；
+- `current_closure_handle`；
+- `opstack`、`fstack` 的完整副本。
+
+需要扩展：
+
+- 保存捕获时刻的 **dynamic-wind 栈快照**，作为续体的一部分。
+
+### 2.3 编译器
+
+`call/cc` 作为全局内建变量（`AM_GLOBAL_BUILTIN_VAR`），由 `compile_application` 识别名称并特殊编译。`dynamic-wind` 采用完全相同的接入方式：
+
+- 加入 `AM_GLOBAL_BUILTIN_VAR`；
+- `AM_BUILTIN_OPCODE_MAP` 中映射为 `-1`（无直接单条 VM 指令）；
+- `compile_application` 中识别 `dynamic-wind` 并调用专用编译函数 `compile_dynamicwind`。
+
+### 2.4 词法分析器
+
+`dynamic-wind` 不需要加入 `AM_KEYWORDS`。与 `call/cc` 一样，它会被 lexer 识别为普通标识符/变量，后续通过全局内建变量表和编译器特殊处理。
+
+
+## 3. 核心数据结构扩展
+
+### 3.1 dynamic-wind 条目
+
+为减少新增对象类型带来的 GC 改动，**复用 `am_list_t`（`AM_LIST_TYPE_DEFAULT`）** 作为条目容器，结构固定为 4 个元素：
+
+```text
+[ before_handle , after_handle , mark_value , saved_value ]
+```
+
+- `before_handle` / `after_handle`：`am_value_t` 类型的 handle，指向 before/after 闭包；
+- `mark_value`：`am_value_t` 类型的无符号整数，作为该条目的唯一标识；
+- `saved_value`：用于暂存 `thunk` 的返回值（在 `after` 调用期间保护该值不被覆盖）。
+
+### 3.2 进程结构新增字段
+
+在 `include/process.h` 的 `am_process_t` 中增加：
+
+```c
+am_list_t *dynamic_wind_stack;      // 当前 dynamic-wind 栈，元素为 entry handle
+size_t     dynamic_wind_mark_counter; // 自增唯一 mark
+
+// 用于 continuation 恢复时的 wind 跳板
+am_iaddr_t wind_trampoline_iaddr;   // 进程中预留的 wind 指令地址
+int32_t    wind_state;              // 0=空闲, 1=执行 afters, 2=执行 befores, 3=恢复续体
+am_handle_t pending_cont_handle;    // 待恢复的目标续体 handle
+am_value_t  pending_cont_value;     // 调用续体时传入的值
+am_handle_t *pending_after_entries; // 待执行的 after 条目 handle 数组
+size_t      pending_after_count;
+am_handle_t *pending_before_entries;// 待执行的 before 条目 handle 数组
+size_t      pending_before_count;
+```
+
+### 3.3 续体结构新增字段
+
+在 `include/continuation.h` 的 `am_continuation_t` 中增加：
+
+```c
+am_handle_t dynamic_wind_stack_handle; // 捕获时刻 dynamic_wind_stack 的深拷贝快照
+```
+
+## 4. 虚拟机指令设计
+
+新增 5 条 VM 指令：
+
+```c
+#define AM_VM_OP_dynamicwind              (57)
+#define AM_VM_OP_dynamicwind_after_before (58)
+#define AM_VM_OP_dynamicwind_before_after (59)
+#define AM_VM_OP_dynamicwind_done         (60)
+#define AM_VM_OP_wind                     (61)
+```
+
+### 4.1 编译器生成的 `dynamic-wind` 指令序列
+
+对于 `(dynamic-wind before thunk after)`，编译器生成：
+
+```text
+compile_value(before)   ; opstack: [..., before]
+compile_value(thunk)    ; opstack: [..., before, thunk]
+compile_value(after)    ; opstack: [..., before, thunk, after]
+
+AM_VM_OP_dynamicwind              ; 调用 before
+AM_VM_OP_dynamicwind_after_before ; 进入作用域，调用 thunk
+AM_VM_OP_dynamicwind_before_after ; 退出作用域，调用 after
+AM_VM_OP_dynamicwind_done         ; 清理，保留 thunk 结果
+```
+
+这 4 条指令必须连续出现，共同完成一次 `dynamic-wind` 调用。
+
+### 4.2 各指令语义
+
+#### `op_dynamicwind`（PC = `dw_pc`）
+
+1. 从 opstack 依次弹出 `after`、`thunk`、`before`；
+2. 在堆上创建条目 list `[before, after, mark, undefined]`，分配 handle；
+3. **不立即入 dynamic_wind_stack**（保证 before 执行期间不被视为已进入作用域）；
+4. 将当前闭包与 `dw_pc + 1` 压入 fstack（作为 before 的返回地址）；
+5. 设置 `current_closure_handle = before` 的闭包、`PC = before` 的入口 iaddr；
+6. 不执行 `am_process_step`。
+
+#### `op_dynamicwind_after_before`（PC = `dw_pc + 1`）
+
+1. 从 opstack 弹出 `before` 的返回值（丢弃）；
+2. 将条目 handle 压入 `proc->dynamic_wind_stack`（**此时才真正进入作用域**）；
+3. 将当前闭包与 `dw_pc + 2` 压入 fstack；
+4. 设置 `current_closure_handle = thunk` 的闭包、`PC = thunk` 的入口 iaddr；
+5. 不执行 `am_process_step`。
+
+#### `op_dynamicwind_before_after`（PC = `dw_pc + 2`）
+
+1. 从 opstack 弹出 `thunk` 的返回值；
+2. 存入条目 list 的 `saved_value`（第 4 项）；
+3. 从 `proc->dynamic_wind_stack` 弹出该条目（**退出作用域**）；
+4. 将条目 handle 重新压入 opstack（用于在 after 返回后取回 saved_value）；
+5. 将当前闭包与 `dw_pc + 3` 压入 fstack；
+6. 设置 `current_closure_handle = after` 的闭包、`PC = after` 的入口 iaddr；
+7. 不执行 `am_process_step`。
+
+#### `op_dynamicwind_done`（PC = `dw_pc + 3`）
+
+1. 从 opstack 弹出 `after` 的返回值（丢弃）；
+2. 从 opstack 弹出条目 handle；
+3. 从条目中取出 `saved_value` 压回 opstack；
+4. 执行 `am_process_step`（继续执行后续指令）。
+
+### 4.3 静态栈深分析的栈效应
+
+为让 `am_compiler_opstack_depth_analysis` 保守估计，给 4 条指令分配如下栈效应：
+
+| 指令 | 栈效应 |
+|---|---|
+| `dynamicwind` | `-2` |
+| `dynamicwind_after_before` | `+1` |
+| `dynamicwind_before_after` | `0` |
+| `dynamicwind_done` | `-1` |
+
+总和为 `-2`，与“消耗 3 个 thunk、产生 1 个结果”的实际净效应一致；最大深度估计也与实际最大深度 `D-1` 一致。
+
+### 4.4 wind 跳板指令 `op_wind`
+
+`op_wind` 是一个常驻指令， appended 到每个进程 ilcode 末尾。其职责是在 continuation 恢复前执行 wind 调整：
+
+```c
+// 伪代码
+switch (proc->wind_state) {
+case 1: // 执行 afters（从内到外）
+    if (pending_after_count > 0) {
+        entry = pending_after_entries[--pending_after_count];
+        从 proc->dynamic_wind_stack 栈顶弹出该 entry;
+        将 {current_closure, wind_trampoline_iaddr} 压入 fstack;
+        current_closure = entry.after; PC = entry.after 入口;
+    } else {
+        wind_state = 2;
+        //  fallthrough 或下次 tick 继续
+    }
+    break;
+case 2: // 执行 befores（从外到内）
+    if (pending_before_count > 0) {
+        entry = pending_before_entries[0]; // 取最外层的
+        将 pending_before_entries 前移（或维护索引）;
+        将 entry 压入 proc->dynamic_wind_stack;
+        将 {current_closure, wind_trampoline_iaddr} 压入 fstack;
+        current_closure = entry.before; PC = entry.before 入口;
+    } else {
+        wind_state = 3;
+    }
+    break;
+case 3: // 真正恢复续体
+    调用 am_process_restore_continuation_snapshot(proc, pending_cont_handle);
+    将 pending_cont_value 压入恢复后的 opstack;
+    清空 wind_state / pending 字段;
+    PC = 续体的 cont_return_target;
+    break;
+}
+```
+
+## 5. 运行时实现细节
+
+### 5.1 进程初始化
+
+在 `am_process_load_from_module` 中：
+
+1. 初始化 `dynamic_wind_stack = am_list_create(...)`；
+2. `dynamic_wind_mark_counter = 1`；
+3. `wind_state = 0`；
+4. 在复制完 `mod->ilcode` 后，realloc 增加 1 条指令：`{AM_VM_OP_wind, AM_VALUE_UNDEFINED}`；
+5. 记录 `wind_trampoline_iaddr = proc->ilcode_length`（追加前）；
+6. 更新 `proc->ilcode_length += 1`。
+
+### 5.2 续体捕获
+
+`am_process_capture_continuation` 扩展：
+
+1. 用 `am_list_copy` 深拷贝 `proc->dynamic_wind_stack`；
+2. 在堆上分配 handle，绑定该拷贝；
+3. 存入新创建的 `am_continuation_t->dynamic_wind_stack_handle`。
+
+### 5.3 续体恢复
+
+`am_process_load_continuation` 拆分为两层：
+
+```c
+// 公开接口：先判断是否需要 wind 调整
+am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t cont_handle, am_value_t value);
+
+// 内部接口：直接恢复 opstack/fstack/closure，返回 cont_return_target
+am_iaddr_t am_process_restore_continuation_snapshot(am_process_t *proc, am_handle_t cont_handle);
+```
+
+`am_process_load_continuation` 流程：
+
+1. 读取续体的 `dynamic_wind_stack_handle` 快照；
+2. 与 `proc->dynamic_wind_stack` 求最长公共前缀（按条目 `mark` 比较）；
+3. 若长度相同且全部匹配：
+   - 直接调用 `am_process_restore_continuation_snapshot`；
+   - 将 `value` 压入恢复后的 opstack；
+   - 返回 `cont_return_target`。
+4. 否则：
+   - `after_count = current_len - prefix_len`，从内到外取出这些条目；
+   - `before_count = target_len - prefix_len`，从外到内取出这些条目；
+   - 填充 `pending_cont_handle`、`pending_cont_value`、`pending_after_entries`、`pending_before_entries`；
+   - `wind_state = 1`；
+   - 返回 `proc->wind_trampoline_iaddr`。
+
+`op_call_async` 中调用处改为：
+
+```c
+am_value_t top = am_process_pop_operand(proc);
+am_iaddr_t cont_target = am_process_load_continuation(proc, hd, top);
+if (cont_target == SIZE_MAX) return -1;
+am_process_goto(proc, cont_target);
+```
+
+> 注意：`op_call_async` 原本在恢复后 `push(top)`，现在由 `am_process_load_continuation` 在真正恢复时负责压入，因此这里不再 push。
+
+### 5.4 正常 `dynamic-wind` 不经过 wind 跳板
+
+若 `thunk` 正常返回，`op_dynamicwind_before_after` 会调用 `after`，`op_dynamicwind_done` 会清理。此时不涉及 continuation 恢复， wind 状态机不参与。
+
+### 5.5 嵌套与重入
+
+- `dynamic-wind` 可以嵌套，`dynamic_wind_stack` 自然形成嵌套结构；
+- 在 wind 调整期间（执行某 `after` 或 `before`）若再次发生 continuation 调用，`am_process_load_continuation` 会重新计算 diff 并覆盖 pending 状态，这是正确行为；
+- 在 `after` 执行期间，该条目已从 `dynamic_wind_stack` 移除，因此 `after` 中捕获的续体不再包含该作用域；
+- 在 `before` 执行期间，该条目已加入 `dynamic_wind_stack`，因此 `before` 中捕获的续体包含该作用域。
+
+## 6. GC 与 fork 处理
+
+### 6.1 GC 根收集
+
+在 `am_process_gc_root` 中，除了现有根之外，还需加入：
+
+1. `proc->dynamic_wind_stack` 本身（作为 list handle）；
+2. `proc->pending_cont_value`（若它是 handle）；
+3. `proc->pending_after_entries[]` 和 `pending_before_entries[]` 中的每个 handle；
+4. 对每个续体对象，除了现有的 `current_closure_handle` / `opstack` / `fstack` 外，还要加入其 `dynamic_wind_stack_handle`。
+
+由于条目本身是 `am_list_t`，列表 GC 标记会递归标记其 `before_handle` / `after_handle`，无需新增对象类型的 GC 处理逻辑。
+
+### 6.2 fork 堆深拷贝
+
+`native_System.c` 中的 `am_fork_heap_remap_object` 对 `AM_OBJECT_TYPE_CONTINUATION` 进行 handle 重映射时，需要增加对 `dynamic_wind_stack_handle` 的处理：
+
+```c
+case AM_OBJECT_TYPE_CONTINUATION: {
+    cont->current_closure_handle = am_fork_heap_map_handle(...);
+    for (size_t i = 0; i < cont->length; i++) {
+        cont->stacks[i] = am_fork_heap_map_value(...);
+    }
+    cont->dynamic_wind_stack_handle = am_fork_heap_map_handle(...); // 新增
+    break;
+}
+```
+
+### 6.3 进程销毁
+
+`am_process_destroy` 需要释放：
+
+- `dynamic_wind_stack`；
+- `pending_after_entries` / `pending_before_entries`（若非空）。
+
+## 7. 编译器集成
+
+### 7.1 内建变量表
+
+在 `src/ast.c` 的 `AM_GLOBAL_BUILTIN_VAR` 中：
+
+```c
+const wchar_t* AM_GLOBAL_BUILTIN_VAR[] = {
+    // ... 原有 36 项 ...
+    L"dynamic-wind", NULL
+};
+```
+
+并更新 `include/ast.h`：
+
+```c
+#define AM_GLOBAL_BUILTIN_VAR_NUM (37)
+```
+
+在 `src/opcode.c` 的 `AM_BUILTIN_OPCODE_MAP` 末尾增加：
+
+```c
+[36] = -1, // dynamic-wind，无直接 opcode，由编译器特殊处理
+```
+
+### 7.2 编译器识别
+
+在 `src/compiler.c` 的 `compile_application` 中，与 `call/cc` 并列：
+
+```c
+if (am_value_is_varid(first)) {
+    am_varid_t first_varid = am_value_to_varid(first);
+    if (compiler_varid_name_equals(ctx, first_varid, L"call/cc") == 0) {
+        return compile_callcc(ctx, handle);
+    }
+    if (compiler_varid_name_equals(ctx, first_varid, L"dynamic-wind") == 0) {
+        return compile_dynamicwind(ctx, handle);
+    }
+}
+```
+
+### 7.3 `compile_dynamicwind`
+
+```c
+static int32_t compile_dynamicwind(am_compiler_ctx_t *ctx, am_handle_t handle) {
+    am_value_t node_val = am_ast_get_node(ctx->ast, handle);
+    if (!am_value_is_ptr(node_val)) return -1;
+    am_list_t *node = (am_list_t *)am_value_to_ptr(node_val);
+    if (node->length != 4) return -1;
+
+    am_value_t before = am_list_get(ctx->ast->alloc, node, 1);
+    am_value_t thunk  = am_list_get(ctx->ast->alloc, node, 2);
+    am_value_t after  = am_list_get(ctx->ast->alloc, node, 3);
+
+    if (compile_value(ctx, before) != 0) return -1;
+    if (compile_value(ctx, thunk) != 0) return -1;
+    if (compile_value(ctx, after) != 0) return -1;
+
+    emit_instruction(ctx, AM_VM_OP_dynamicwind, AM_VALUE_UNDEFINED);
+    emit_instruction(ctx, AM_VM_OP_dynamicwind_after_before, AM_VALUE_UNDEFINED);
+    emit_instruction(ctx, AM_VM_OP_dynamicwind_before_after, AM_VALUE_UNDEFINED);
+    emit_instruction(ctx, AM_VM_OP_dynamicwind_done, AM_VALUE_UNDEFINED);
+    return 0;
+}
+```
+
+### 7.4 尾调用分析
+
+`dynamic-wind` 本身是一个表达式，其返回值是 `thunk` 的返回值。在 `am_parser_tail_call_analysis` 中，它作为普通 application 处理即可，不需要像 `if`/`cond` 那样特殊传播 tail 位置。`compile_dynamicwind` 生成的 4 条指令序列中最后一条 `dynamicwind_done` 会保留结果在 opstack 上，调用者决定是否为尾位置。
+
+## 8. 建议测试用例
+
+### 8.1 基本语义
+
+```scheme
+(define x 0)
+(dynamic-wind
+  (lambda () (set! x (+ x 1)))
+  (lambda () (set! x (+ x 10)))
+  (lambda () (set! x (+ x 100))))
+;; x 应为 111
+```
+
+### 8.2 与 call/cc 结合：跳出作用域
+
+```scheme
+(define k #f)
+(define out '())
+(dynamic-wind
+  (lambda () (set! out (cons 'before out)))
+  (lambda ()
+    (call/cc (lambda (c) (set! k c)))
+    (set! out (cons 'thunk out)))
+  (lambda () (set! out (cons 'after out))))
+(k #f)
+;; out 应呈现 before/after 成对出现
+```
+
+### 8.3 嵌套 dynamic-wind
+
+验证 `after` 从内到外、`before` 从外到内。
+
+### 8.4 协程测试
+
+将 `coroutine.scm` 中的 `wait_this_and_start_next` 改写为使用 `dynamic-wind` 保护资源，验证调度切换时 `after` / `before` 被正确调用。
+
+## 9. 风险与限制
+
+1. **`return` 关键字**：项目中 `return` 作为关键字存在，但编译器当前未实现其特殊编译。若未来实现 `return` 用于跨函数返回，必须确保它能触发与 continuation 恢复相同的 wind 调整逻辑，否则 `return` 从 `dynamic-wind` 的 `thunk` 中跳出时将不会调用 `after`。本方案暂不处理该情况。
+
+2. **异常/错误**：当前 VM 遇到错误直接停止进程，没有异常恢复路径。`dynamic-wind` 的 `after` 在错误退出时不会被调用，这与大多数 Scheme 实现一致，除非增加 try/catch 机制。
+
+3. **性能**：每次续体调用都需要比较 dynamic-wind 栈，时间复杂度为 `O(min(m,n))`，可接受；wind 跳板通过 fstack 正常调用 `before`/`after`，不引入额外的解释开销。
+
+4. **兼容性**：`dynamic-wind` 作为全局内建变量，名称含连字符，与现有标识符规则兼容，不会与关键字冲突。
+
+## 10. 改动文件清单
+
+| 文件 | 改动内容 |
+|---|---|
+| `include/ast.h` | `AM_GLOBAL_BUILTIN_VAR_NUM` 37 |
+| `src/ast.c` | `AM_GLOBAL_BUILTIN_VAR` 增加 `L"dynamic-wind"` |
+| `include/opcode.h` | 新增 5 条 opcode 宏 |
+| `src/opcode.c` | `AM_BUILTIN_OPCODE_MAP[36] = -1` |
+| `include/process.h` | `am_process_t` 新增 dynamic-wind 与 wind 跳板字段 |
+| `src/process.c` | 初始化/销毁/续体捕获恢复/GC 根收集 |
+| `include/continuation.h` | `am_continuation_t` 新增 `dynamic_wind_stack_handle` |
+| `src/continuation.c` | 创建/拷贝时处理 dw 栈快照 |
+| `src/runtime.c` | 实现 5 条新指令 |
+| `src/compiler.c` | `compile_dynamicwind`、识别逻辑、栈效应 |
+| `src/native_System.c` | fork 续体重映射时处理 dw 栈快照 |
+
+## 11. 关键实现顺序建议
+
+1. 先实现数据结构扩展与 `dynamic-wind` 正常执行路径的 4 条指令，不处理 continuation；
+2. 验证基本 `(dynamic-wind before thunk after)` 用例通过；
+3. 扩展续体捕获/恢复，加入 dynamic-wind 栈快照与比较；
+4. 实现 `op_wind` 跳板与 wind 调整；
+5. 补充 GC、fork、测试用例。
 
 ---------------------
 

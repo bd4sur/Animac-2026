@@ -66,6 +66,11 @@ extern "C" {
 #define AM_VM_OP_concat      (54)
 #define AM_VM_OP_duplicate   (55)
 #define AM_VM_OP_evalcleanup (56)
+#define AM_VM_OP_dynamicwind              (57)
+#define AM_VM_OP_dynamicwind_after_before (58)
+#define AM_VM_OP_dynamicwind_before_after (59)
+#define AM_VM_OP_dynamicwind_done         (60)
+#define AM_VM_OP_wind                     (61)
 
 
 

@@ -22,7 +22,7 @@ const wchar_t* AM_GLOBAL_BUILTIN_VAR[] = {
     L"not", L">", L"<", L">=", L"<=", L"==",
     L"eq?", L"eqv?", L"equal?", L"null?", L"undefined?", L"atom?", L"list?", L"number?", L"nan?", L"typeof",
     L"car", L"cdr", L"cons", L"get_item", L"set_item!", L"push", L"pop", L"length",
-    L"display", L"newline", L"write", L"read", L"call/cc", L"fork", NULL
+    L"display", L"newline", L"write", L"read", L"call/cc", L"fork", L"dynamic-wind", NULL
 };
 
 // ===============================================================================

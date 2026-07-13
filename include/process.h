@@ -90,6 +90,23 @@ typedef struct am_process_t {
     am_value_t *fstack_top; // fstack栈顶指针，注意每次操作加减2个元素
     size_t fstack_capacity; // fstack容量（am_value_t元素个数）
 
+    // dynamic-wind 相关状态
+    am_list_t *dynamic_wind_stack;      // 当前 dynamic-wind 栈，元素为 entry handle
+    am_list_t *dynamic_wind_after_stack; // 正在执行 after 的条目 handle 栈（与 dynamic_wind_stack 配合）
+    size_t     dynamic_wind_mark_counter; // 自增唯一 mark
+    am_handle_t current_dynamic_wind_entry; // 当前 dynamic-wind 条目 handle（在 before/thunk 之间暂存）
+    am_handle_t current_dynamic_wind_thunk; // 当前 dynamic-wind 的 thunk handle（在 thunk 执行前暂存）
+
+    // continuation 恢复时的 wind 跳板状态
+    am_iaddr_t wind_trampoline_iaddr;   // 进程中预留的 wind 指令地址
+    int32_t    wind_state;              // 0=空闲, 1=执行 afters, 2=执行 befores, 3=恢复续体
+    am_handle_t pending_cont_handle;    // 待恢复的目标续体 handle
+    am_value_t  pending_cont_value;     // 调用续体时传入的值
+    am_handle_t *pending_after_entries; // 待执行的 after 条目 handle 数组
+    size_t      pending_after_count;
+    am_handle_t *pending_before_entries;// 待执行的 before 条目 handle 数组
+    size_t      pending_before_count;
+
     void *host_context;     // 宿主提供的不透明上下文
 } am_process_t;
 
@@ -207,7 +224,11 @@ void am_process_set_state(am_process_t *proc, int32_t s);
 am_handle_t am_process_capture_continuation(am_process_t *proc, am_iaddr_t cont_return_target_iaddr);
 
 // 功能说明：恢复指定的计算续体到当前进程。成功返回其返回目标位置的iaddr，失败返回SIZE_MAX
-am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd);
+// 实现说明：传入的 value 为调用续体时传入的值；若需要 wind 调整，则 value 暂存于 proc，待跳板恢复时压栈。
+am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd, am_value_t value);
+
+// 功能说明：直接恢复续体快照（opstack/fstack/closure），不执行 wind 调整。成功返回 cont_return_target，失败返回 SIZE_MAX
+am_iaddr_t am_process_restore_continuation_snapshot(am_process_t *proc, am_handle_t hd);
 
 
 ///////////////////////////////////////////

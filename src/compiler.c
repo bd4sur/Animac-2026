@@ -284,6 +284,7 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_complex_application(am_compiler_ctx_t *ctx, am_handle_t handle, int32_t is_tail);
 static int32_t compile_lambda(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_callcc(am_compiler_ctx_t *ctx, am_handle_t handle);
+static int32_t compile_dynamicwind(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_begin(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_define(am_compiler_ctx_t *ctx, am_handle_t handle);
 static int32_t compile_set(am_compiler_ctx_t *ctx, am_handle_t handle);
@@ -505,6 +506,10 @@ static int32_t compile_application(am_compiler_ctx_t *ctx, am_handle_t handle) {
             if (compiler_varid_name_equals(ctx, first_varid, L"call/cc") == 0) {
                 return compile_callcc(ctx, handle);
             }
+            // 特殊Builtin：dynamic-wind
+            if (compiler_varid_name_equals(ctx, first_varid, L"dynamic-wind") == 0) {
+                return compile_dynamicwind(ctx, handle);
+            }
         }
 
         // 处理参数列表
@@ -609,6 +614,28 @@ static int32_t compile_callcc(am_compiler_ctx_t *ctx, am_handle_t handle) {
     am_value_t cont_label = am_compiler_make_label(ctx, cont_idx);
     (void)cont_label;
     return am_compiler_locate_label(ctx, cont_idx, ctx->icount);
+}
+
+
+static int32_t compile_dynamicwind(am_compiler_ctx_t *ctx, am_handle_t handle) {
+    am_value_t node_val = am_ast_get_node(ctx->ast, handle);
+    if (!am_value_is_ptr(node_val)) return -1;
+    am_list_t *node = (am_list_t *)am_value_to_ptr(node_val);
+    if (node->length != 4) return -1;
+
+    am_value_t before = am_list_get(ctx->ast->alloc, node, 1);
+    am_value_t thunk  = am_list_get(ctx->ast->alloc, node, 2);
+    am_value_t after  = am_list_get(ctx->ast->alloc, node, 3);
+
+    if (compile_value(ctx, before) != 0) return -1;
+    if (compile_value(ctx, thunk) != 0) return -1;
+    if (compile_value(ctx, after) != 0) return -1;
+
+    if (emit_instruction(ctx, AM_VM_OP_dynamicwind, AM_VALUE_UNDEFINED) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_dynamicwind_after_before, AM_VALUE_UNDEFINED) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_dynamicwind_before_after, AM_VALUE_UNDEFINED) != 0) return -1;
+    if (emit_instruction(ctx, AM_VM_OP_dynamicwind_done, AM_VALUE_UNDEFINED) != 0) return -1;
+    return 0;
 }
 
 
@@ -988,6 +1015,16 @@ static int32_t compiler_stack_effect(am_compiler_ctx_t *ctx, am_iaddr_t iaddr) {
             return -2;
         case AM_VM_OP_concat:
             return -1;
+        case AM_VM_OP_dynamicwind:
+            return -2;
+        case AM_VM_OP_dynamicwind_after_before:
+            return 1;
+        case AM_VM_OP_dynamicwind_before_after:
+            return 0;
+        case AM_VM_OP_dynamicwind_done:
+            return -1;
+        case AM_VM_OP_wind:
+            return 0;
         default:
             return 0;
     }

@@ -320,6 +320,10 @@ static int32_t am_fork_heap_remap_object(am_fork_heap_ctx_t *ctx, size_t entry_i
             for (size_t i = 0; i < cont->length; i++) {
                 cont->stacks[i] = am_fork_heap_map_value(ctx, cont->stacks[i]);
             }
+            cont->dynamic_wind_stack_handle = am_fork_heap_map_handle(ctx, cont->dynamic_wind_stack_handle);
+            cont->dynamic_wind_after_stack_handle = am_fork_heap_map_handle(ctx, cont->dynamic_wind_after_stack_handle);
+            cont->current_dynamic_wind_entry_handle = am_fork_heap_map_handle(ctx, cont->current_dynamic_wind_entry_handle);
+            cont->current_dynamic_wind_thunk_handle = am_fork_heap_map_handle(ctx, cont->current_dynamic_wind_thunk_handle);
             break;
         }
         case AM_OBJECT_TYPE_WSTRING:
@@ -454,6 +458,23 @@ static am_process_t *am_fork_process_copy(am_runtime_t *rt, am_process_t *parent
         child->fstack_top = child->fstack;
     }
 
+    // 拷贝 dynamic-wind 栈（vm_alloc 中的列表，条目 handle 在深拷贝后重映射）
+    child->dynamic_wind_stack = am_list_copy(vm_alloc, parent->dynamic_wind_stack);
+    if (!child->dynamic_wind_stack) goto fail;
+    child->dynamic_wind_after_stack = am_list_copy(vm_alloc, parent->dynamic_wind_after_stack);
+    if (!child->dynamic_wind_after_stack) goto fail;
+    child->dynamic_wind_mark_counter = parent->dynamic_wind_mark_counter;
+    child->current_dynamic_wind_entry = AM_HANDLE_NULL;
+    child->current_dynamic_wind_thunk = AM_HANDLE_NULL;
+    child->wind_trampoline_iaddr = parent->wind_trampoline_iaddr;
+    child->wind_state = 0;
+    child->pending_cont_handle = AM_HANDLE_NULL;
+    child->pending_cont_value = AM_VALUE_UNDEFINED;
+    child->pending_after_entries = NULL;
+    child->pending_after_count = 0;
+    child->pending_before_entries = NULL;
+    child->pending_before_count = 0;
+
     size_t heap_capacity = parent->heap ? parent->heap->capacity : 16;
     child->heap = am_heap_create(vm_alloc, heap_alloc, heap_capacity);
     if (!child->heap) goto fail;
@@ -482,6 +503,22 @@ static am_process_t *am_fork_process_copy(am_runtime_t *rt, am_process_t *parent
         size_t f_len = (size_t)(child->fstack_top - child->fstack);
         for (size_t i = 0; i < f_len; i++) {
             child->fstack[i] = am_fork_heap_map_value(&ctx, child->fstack[i]);
+        }
+
+        // 重映射 dynamic-wind 栈中的 entry handle
+        if (child->dynamic_wind_stack) {
+            for (size_t i = 0; i < child->dynamic_wind_stack->length; i++) {
+                child->dynamic_wind_stack->children[i] = am_fork_heap_map_value(
+                    &ctx, child->dynamic_wind_stack->children[i]);
+            }
+        }
+
+        // 重映射正在执行 after 的 dynamic-wind 条目 handle
+        if (child->dynamic_wind_after_stack) {
+            for (size_t i = 0; i < child->dynamic_wind_after_stack->length; i++) {
+                child->dynamic_wind_after_stack->children[i] = am_fork_heap_map_value(
+                    &ctx, child->dynamic_wind_after_stack->children[i]);
+            }
         }
     }
     am_fork_heap_ctx_destroy(&ctx);
@@ -841,6 +878,19 @@ int32_t am_native_System_memstat(am_runtime_t *rt, am_process_t *proc) {
     }
 
     if (am_process_push_operand(proc, am_make_value_of_handle(hd)) != 0) return -1;
+    am_process_step(proc);
+    return 0;
+}
+
+
+// (System.gc) : Boolean
+// 强制对当前进程执行一次 GC，主要用于测试 wind 调整等关键路径的 GC 安全性。
+int32_t am_native_System_gc(am_runtime_t *rt, am_process_t *proc) {
+    (void)rt;
+    if (!proc || !proc->heap) return -1;
+
+    int32_t ret = am_process_gc(proc);
+    if (am_process_push_operand(proc, (ret == 0) ? AM_VALUE_TRUE : AM_VALUE_FALSE) != 0) return -1;
     am_process_step(proc);
     return 0;
 }
@@ -1656,6 +1706,7 @@ static const am_native_func_entry_t am_native_System_funcs[] = {
     { L"clear_interval",am_native_System_clear_interval },
     { L"timestamp",    am_native_System_timestamp },
     { L"memstat",      am_native_System_memstat },
+    { L"gc",           am_native_System_gc },
     { L"fork",         am_native_System_fork },
     { L"eval",         am_native_System_eval },
     { L"make_queue",   am_native_System_make_queue },

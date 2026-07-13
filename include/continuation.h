@@ -26,6 +26,10 @@ typedef struct am_continuation_t {
     size_t fstack_offset; // stacks数组中，fstack区段起点（栈底）在stacks数组中的offset
     am_iaddr_t cont_return_target;
     am_handle_t current_closure_handle;
+    am_handle_t dynamic_wind_stack_handle; // 捕获时刻 dynamic_wind_stack 的深拷贝快照的 handle
+    am_handle_t dynamic_wind_after_stack_handle; // 捕获时刻 dynamic_wind_after_stack 的深拷贝快照的 handle
+    am_handle_t current_dynamic_wind_entry_handle; // 捕获时刻 proc->current_dynamic_wind_entry
+    am_handle_t current_dynamic_wind_thunk_handle; // 捕获时刻 proc->current_dynamic_wind_thunk
     am_value_t stacks[];
 } am_continuation_t;
 
@@ -33,7 +37,8 @@ typedef struct am_continuation_t {
 // 构造函数。成功返回指针，失败返回NULL。
 am_continuation_t *am_continuation_create(
     am_allocator_t *alloc, am_iaddr_t cont_return_target, am_handle_t current_closure_handle,
-    am_value_t *opstack, size_t opstack_length, am_value_t *fstack, size_t fstack_length);
+    am_value_t *opstack, size_t opstack_length, am_value_t *fstack, size_t fstack_length,
+    am_handle_t dynamic_wind_stack_handle);
 
 // 析构函数。成功返回0，失败返回-1
 int32_t am_continuation_destroy(am_allocator_t *alloc, am_continuation_t *obj);

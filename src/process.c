@@ -113,6 +113,67 @@ static int32_t gc_root_helper(
 
 
 // ===============================================================================
+// dynamic-wind 内部辅助函数
+// ===============================================================================
+
+// 从 dynamic-wind 条目中读取 before/after/mark/saved
+static inline am_handle_t dynamic_wind_entry_before(am_list_t *entry) {
+    if (!entry || entry->length < 4) return AM_HANDLE_NULL;
+    return am_value_to_handle(entry->children[0]);
+}
+
+static inline am_handle_t dynamic_wind_entry_after(am_list_t *entry) {
+    if (!entry || entry->length < 4) return AM_HANDLE_NULL;
+    return am_value_to_handle(entry->children[1]);
+}
+
+static inline am_uint_t dynamic_wind_entry_mark(am_list_t *entry) {
+    if (!entry || entry->length < 4) return 0;
+    return am_value_to_uint(entry->children[2]);
+}
+
+static inline am_value_t dynamic_wind_entry_saved(am_list_t *entry) {
+    if (!entry || entry->length < 4) return AM_VALUE_UNDEFINED;
+    return entry->children[3];
+}
+
+static inline void dynamic_wind_entry_set_saved(am_list_t *entry, am_value_t v) {
+    if (!entry || entry->length < 4) return;
+    entry->children[3] = v;
+}
+
+// 根据 handle 获取条目对象指针
+static am_list_t *dynamic_wind_get_entry(am_process_t *proc, am_handle_t entry_hd) {
+    if (!proc || !proc->heap || entry_hd == AM_HANDLE_NULL) return NULL;
+    am_value_t v = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, entry_hd);
+    if (!am_value_is_ptr(v)) return NULL;
+    am_object_t *obj = am_value_to_ptr(v);
+    if (!obj || obj->type != AM_OBJECT_TYPE_LIST) return NULL;
+    return (am_list_t *)obj;
+}
+
+// 计算两个 dynamic-wind 栈（list of entry handles）的最长公共前缀长度（按 mark 比较）
+static size_t dynamic_wind_common_prefix(am_process_t *proc, am_list_t *target) {
+    if (!proc) return 0;
+    am_list_t *current = proc->dynamic_wind_stack;
+    size_t cur_len = current ? current->length : 0;
+    size_t tgt_len = target ? target->length : 0;
+    size_t min_len = cur_len < tgt_len ? cur_len : tgt_len;
+    size_t prefix = 0;
+    for (size_t i = 0; i < min_len; i++) {
+        am_handle_t cur_hd = am_value_to_handle(current->children[i]);
+        am_handle_t tgt_hd = am_value_to_handle(target->children[i]);
+        am_list_t *cur_entry = dynamic_wind_get_entry(proc, cur_hd);
+        am_list_t *tgt_entry = dynamic_wind_get_entry(proc, tgt_hd);
+        if (!cur_entry || !tgt_entry) break;
+        if (dynamic_wind_entry_mark(cur_entry) != dynamic_wind_entry_mark(tgt_entry)) break;
+        prefix++;
+    }
+    return prefix;
+}
+
+
+// ===============================================================================
 // 字符串驻留
 // ===============================================================================
 
@@ -236,12 +297,18 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
 
     // 复制中间语言代码到进程
     proc->ilcode_length = mod->ilcode_length;
-    proc->ilcode = (am_instruction_t *)am_malloc(vm_alloc, mod->ilcode_length * sizeof(am_instruction_t));
+    proc->ilcode = (am_instruction_t *)am_malloc(vm_alloc, (mod->ilcode_length + 1) * sizeof(am_instruction_t));
     if (!proc->ilcode) {
         am_free(vm_alloc, proc);
         return NULL;
     }
     memcpy(proc->ilcode, mod->ilcode, mod->ilcode_length * sizeof(am_instruction_t));
+
+    // 在 ilcode 末尾追加 wind 跳板指令
+    proc->wind_trampoline_iaddr = proc->ilcode_length;
+    proc->ilcode[proc->ilcode_length].opcode = AM_VM_OP_wind;
+    proc->ilcode[proc->ilcode_length].operand = AM_VALUE_UNDEFINED;
+    proc->ilcode_length += 1;
 
     // 将mod->ast->nodes深拷贝到proc->heap
     // 先通过deep_dump计算大小并序列化，再用deep_load到进程堆
@@ -326,6 +393,39 @@ am_process_t *am_process_load_from_module(am_allocator_t *vm_alloc, am_allocator
     }
     proc->fstack_top = proc->fstack;
 
+    // 初始化 dynamic-wind 状态
+    proc->dynamic_wind_stack = am_list_create(vm_alloc, 8, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    if (!proc->dynamic_wind_stack) {
+        am_free(vm_alloc, proc->fstack);
+        am_free(vm_alloc, proc->opstack);
+        am_heap_destroy(vm_alloc, heap_alloc, proc->heap);
+        am_free(vm_alloc, proc->ilcode);
+        am_free(vm_alloc, proc);
+        return NULL;
+    }
+    proc->dynamic_wind_after_stack = am_list_create(vm_alloc, 8, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    if (!proc->dynamic_wind_after_stack) {
+        am_list_destroy(vm_alloc, proc->dynamic_wind_stack);
+        am_free(vm_alloc, proc->fstack);
+        am_free(vm_alloc, proc->opstack);
+        am_heap_destroy(vm_alloc, heap_alloc, proc->heap);
+        am_free(vm_alloc, proc->ilcode);
+        am_free(vm_alloc, proc);
+        return NULL;
+    }
+    proc->dynamic_wind_mark_counter = 1;
+    proc->current_dynamic_wind_entry = AM_HANDLE_NULL;
+    proc->current_dynamic_wind_thunk = AM_HANDLE_NULL;
+
+    // 初始化 wind 跳板状态
+    proc->wind_state = 0;
+    proc->pending_cont_handle = AM_HANDLE_NULL;
+    proc->pending_cont_value = AM_VALUE_UNDEFINED;
+    proc->pending_after_entries = NULL;
+    proc->pending_after_count = 0;
+    proc->pending_before_entries = NULL;
+    proc->pending_before_count = 0;
+
     return proc;
 }
 
@@ -368,6 +468,22 @@ int32_t am_process_destroy(am_process_t *proc) {
     if (proc->strindex) {
         am_strindex_destroy(proc->vm_alloc, proc->strindex);
         proc->strindex = NULL;
+    }
+    if (proc->dynamic_wind_stack) {
+        am_list_destroy(proc->vm_alloc, proc->dynamic_wind_stack);
+        proc->dynamic_wind_stack = NULL;
+    }
+    if (proc->dynamic_wind_after_stack) {
+        am_list_destroy(proc->vm_alloc, proc->dynamic_wind_after_stack);
+        proc->dynamic_wind_after_stack = NULL;
+    }
+    if (proc->pending_after_entries) {
+        am_free(proc->vm_alloc, proc->pending_after_entries);
+        proc->pending_after_entries = NULL;
+    }
+    if (proc->pending_before_entries) {
+        am_free(proc->vm_alloc, proc->pending_before_entries);
+        proc->pending_before_entries = NULL;
     }
     if (proc->heap) {
         am_heap_destroy(proc->vm_alloc, proc->heap_alloc, proc->heap);
@@ -599,15 +715,76 @@ am_handle_t am_process_capture_continuation(am_process_t *proc, am_iaddr_t cont_
     size_t fstack_length = am_process_length_of_fstack(proc);
     if (opstack_length == SIZE_MAX || fstack_length == SIZE_MAX) return AM_HANDLE_NULL;
 
+    // 深拷贝当前 dynamic_wind_stack 到堆中，作为续体快照
+    am_handle_t dw_snapshot_handle = AM_HANDLE_NULL;
+    if (proc->dynamic_wind_stack) {
+        am_list_t *dw_snapshot = am_list_copy(proc->heap_alloc, proc->dynamic_wind_stack);
+        if (!dw_snapshot) return AM_HANDLE_NULL;
+        dw_snapshot_handle = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
+        if (dw_snapshot_handle == AM_HANDLE_NULL) {
+            am_list_destroy(proc->heap_alloc, dw_snapshot);
+            return AM_HANDLE_NULL;
+        }
+        am_value_t snapshot_value = am_make_value_of_ptr((am_object_t *)dw_snapshot);
+        if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, dw_snapshot_handle, snapshot_value) != 0) {
+            am_list_destroy(proc->heap_alloc, dw_snapshot);
+            am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, dw_snapshot_handle);
+            return AM_HANDLE_NULL;
+        }
+    }
+
+    // 深拷贝当前 dynamic_wind_after_stack 到堆中（after 内捕获续体时需要）
+    am_handle_t dw_after_snapshot_handle = AM_HANDLE_NULL;
+    if (proc->dynamic_wind_after_stack && proc->dynamic_wind_after_stack->length > 0) {
+        am_list_t *dw_after_snapshot = am_list_copy(proc->heap_alloc, proc->dynamic_wind_after_stack);
+        if (!dw_after_snapshot) {
+            if (dw_snapshot_handle != AM_HANDLE_NULL) {
+                am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, dw_snapshot_handle);
+            }
+            return AM_HANDLE_NULL;
+        }
+        dw_after_snapshot_handle = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
+        if (dw_after_snapshot_handle == AM_HANDLE_NULL) {
+            am_list_destroy(proc->heap_alloc, dw_after_snapshot);
+            if (dw_snapshot_handle != AM_HANDLE_NULL) {
+                am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, dw_snapshot_handle);
+            }
+            return AM_HANDLE_NULL;
+        }
+        am_value_t snapshot_value = am_make_value_of_ptr((am_object_t *)dw_after_snapshot);
+        if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, dw_after_snapshot_handle, snapshot_value) != 0) {
+            am_list_destroy(proc->heap_alloc, dw_after_snapshot);
+            am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, dw_after_snapshot_handle);
+            if (dw_snapshot_handle != AM_HANDLE_NULL) {
+                am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, dw_snapshot_handle);
+            }
+            return AM_HANDLE_NULL;
+        }
+    }
+
     // 创建续体对象，深拷贝当前opstack和fstack
     am_continuation_t *cont = am_continuation_create(
         proc->heap_alloc,
         cont_return_target_iaddr,
         proc->current_closure_handle,
         proc->opstack, opstack_length,
-        proc->fstack, fstack_length
+        proc->fstack, fstack_length,
+        dw_snapshot_handle
     );
-    if (!cont) return AM_HANDLE_NULL;
+    if (!cont) {
+        if (dw_snapshot_handle != AM_HANDLE_NULL) {
+            am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, dw_snapshot_handle);
+        }
+        if (dw_after_snapshot_handle != AM_HANDLE_NULL) {
+            am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, dw_after_snapshot_handle);
+        }
+        return AM_HANDLE_NULL;
+    }
+
+    // 保存 dynamic-wind 的 transient 状态，使得在 before/after 内捕获的续体也能正确恢复
+    cont->current_dynamic_wind_entry_handle = proc->current_dynamic_wind_entry;
+    cont->current_dynamic_wind_thunk_handle = proc->current_dynamic_wind_thunk;
+    cont->dynamic_wind_after_stack_handle = dw_after_snapshot_handle;
 
     // 在堆中分配handle并绑定续体对象
     am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
@@ -627,8 +804,8 @@ am_handle_t am_process_capture_continuation(am_process_t *proc, am_iaddr_t cont_
 }
 
 
-// 功能说明：恢复指定的计算续体到当前进程。成功返回其返回目标位置的iaddr，失败返回SIZE_MAX
-am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd) {
+// 功能说明：直接恢复续体快照（opstack/fstack/closure），不执行 wind 调整。成功返回 cont_return_target，失败返回 SIZE_MAX
+am_iaddr_t am_process_restore_continuation_snapshot(am_process_t *proc, am_handle_t hd) {
     if (!proc || !proc->heap) return SIZE_MAX;
 
     am_value_t v = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
@@ -670,11 +847,124 @@ am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd) {
     proc->fstack_top = proc->fstack + cont_fstack_length;
 
     proc->current_closure_handle = cont->current_closure_handle;
+    proc->current_dynamic_wind_entry = cont->current_dynamic_wind_entry_handle;
+    proc->current_dynamic_wind_thunk = cont->current_dynamic_wind_thunk_handle;
+
+    // 恢复 dynamic_wind_after_stack（after 内捕获续体时可能需要）
+    if (proc->dynamic_wind_after_stack) {
+        am_list_destroy(proc->vm_alloc, proc->dynamic_wind_after_stack);
+        proc->dynamic_wind_after_stack = NULL;
+    }
+    if (cont->dynamic_wind_after_stack_handle != AM_HANDLE_NULL) {
+        am_value_t after_stack_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap,
+                                                  cont->dynamic_wind_after_stack_handle);
+        if (am_value_is_ptr(after_stack_val)) {
+            am_list_t *after_stack_obj = (am_list_t *)am_value_to_ptr(after_stack_val);
+            am_list_t *restored = am_list_copy(proc->vm_alloc, after_stack_obj);
+            if (!restored) {
+                am_free(proc->vm_alloc, cont_opstack);
+                am_free(proc->vm_alloc, cont_fstack);
+                return SIZE_MAX;
+            }
+            proc->dynamic_wind_after_stack = restored;
+        }
+    }
+    if (!proc->dynamic_wind_after_stack) {
+        proc->dynamic_wind_after_stack = am_list_create(proc->vm_alloc, 8, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+        if (!proc->dynamic_wind_after_stack) {
+            am_free(proc->vm_alloc, cont_opstack);
+            am_free(proc->vm_alloc, cont_fstack);
+            return SIZE_MAX;
+        }
+    }
 
     am_free(proc->vm_alloc, cont_opstack);
     am_free(proc->vm_alloc, cont_fstack);
 
     return cont->cont_return_target;
+}
+
+
+// 功能说明：恢复指定的计算续体到当前进程。成功返回其返回目标位置的iaddr，失败返回SIZE_MAX
+// 实现说明：传入的 value 为调用续体时传入的值；若需要 wind 调整，则 value 暂存于 proc，待跳板恢复时压栈。
+am_iaddr_t am_process_load_continuation(am_process_t *proc, am_handle_t hd, am_value_t value) {
+    if (!proc || !proc->heap) return SIZE_MAX;
+
+    am_value_t v = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
+    if (!am_value_is_ptr(v)) return SIZE_MAX;
+
+    am_object_t *obj = am_value_to_ptr(v);
+    if (!obj || obj->type != AM_OBJECT_TYPE_CONTINUATION) return SIZE_MAX;
+
+    am_continuation_t *cont = (am_continuation_t *)obj;
+
+    // 获取续体捕获时的 dynamic-wind 栈快照
+    am_list_t *target_dw_stack = NULL;
+    if (cont->dynamic_wind_stack_handle != AM_HANDLE_NULL) {
+        am_value_t dw_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, cont->dynamic_wind_stack_handle);
+        if (am_value_is_ptr(dw_val)) {
+            am_object_t *dw_obj = am_value_to_ptr(dw_val);
+            if (dw_obj && dw_obj->type == AM_OBJECT_TYPE_LIST) {
+                target_dw_stack = (am_list_t *)dw_obj;
+            }
+        }
+    }
+
+    size_t prefix = dynamic_wind_common_prefix(proc, target_dw_stack);
+    size_t current_len = proc->dynamic_wind_stack ? proc->dynamic_wind_stack->length : 0;
+    size_t target_len = target_dw_stack ? target_dw_stack->length : 0;
+
+    // 如果当前栈与目标栈完全一致，直接恢复续体
+    if (prefix == current_len && prefix == target_len) {
+        am_iaddr_t cont_target = am_process_restore_continuation_snapshot(proc, hd);
+        if (cont_target == SIZE_MAX) return SIZE_MAX;
+        if (am_process_push_operand(proc, value) != 0) return SIZE_MAX;
+        return cont_target;
+    }
+
+    // 需要 wind 调整：计算 afters（当前栈中多出部分，从内到外）和 befores（目标栈中多出部分，从外到内）
+    size_t after_count = current_len - prefix;
+    size_t before_count = target_len - prefix;
+
+    am_handle_t *after_entries = NULL;
+    am_handle_t *before_entries = NULL;
+    if (after_count > 0) {
+        after_entries = (am_handle_t *)am_malloc(proc->vm_alloc, after_count * sizeof(am_handle_t));
+        if (!after_entries) return SIZE_MAX;
+        for (size_t i = 0; i < after_count; i++) {
+            size_t idx = current_len - 1 - i;
+            after_entries[i] = am_value_to_handle(proc->dynamic_wind_stack->children[idx]);
+        }
+    }
+    if (before_count > 0) {
+        before_entries = (am_handle_t *)am_malloc(proc->vm_alloc, before_count * sizeof(am_handle_t));
+        if (!before_entries) {
+            if (after_entries) am_free(proc->vm_alloc, after_entries);
+            return SIZE_MAX;
+        }
+        for (size_t i = 0; i < before_count; i++) {
+            size_t idx = prefix + i;
+            before_entries[i] = am_value_to_handle(target_dw_stack->children[idx]);
+        }
+    }
+
+    // 释放旧的 pending 数组（如果存在）
+    if (proc->pending_after_entries) {
+        am_free(proc->vm_alloc, proc->pending_after_entries);
+    }
+    if (proc->pending_before_entries) {
+        am_free(proc->vm_alloc, proc->pending_before_entries);
+    }
+
+    proc->pending_cont_handle = hd;
+    proc->pending_cont_value = value;
+    proc->pending_after_entries = after_entries;
+    proc->pending_after_count = after_count;
+    proc->pending_before_entries = before_entries;
+    proc->pending_before_count = before_count;
+    proc->wind_state = 1;
+
+    return proc->wind_trampoline_iaddr;
 }
 
 
@@ -963,6 +1253,71 @@ int32_t am_process_gc_root(am_process_t *proc, am_list_t **gcroots) {
         }
     }
 
+    // 将当前 dynamic-wind 栈中的 entry handle 加入 GC 根
+    if (proc->dynamic_wind_stack) {
+        for (size_t i = 0; i < proc->dynamic_wind_stack->length; i++) {
+            am_value_t entry_val = proc->dynamic_wind_stack->children[i];
+            if (am_value_is_handle(entry_val)) {
+                am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots, entry_val);
+                if (!new_roots) return -1;
+                *gcroots = new_roots;
+            }
+        }
+    }
+
+    // 将正在执行 after 的 dynamic-wind 条目 handle 加入 GC 根
+    if (proc->dynamic_wind_after_stack) {
+        for (size_t i = 0; i < proc->dynamic_wind_after_stack->length; i++) {
+            am_value_t entry_val = proc->dynamic_wind_after_stack->children[i];
+            if (am_value_is_handle(entry_val)) {
+                am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots, entry_val);
+                if (!new_roots) return -1;
+                *gcroots = new_roots;
+            }
+        }
+    }
+
+    // 将 wind 跳板暂存的 continuation 把柄/值和待执行条目加入 GC 根
+    if (proc->pending_cont_handle != AM_HANDLE_NULL) {
+        am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots,
+                                             am_make_value_of_handle(proc->pending_cont_handle));
+        if (!new_roots) return -1;
+        *gcroots = new_roots;
+    }
+    if (am_value_is_handle(proc->pending_cont_value)) {
+        am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots, proc->pending_cont_value);
+        if (!new_roots) return -1;
+        *gcroots = new_roots;
+    }
+    if (proc->current_dynamic_wind_entry != AM_HANDLE_NULL) {
+        am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots,
+                                             am_make_value_of_handle(proc->current_dynamic_wind_entry));
+        if (!new_roots) return -1;
+        *gcroots = new_roots;
+    }
+    if (proc->current_dynamic_wind_thunk != AM_HANDLE_NULL) {
+        am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots,
+                                             am_make_value_of_handle(proc->current_dynamic_wind_thunk));
+        if (!new_roots) return -1;
+        *gcroots = new_roots;
+    }
+    if (proc->pending_after_entries) {
+        for (size_t i = 0; i < proc->pending_after_count; i++) {
+            am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots,
+                                                 am_make_value_of_handle(proc->pending_after_entries[i]));
+            if (!new_roots) return -1;
+            *gcroots = new_roots;
+        }
+    }
+    if (proc->pending_before_entries) {
+        for (size_t i = 0; i < proc->pending_before_count; i++) {
+            am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots,
+                                                 am_make_value_of_handle(proc->pending_before_entries[i]));
+            if (!new_roots) return -1;
+            *gcroots = new_roots;
+        }
+    }
+
     // 分析所有已保存的续体环境中的GC根
     // 遍历堆中所有对象，找到continuation对象
     size_t heap_count = am_map_length(proc->heap_alloc, proc->heap->table);
@@ -979,6 +1334,44 @@ int32_t am_process_gc_root(am_process_t *proc, am_list_t **gcroots) {
         if (!obj || obj->type != AM_OBJECT_TYPE_CONTINUATION) continue;
 
         am_continuation_t *cont = (am_continuation_t *)obj;
+
+        // 将续体保存的 dynamic-wind 相关 handle 加入 GC 根
+        if (cont->dynamic_wind_stack_handle != AM_HANDLE_NULL) {
+            am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots,
+                                                 am_make_value_of_handle(cont->dynamic_wind_stack_handle));
+            if (!new_roots) {
+                am_free(proc->vm_alloc, keys);
+                return -1;
+            }
+            *gcroots = new_roots;
+        }
+        if (cont->dynamic_wind_after_stack_handle != AM_HANDLE_NULL) {
+            am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots,
+                                                 am_make_value_of_handle(cont->dynamic_wind_after_stack_handle));
+            if (!new_roots) {
+                am_free(proc->vm_alloc, keys);
+                return -1;
+            }
+            *gcroots = new_roots;
+        }
+        if (cont->current_dynamic_wind_entry_handle != AM_HANDLE_NULL) {
+            am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots,
+                                                 am_make_value_of_handle(cont->current_dynamic_wind_entry_handle));
+            if (!new_roots) {
+                am_free(proc->vm_alloc, keys);
+                return -1;
+            }
+            *gcroots = new_roots;
+        }
+        if (cont->current_dynamic_wind_thunk_handle != AM_HANDLE_NULL) {
+            am_list_t *new_roots = am_list_push(proc->vm_alloc, *gcroots,
+                                                 am_make_value_of_handle(cont->current_dynamic_wind_thunk_handle));
+            if (!new_roots) {
+                am_free(proc->vm_alloc, keys);
+                return -1;
+            }
+            *gcroots = new_roots;
+        }
 
         // 将续体内部环境加入GC根
         size_t cont_opstack_length = 0;

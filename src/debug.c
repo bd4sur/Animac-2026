@@ -668,6 +668,11 @@ const char *am_debug_opcode_name(uint32_t opcode) {
         case AM_VM_OP_concat:      return "concat";
         case AM_VM_OP_duplicate:   return "duplicate";
         case AM_VM_OP_evalcleanup: return "evalcleanup";
+        case AM_VM_OP_dynamicwind:              return "dynamicwind";
+        case AM_VM_OP_dynamicwind_after_before: return "dynamicwind_after_before";
+        case AM_VM_OP_dynamicwind_before_after: return "dynamicwind_before_after";
+        case AM_VM_OP_dynamicwind_done:         return "dynamicwind_done";
+        case AM_VM_OP_wind:                     return "wind";
         default:                   return "?";
     }
 }

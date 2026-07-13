@@ -639,6 +639,113 @@ int32_t am_runtime_check_native_ref(am_runtime_t *rt, am_process_t *proc, am_var
     return (am_value_to_uint(type_val) == (am_uint_t)AM_VAR_TYPE_NATIVE_REF) ? 0 : -1;
 }
 
+
+// ===============================================================================
+// dynamic-wind 内部辅助函数
+// ===============================================================================
+
+// 创建 dynamic-wind 条目：[before_handle, after_handle, mark_value, saved_value, opstack_base]
+// opstack_base 记录进入 dynamic-wind 时 opstack 的长度，用于判断 before/thunk/after 是否压入返回值。
+// 条目本身为 AM_OBJECT_TYPE_LIST 对象，绑定到 proc->heap。成功返回 handle，失败返回 AM_HANDLE_NULL。
+static am_handle_t dynamic_wind_create_entry(am_process_t *proc, am_handle_t before, am_handle_t after, am_uint_t mark, size_t opstack_base) {
+    if (!proc || !proc->heap || !proc->heap_alloc) return AM_HANDLE_NULL;
+
+    am_list_t *entry = am_list_create(proc->heap_alloc, 5, AM_LIST_TYPE_DEFAULT, AM_HANDLE_NULL);
+    if (!entry) return AM_HANDLE_NULL;
+
+    entry->children[0] = am_make_value_of_handle(before);
+    entry->children[1] = am_make_value_of_handle(after);
+    entry->children[2] = am_make_value_of_uint(mark);
+    entry->children[3] = AM_VALUE_UNDEFINED;
+    entry->children[4] = am_make_value_of_uint((am_uint_t)opstack_base);
+    entry->length = 5;
+
+    am_handle_t hd = am_heap_alloc_handle(proc->vm_alloc, proc->heap_alloc, proc->heap);
+    if (hd == AM_HANDLE_NULL) {
+        am_list_destroy(proc->heap_alloc, entry);
+        return AM_HANDLE_NULL;
+    }
+
+    am_value_t entry_value = am_make_value_of_ptr((am_object_t *)entry);
+    if (am_heap_set(proc->vm_alloc, proc->heap_alloc, proc->heap, hd, entry_value) != 0) {
+        am_list_destroy(proc->heap_alloc, entry);
+        am_heap_free_handle(proc->vm_alloc, proc->heap_alloc, proc->heap, hd);
+        return AM_HANDLE_NULL;
+    }
+
+    return hd;
+}
+
+static am_list_t *dynamic_wind_get_entry(am_process_t *proc, am_handle_t entry_hd) {
+    if (!proc || !proc->heap || entry_hd == AM_HANDLE_NULL) return NULL;
+    am_value_t v = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, entry_hd);
+    if (!am_value_is_ptr(v)) return NULL;
+    am_object_t *obj = am_value_to_ptr(v);
+    if (!obj || obj->type != AM_OBJECT_TYPE_LIST) return NULL;
+    return (am_list_t *)obj;
+}
+
+static inline am_handle_t dynamic_wind_entry_before(am_list_t *entry) {
+    if (!entry || entry->length < 4) return AM_HANDLE_NULL;
+    return am_value_to_handle(entry->children[0]);
+}
+
+static inline am_handle_t dynamic_wind_entry_after(am_list_t *entry) {
+    if (!entry || entry->length < 4) return AM_HANDLE_NULL;
+    return am_value_to_handle(entry->children[1]);
+}
+
+static inline am_value_t dynamic_wind_entry_saved(am_list_t *entry) {
+    if (!entry || entry->length < 4) return AM_VALUE_UNDEFINED;
+    return entry->children[3];
+}
+
+static inline void dynamic_wind_entry_set_saved(am_list_t *entry, am_value_t v) {
+    if (!entry || entry->length < 4) return;
+    entry->children[3] = v;
+}
+
+static inline size_t dynamic_wind_entry_base(am_list_t *entry) {
+    if (!entry || entry->length < 5) return 0;
+    return (size_t)am_value_to_uint(entry->children[4]);
+}
+
+// 调用一个闭包 handle，返回地址为 return_iaddr
+static int32_t dynamic_wind_call_closure(am_runtime_t *rt, am_process_t *proc, am_handle_t closure_handle, am_iaddr_t return_iaddr) {
+    (void)rt;
+    if (!proc) return -1;
+
+    am_value_t obj_val = am_heap_get(proc->vm_alloc, proc->heap_alloc, proc->heap, closure_handle);
+    if (!am_value_is_ptr(obj_val)) return -1;
+    am_object_t *obj = am_value_to_ptr(obj_val);
+    if (!obj || obj->type != AM_OBJECT_TYPE_CLOSURE) return -1;
+    am_obj_closure_t *closure = (am_obj_closure_t *)obj;
+
+    am_value_t closure_val = am_make_value_of_handle(proc->current_closure_handle);
+    am_value_t ret_val = am_make_value_of_iaddr(return_iaddr);
+    if (am_process_push_stack_frame(proc, closure_val, ret_val) != 0) return -1;
+
+    am_process_set_current_closure(proc, closure_handle);
+    am_process_goto(proc, closure->iaddr);
+    return 0;
+}
+
+// 将 entry handle 压入 proc->dynamic_wind_stack
+static int32_t dynamic_wind_stack_push(am_process_t *proc, am_handle_t entry_hd) {
+    if (!proc || !proc->dynamic_wind_stack) return -1;
+    am_list_t *lst = am_list_push(proc->vm_alloc, proc->dynamic_wind_stack, am_make_value_of_handle(entry_hd));
+    if (!lst) return -1;
+    proc->dynamic_wind_stack = lst;
+    return 0;
+}
+
+// 从 proc->dynamic_wind_stack 弹出 entry handle
+static am_handle_t dynamic_wind_stack_pop(am_process_t *proc) {
+    if (!proc || !proc->dynamic_wind_stack || proc->dynamic_wind_stack->length == 0) return AM_HANDLE_NULL;
+    return am_value_to_handle(am_list_pop(proc->vm_alloc, proc->dynamic_wind_stack));
+}
+
+
 // call / tailcall 的共享实现。return_target 为 SIZE_MAX 表示尾调用不压栈帧。
 static int32_t op_call_async(am_runtime_t *rt, am_process_t *proc, am_value_t operand, am_iaddr_t return_target) {
     (void)rt;
@@ -717,9 +824,8 @@ static int32_t op_call_async(am_runtime_t *rt, am_process_t *proc, am_value_t op
                 if (am_process_push_stack_frame(proc, closure_val, ret_val) != 0) return -1;
             }
             am_value_t top = am_process_pop_operand(proc);
-            am_iaddr_t cont_target = am_process_load_continuation(proc, hd);
+            am_iaddr_t cont_target = am_process_load_continuation(proc, hd, top);
             if (cont_target == SIZE_MAX) return -1;
-            am_process_push_operand(proc, top);
             am_process_goto(proc, cont_target);
             return 0;
         }
@@ -835,6 +941,241 @@ static int32_t op_capturecc(am_runtime_t *rt, am_process_t *proc, am_value_t ope
 
     am_process_step(proc);
     return 0;
+}
+
+
+// dynamic-wind 第一阶段：opstack 上有 [..., before, thunk, after]
+// 创建条目，暂存 entry/thunk，调用 before
+static int32_t op_dynamicwind(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt; (void)operand;
+    if (!proc) return -1;
+
+    am_value_t after_val = am_process_pop_operand(proc);
+    am_value_t thunk_val = am_process_pop_operand(proc);
+    am_value_t before_val = am_process_pop_operand(proc);
+
+    if (!am_value_is_handle(before_val) || !am_value_is_handle(thunk_val) || !am_value_is_handle(after_val)) {
+        am_runtime_error(rt, L"[Runtime] dynamic-wind: 参数必须是闭包\n");
+        return -1;
+    }
+
+    am_handle_t before_hd = am_value_to_handle(before_val);
+    am_handle_t thunk_hd = am_value_to_handle(thunk_val);
+    am_handle_t after_hd = am_value_to_handle(after_val);
+
+    if (!am_process_get_closure(proc, before_hd) || !am_process_get_closure(proc, thunk_hd) || !am_process_get_closure(proc, after_hd)) {
+        am_runtime_error(rt, L"[Runtime] dynamic-wind: 参数必须是闭包\n");
+        return -1;
+    }
+
+    size_t opstack_base = am_process_length_of_opstack(proc);
+    am_uint_t mark = (am_uint_t)proc->dynamic_wind_mark_counter++;
+    am_handle_t entry_hd = dynamic_wind_create_entry(proc, before_hd, after_hd, mark, opstack_base);
+    if (entry_hd == AM_HANDLE_NULL) return -1;
+
+    proc->current_dynamic_wind_entry = entry_hd;
+    proc->current_dynamic_wind_thunk = thunk_hd;
+
+    return dynamic_wind_call_closure(rt, proc, before_hd, proc->PC + 1);
+}
+
+
+// 辅助：将 opstack 恢复到指定长度（弹出多余部分），返回最后弹出的值（若无则返回 AM_VALUE_UNDEFINED）
+static am_value_t dynamic_wind_trim_opstack_to_base(am_process_t *proc, size_t base) {
+    size_t current_len = am_process_length_of_opstack(proc);
+    am_value_t last = AM_VALUE_UNDEFINED;
+    while (current_len > base) {
+        last = am_process_pop_operand(proc);
+        current_len--;
+    }
+    return last;
+}
+
+
+// dynamic-wind 第二阶段：before 已返回
+// 丢弃 before 返回值（若有），将条目压入 dynamic_wind_stack，调用 thunk
+static int32_t op_dynamicwind_after_before(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt; (void)operand;
+    if (!proc) return -1;
+
+    am_handle_t entry_hd = proc->current_dynamic_wind_entry;
+
+    if (entry_hd == AM_HANDLE_NULL) {
+        am_runtime_error(rt, L"[Runtime] dynamicwind_after_before: 无当前条目\n");
+        return -1;
+    }
+
+    am_list_t *entry = dynamic_wind_get_entry(proc, entry_hd);
+    if (!entry) return -1;
+    size_t opstack_base = dynamic_wind_entry_base(entry);
+
+    // 丢弃 before 的返回值（0 个或 1 个）
+    dynamic_wind_trim_opstack_to_base(proc, opstack_base);
+
+    proc->current_dynamic_wind_entry = AM_HANDLE_NULL;
+
+    if (dynamic_wind_stack_push(proc, entry_hd) != 0) return -1;
+
+    am_handle_t thunk_hd = proc->current_dynamic_wind_thunk;
+    if (thunk_hd == AM_HANDLE_NULL) {
+        am_runtime_error(rt, L"[Runtime] dynamicwind_after_before: 无当前 thunk\n");
+        return -1;
+    }
+
+    return dynamic_wind_call_closure(rt, proc, thunk_hd, proc->PC + 1);
+}
+
+
+// dynamic-wind 第三阶段：thunk 已返回
+// 保存返回值（若有），弹出 dynamic_wind_stack 条目，将条目 handle 压入 dynamic_wind_after_stack，调用 after
+static int32_t op_dynamicwind_before_after(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt; (void)operand;
+    if (!proc) return -1;
+
+    am_handle_t entry_hd = dynamic_wind_stack_pop(proc);
+    if (entry_hd == AM_HANDLE_NULL) {
+        am_runtime_error(rt, L"[Runtime] dynamicwind_before_after: dynamic_wind_stack 为空\n");
+        return -1;
+    }
+
+    am_list_t *entry = dynamic_wind_get_entry(proc, entry_hd);
+    if (!entry) return -1;
+    size_t opstack_base = dynamic_wind_entry_base(entry);
+
+    // thunk 的返回值：若 thunk 压入了返回值，则弹出并保存；否则保存 AM_VALUE_UNDEFINED
+    am_value_t thunk_result = dynamic_wind_trim_opstack_to_base(proc, opstack_base);
+    dynamic_wind_entry_set_saved(entry, thunk_result);
+
+    // 将条目 handle 压入 dynamic_wind_after_stack，供 dynamicwind_done 取回 saved_value
+    am_list_t *after_stack = am_list_push(proc->vm_alloc, proc->dynamic_wind_after_stack,
+                                          am_make_value_of_handle(entry_hd));
+    if (!after_stack) return -1;
+    proc->dynamic_wind_after_stack = after_stack;
+
+    proc->current_dynamic_wind_thunk = AM_HANDLE_NULL;
+
+    am_handle_t after_hd = dynamic_wind_entry_after(entry);
+    if (after_hd == AM_HANDLE_NULL) return -1;
+
+    return dynamic_wind_call_closure(rt, proc, after_hd, proc->PC + 1);
+}
+
+
+// dynamic-wind 第四阶段：after 已返回
+// 丢弃 after 返回值（若有），从 dynamic_wind_after_stack 弹出条目，将 saved_value 压回 opstack，继续执行
+static int32_t op_dynamicwind_done(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt; (void)operand;
+    if (!proc) return -1;
+
+    if (!proc->dynamic_wind_after_stack || proc->dynamic_wind_after_stack->length == 0) {
+        am_runtime_error(rt, L"[Runtime] dynamicwind_done: dynamic_wind_after_stack 为空\n");
+        return -1;
+    }
+
+    am_handle_t entry_hd = am_value_to_handle(
+        am_list_pop(proc->vm_alloc, proc->dynamic_wind_after_stack));
+
+    am_list_t *entry = dynamic_wind_get_entry(proc, entry_hd);
+    if (!entry) return -1;
+    size_t opstack_base = dynamic_wind_entry_base(entry);
+
+    // 丢弃 after 的返回值（0 个或 1 个）
+    dynamic_wind_trim_opstack_to_base(proc, opstack_base);
+
+    am_value_t saved = dynamic_wind_entry_saved(entry);
+    if (am_process_push_operand(proc, saved) != 0) return -1;
+
+    am_process_step(proc);
+    return 0;
+}
+
+
+// wind 跳板：continuation 恢复前执行 afters / befores
+static int32_t op_wind(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
+    (void)rt; (void)operand;
+    if (!proc) return -1;
+
+    switch (proc->wind_state) {
+        case 1: { // 执行 afters（从内到外）
+            if (proc->pending_after_count > 0) {
+                am_handle_t entry_hd = proc->pending_after_entries[--proc->pending_after_count];
+                // 验证条目在 dynamic_wind_stack 栈顶
+                am_handle_t top_hd = proc->dynamic_wind_stack && proc->dynamic_wind_stack->length > 0
+                    ? am_value_to_handle(proc->dynamic_wind_stack->children[proc->dynamic_wind_stack->length - 1])
+                    : AM_HANDLE_NULL;
+                if (top_hd != entry_hd) {
+                    am_runtime_error(rt, L"[Runtime] op_wind: after 条目与栈顶不一致\n");
+                    return -1;
+                }
+                dynamic_wind_stack_pop(proc);
+
+                am_list_t *entry = dynamic_wind_get_entry(proc, entry_hd);
+                if (!entry) return -1;
+                am_handle_t after_hd = dynamic_wind_entry_after(entry);
+                if (after_hd == AM_HANDLE_NULL) return -1;
+
+                return dynamic_wind_call_closure(rt, proc, after_hd, proc->wind_trampoline_iaddr);
+            }
+            // afters 执行完毕，转入 befores
+            proc->wind_state = 2;
+            // 不推进 PC，下一条 tick 继续执行本指令的 state 2 分支
+            return 0;
+        }
+        case 2: { // 执行 befores（从外到内）
+            if (proc->pending_before_count > 0) {
+                am_handle_t entry_hd = proc->pending_before_entries[0];
+                // 将 pending_before_entries 前移
+                for (size_t i = 1; i < proc->pending_before_count; i++) {
+                    proc->pending_before_entries[i - 1] = proc->pending_before_entries[i];
+                }
+                proc->pending_before_count--;
+
+                if (dynamic_wind_stack_push(proc, entry_hd) != 0) return -1;
+
+                am_list_t *entry = dynamic_wind_get_entry(proc, entry_hd);
+                if (!entry) return -1;
+                am_handle_t before_hd = dynamic_wind_entry_before(entry);
+                if (before_hd == AM_HANDLE_NULL) return -1;
+
+                return dynamic_wind_call_closure(rt, proc, before_hd, proc->wind_trampoline_iaddr);
+            }
+            // befores 执行完毕，转入恢复续体
+            proc->wind_state = 3;
+            // 不推进 PC，下一条 tick 继续执行本指令的 state 3 分支
+            return 0;
+        }
+        case 3: { // 真正恢复续体
+            am_handle_t cont_hd = proc->pending_cont_handle;
+            am_value_t value = proc->pending_cont_value;
+
+            am_iaddr_t cont_target = am_process_restore_continuation_snapshot(proc, cont_hd);
+            if (cont_target == SIZE_MAX) return -1;
+
+            if (am_process_push_operand(proc, value) != 0) return -1;
+
+            // 清空 wind 状态
+            proc->wind_state = 0;
+            proc->pending_cont_handle = AM_HANDLE_NULL;
+            proc->pending_cont_value = AM_VALUE_UNDEFINED;
+            if (proc->pending_after_entries) {
+                am_free(proc->vm_alloc, proc->pending_after_entries);
+                proc->pending_after_entries = NULL;
+            }
+            proc->pending_after_count = 0;
+            if (proc->pending_before_entries) {
+                am_free(proc->vm_alloc, proc->pending_before_entries);
+                proc->pending_before_entries = NULL;
+            }
+            proc->pending_before_count = 0;
+
+            am_process_goto(proc, cont_target);
+            return 0;
+        }
+        default: {
+            am_runtime_error(rt, L"[Runtime] op_wind: 非法 wind_state\n");
+            return -1;
+        }
+    }
 }
 
 
@@ -2469,6 +2810,11 @@ int32_t am_runtime_op_dispatch(am_runtime_t *rt, am_process_t *proc, uint32_t op
         case AM_VM_OP_concat:      return op_concat(rt, proc, operand);
         case AM_VM_OP_duplicate:   return op_duplicate(rt, proc, operand);
         case AM_VM_OP_evalcleanup: return op_evalcleanup(rt, proc, operand);
+        case AM_VM_OP_dynamicwind:              return op_dynamicwind(rt, proc, operand);
+        case AM_VM_OP_dynamicwind_after_before: return op_dynamicwind_after_before(rt, proc, operand);
+        case AM_VM_OP_dynamicwind_before_after: return op_dynamicwind_before_after(rt, proc, operand);
+        case AM_VM_OP_dynamicwind_done:         return op_dynamicwind_done(rt, proc, operand);
+        case AM_VM_OP_wind:                     return op_wind(rt, proc, operand);
         default: {
             wchar_t errmsg[256];
             swprintf(errmsg, 256, L"[Runtime] 未知指令: %u\n", opcode);
