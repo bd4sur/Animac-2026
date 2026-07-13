@@ -27,5 +27,5 @@
 (newline)
 
 (if (equal? out '(outside outside after2 thunk2 before2))
-    (display "PASS after call/cc\n")
-    (display "FAIL after call/cc\n"))
+    (display "✅ PASS after call/cc\n")
+    (display "❌ FAIL after call/cc\n"))

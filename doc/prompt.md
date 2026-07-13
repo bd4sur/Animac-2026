@@ -5403,8 +5403,486 @@ static int32_t compile_dynamicwind(am_compiler_ctx_t *ctx, am_handle_t handle) {
 
 ---------------------
 
+# 2026-07-14
+
+继续补充测试用例，在WSL中完成测试，总结报告发现的问题，但不要改动实现代码。补充的用例要覆盖以下方面：
+
+- 效仿 @test/coroutine.scm ，基于dynamic-wind和call/cc实现一个可任意位置多次出入的全功能协程demo。
+- 补充一些综合使用dynamic-wind、call/cc、宏、System.eval、fork、System.set_interval异步实现等高度复杂的语言特性的复杂用例。
+
+总体要求：测试通过显示“✅ PASS”，不通过显示“❌ FAIL”。容许失败，分析原因，判断是实现有误还是合理局限（未实现的高级特性）。但是不要修改现有的实现代码。所有新增的测试代码都以test_xxx开头。文件中的注释要尽量详尽，说明原理和测试目的、预期输出。
 
 ---------------------
+
+# 2026-07-14
+
+请你分析刚刚实现的dynamic-wind对解释器的性能有何影响。
+
+考虑到dynamic-wind机制需要在VM核心逻辑里加入重量级的判断，我认为可能有损失性能的问题，为了提升性能，考虑到dynamic-wind本身是个与其他特性正交的特性，是否可以把所有的dynamic-wind相关的VM逻辑做成可选的，使得如果编译时发现程序完全没有dynamic-wind相关的调用，则完全关闭dynamic-wind相关的逻辑。我的这个想法合理吗？可行吗？如果合理且可行，给出详细设计方案。
+
+回答我的问题，暂时不要修改任何代码。
+
+
+
+
+你的判断基本正确：`dynamic-wind` 的实现确实在若干关键路径上引入了额外开销。但开销并不是均匀地洒在“每条 VM 指令”上，而是集中在 **`call/cc`、续体调用、GC 遍历、进程创建/fork** 这几个点上。把它做成“无 `dynamic-wind` 时完全关闭”是**合理且可行的**，但有一个绕不开的前提——必须处理 `System.eval`、宏展开和模块导入带来的不确定性。
+
+下面先给出性能影响分析，再给出两套（由轻到重）可选的详细设计方案。
+
+## 1. 当前 `dynamic-wind` 对性能的影响
+
+### 1.1 受影响的关键路径
+
+| 路径 | 具体新增工作 | 影响程度 |
+|---|---|---|
+| **每次 `call/cc`** | `am_process_capture_continuation()` 必须深拷贝 `dynamic_wind_stack`（即使为空也要 `am_list_copy` + 分配 handle），还要保存 `current_dynamic_wind_entry/thunk`、`dynamic_wind_after_stack` 的快照。 | **高**。`call/cc` 本身就是热点，现在每次捕获都多了一次堆分配和列表拷贝。 |
+| **每次调用续体** | `am_process_load_continuation()` 要取快照、算最长公共前缀、比较 mark、决定是否需要走 `op_wind` 跳板。 | **中高**。调用续体时多了分支和循环。 |
+| **每次 GC** | `am_process_gc_root()` 要遍历当前 `dynamic_wind_stack`、`dynamic_wind_after_stack`、pending 数组，还要扫描堆中所有 continuation 对象，把其中的 3 个 DW handle 加入根集合。 | **中**。continuation 对象越多，扫描越慢。 |
+| **每个进程创建** | `am_process_create()` 固定分配 `dynamic_wind_stack`、`dynamic_wind_after_stack` 两个列表。 | **中低**。进程多时是内存浪费。 |
+| **每次 `System.fork`** | `am_fork_process_copy()` 深拷贝并 remap 父进程的 DW 栈/after 栈。 | **中**。即使父进程没用 DW，也要复制两个空列表。 |
+| **每条 `dynamic-wind` 指令** | 只有执行 `op_dynamicwind*` / `op_wind` 时才有开销。 | **低但不可忽略**。出现 `dynamic-wind` 才会触发。 |
+
+### 1.2 基本不受影响的路径
+
+- **普通函数调用 `op_call` / `op_tailcall`**：目标类型检查（closure vs continuation）本来就是原有的，DW 没有增加额外分支。
+- **普通 `op_return`**：没有介入 DW 栈。
+- **算术、load/store、push/pop 等指令**：完全没有 DW 相关逻辑。
+- **主指令分发 `switch-case`**：只新增了 5 条 opcode 的分支， modern CPU 的分支预测下影响很小。
+
+### 1.3 定性结论
+
+性能损失是**真实存在**的，但它不是“每条指令都变重”，而是：
+
+1. **`call/cc` 变得更贵**：每次捕获都要为 DW 栈做一份快照。
+2. **内存占用上升**：每个进程、每个 continuation 都变大了。
+3. **GC 压力上升**：根集合扫描范围扩大。
+
+对于不使用 `dynamic-wind` 的程序（尤其是大量使用 `call/cc` 做协程、生成器、回溯等场景），这些开销是**完全浪费的**。所以你的优化方向是对的。
+
+## 2. “编译时发现无 `dynamic-wind` 就关闭”是否可行？
+
+**可行，但有边界条件。** 核心难点是：
+
+- **宏展开后才可能暴露 `dynamic-wind`**。例如 `with-cleanup` 宏展开后才是 `dynamic-wind`。静态检测必须在宏展开后的 AST 上做。
+- **导入模块可能使用 `dynamic-wind`**。检测必须覆盖整个已链接的 AST，不能只扫主文件。
+- **运行时 `System.eval` 可能引入 `dynamic-wind`**。编译时不可能知道 `eval` 字符串里有没有 `dynamic-wind`。
+- **`call/cc` 与 `dynamic-wind` 正交**：没有 DW 时，`call/cc` 完全可以正常工作，只是不需要 wind 调整。所以关闭 DW 不会影响纯 `call/cc` 语义。
+
+因此：
+
+- 如果程序**封闭**（没有 `System.eval`，也没有运行时动态加载），编译期静态检测是**可靠**的。
+- 如果允许 `System.eval`，要么同时禁用 eval 的 DW 能力，要么保守地保留 DW 支持，或者采用“运行时按需启用”的折中方案。
+
+## 3. 推荐方案：双层设计
+
+我建议做**两层**：
+
+1. **模块级静态检测 + 运行时快速路径（默认启用，几乎无代码侵入）**：获得 90% 的性能收益，且对 `System.eval` 仍然正确。
+2. **编译期全局开关（可选启用）**：用于嵌入式/确定性场景，彻底裁剪 DW 代码，换取零开销和更小体积。
+
+下面分别给出详细设计。
+
+### 方案 B（推荐默认）：模块级静态检测 + 运行时快速路径
+
+这是改动最小、收益最大、也最安全的方案。当前代码已经有很多 `if (proc->dynamic_wind_stack)` 判空分支，说明实现上已经“半准备好”了。
+
+#### 3.1 编译器/链接器：检测 `uses_dynamic_wind`
+
+在 `am_compile()` 或链接阶段，对整个 AST 做一次后序遍历：
+
+```c
+// 伪代码
+int module_uses_dynamic_wind(am_ast_t *ast) {
+    // 在宏展开后的 AST 中查找
+    // 任何 application 的首项是 "dynamic-wind" varid/symbol 即认为使用
+}
+```
+
+把结果写入 `am_module_t`：
+
+```c
+typedef struct am_module_t {
+    ...
+    int uses_dynamic_wind;   // 新增
+} am_module_t;
+```
+
+> 注意：检测必须在宏展开之后做；宏未展开时 `with-cleanup` 会漏检。
+
+#### 3.2 进程创建：按需分配 DW 结构
+
+`am_process_create()` 改为：
+
+```c
+proc->dynamic_wind_stack = NULL;       // 不预先分配
+proc->dynamic_wind_after_stack = NULL; // 不预先分配
+proc->dynamic_wind_enabled = module->uses_dynamic_wind;
+```
+
+如果 `uses_dynamic_wind == 1`，则像现在一样分配；否则保留 NULL。
+
+#### 3.3 第一次遇到 `dynamicwind` 时懒分配
+
+`op_dynamicwind` 入口处：
+
+```c
+if (!proc->dynamic_wind_stack) {
+    proc->dynamic_wind_stack = am_list_create(...);
+    proc->dynamic_wind_after_stack = am_list_create(...);
+    proc->dynamic_wind_enabled = 1;
+}
+```
+
+这一步是为了兼容 `System.eval`：即使主模块没 DW，eval 代码里出现 `dynamic-wind` 也能正确运行。
+
+> 但这里有一个语义隐患：在 eval 之前已捕获的续体，其 DW 快照为空；若这些续体在 eval 之后、DW 边界内部被调用，不会触发 wind 调整。要绝对安全，可以规定“只要进程启用了 `System.eval`，就默认 `uses_dynamic_wind = 1`”，这是保守且合理的做法。
+
+#### 3.4 `call/cc` 捕获路径
+
+`am_process_capture_continuation()` 已经写了：
+
+```c
+if (proc->dynamic_wind_stack) { ... 深拷贝 ... }
+```
+
+所以只要把 `proc->dynamic_wind_stack` 初始设为 NULL，不使用的程序就**不会**触发深拷贝。唯一多余的是 `am_continuation_t` 中 3 个 DW handle 字段的内存；这是很小的固定开销。
+
+#### 3.5 续体调用路径
+
+`am_process_load_continuation()` 里：
+
+```c
+size_t current_len = proc->dynamic_wind_stack ? proc->dynamic_wind_stack->length : 0;
+size_t target_len  = target_dw_stack ? target_dw_stack->length : 0;
+if (prefix == current_len && prefix == target_len) { 直接恢复; }
+```
+
+当两边都是 NULL/空时，会自然走 fast path。所以不用的程序没有 wind 调整开销。
+
+#### 3.6 GC 根
+
+`am_process_gc_root()` 中所有 DW 相关遍历都加上判空：
+
+```c
+if (proc->dynamic_wind_stack) { 遍历; }
+if (proc->dynamic_wind_after_stack) { 遍历; }
+```
+
+对不使用 DW 的进程，这些循环直接跳过。
+
+#### 3.7 `System.fork`
+
+`am_fork_process_copy()` 中：
+
+```c
+if (parent->dynamic_wind_stack) {
+    child->dynamic_wind_stack = am_list_copy(...);
+    ...
+}
+if (parent->dynamic_wind_after_stack) { ... }
+```
+
+父进程没用 DW 时，子进程也直接为 NULL。
+
+#### 3.8 预期收益
+
+- 每个不使用 DW 的进程少两个空列表 + 数组容量。
+- 每次 `call/cc` 省一次空列表深拷贝 + handle 分配。
+- 每次 GC 少扫描 DW 相关根。
+- 每次 fork 少复制两个空列表。
+- 正常函数调用、返回、指令分发完全不受影响。
+- 实现改动非常局部，大部分代码已经支持。
+
+### 方案 A（可选）：编译期全局开关 `AM_FEATURE_DYNAMIC_WIND`
+
+如果你追求的是**绝对的零开销**（例如嵌入式、教学演示、确定性系统），可以做一个编译期开关。
+
+#### 3.9 配置层
+
+在 `Makefile` / `include/config.h` 中：
+
+```c
+#ifndef AM_FEATURE_DYNAMIC_WIND
+#define AM_FEATURE_DYNAMIC_WIND 1   // 默认启用
+#endif
+```
+
+构建无 DW 版本时：
+
+```bash
+make CFLAGS="-DAM_FEATURE_DYNAMIC_WIND=0"
+```
+
+#### 3.10 数据结构裁剪
+
+`include/process.h`：
+
+```c
+typedef struct am_process_t {
+    ...
+#ifdef AM_FEATURE_DYNAMIC_WIND
+    am_list_t *dynamic_wind_stack;
+    am_list_t *dynamic_wind_after_stack;
+    am_uint_t    dynamic_wind_mark_counter;
+    am_handle_t  current_dynamic_wind_entry;
+    am_handle_t  current_dynamic_wind_thunk;
+    am_iaddr_t   wind_trampoline_iaddr;
+    int          wind_state;
+    am_handle_t  pending_cont_handle;
+    am_value_t   pending_cont_value;
+    size_t       pending_after_count;
+    size_t       pending_before_count;
+    am_handle_t *pending_after_entries;
+    am_handle_t *pending_before_entries;
+#endif
+} am_process_t;
+```
+
+`include/continuation.h`：
+
+```c
+typedef struct am_continuation_t {
+    am_object_t base;
+    size_t length;
+    size_t fstack_offset;
+    am_iaddr_t cont_return_target;
+    am_handle_t current_closure_handle;
+#ifdef AM_FEATURE_DYNAMIC_WIND
+    am_handle_t dynamic_wind_stack_handle;
+    am_handle_t current_dynamic_wind_entry_handle;
+    am_handle_t current_dynamic_wind_thunk_handle;
+    am_handle_t dynamic_wind_after_stack_handle;
+#endif
+    am_value_t stacks[];
+} am_continuation_t;
+```
+
+#### 3.11 指令集裁剪
+
+`include/opcode.h`：
+
+```c
+enum {
+    ...
+#ifdef AM_FEATURE_DYNAMIC_WIND
+    AM_VM_OP_dynamicwind,
+    AM_VM_OP_dynamicwind_after_before,
+    AM_VM_OP_dynamicwind_before_after,
+    AM_VM_OP_dynamicwind_done,
+    AM_VM_OP_wind,
+#endif
+    AM_VM_OP_COUNT
+};
+```
+
+注意：这会改变 opcode 编号，导致 DW-off 编译出的模块 dump 与 DW-on 不兼容。对于纯 build-variant 场景可以接受。
+
+#### 3.12 编译器
+
+`src/compiler.c`：
+
+```c
+if (compiler_varid_name_equals(ctx, first_varid, L"dynamic-wind") == 0) {
+#ifdef AM_FEATURE_DYNAMIC_WIND
+    return compile_dynamicwind(ctx, handle);
+#else
+    compiler_error(ctx, L"dynamic-wind is disabled in this build");
+    return -1;
+#endif
+}
+```
+
+`compile_dynamicwind()` 整个函数用 `#ifdef` 包起来。
+
+#### 3.13 运行时
+
+`src/runtime.c`：
+
+```c
+#ifdef AM_FEATURE_DYNAMIC_WIND
+static int32_t op_dynamicwind(...) { ... }
+...
+#endif
+
+static int32_t op_capturecc(...) {
+    ...
+#ifdef AM_FEATURE_DYNAMIC_WIND
+    // 保存 DW 快照
+#else
+    // 不保存
+#endif
+    ...
+}
+```
+
+指令分发：
+
+```c
+case AM_VM_OP_capturecc: return op_capturecc(...);
+#ifdef AM_FEATURE_DYNAMIC_WIND
+case AM_VM_OP_dynamicwind: ...
+case AM_VM_OP_wind: ...
+#endif
+```
+
+#### 3.14 进程与续体
+
+`src/process.c`：
+
+- `am_process_create()` / `am_process_destroy()` 中所有 DW 相关代码用 `#ifdef` 包起来。
+- `am_process_capture_continuation()` 不拷贝 DW 栈。
+- `am_process_load_continuation()` 直接 `restore_continuation_snapshot` + 压参，不做 wind 调整。
+- `am_process_gc_root()` 跳过 DW 根。
+- `am_fork_process_copy()` 跳过 DW 拷贝。
+
+#### 3.15 `System.eval`
+
+由于编译器已经禁用 `dynamic-wind`，`System.eval` 中若出现 `dynamic-wind` 会在编译阶段报错。因此 eval 本身不需要额外处理。
+
+#### 3.16 风险
+
+- 构建变体增加测试矩阵：需要同时测 DW-on 和 DW-off。
+- 模块 dump 不兼容。
+- 完全丧失运行时 DW 能力。
+
+## 4. 方案 C（最终推荐）：两层结合
+
+实际落地时，最稳健的做法是**两层都用**：
+
+1. **默认 build**：`AM_FEATURE_DYNAMIC_WIND=1`，同时启用方案 B 的模块级检测和懒分配。这样不用的程序几乎没开销，用的程序正确，且 `System.eval` 正常工作。
+2. **裁剪 build**：`AM_FEATURE_DYNAMIC_WIND=0`，用于不需要 DW 的嵌入式/确定性场景，彻底裁剪代码。
+
+这种组合兼顾了性能、兼容性和代码体积。
+
+## 5. 验证策略
+
+无论选哪套方案，都需要以下测试：
+
+1. **正确性回归**：所有现有 `test_dw_*.scm` 在 DW-on 下必须全过。
+2. **无 DW 程序性能对比**：写一个纯 `call/cc` 密集用例（例如生成器、回溯），分别统计 DW-on / DW-off（或懒分配前后）的时间。
+3. **无 DW 程序内存对比**：统计创建 1000 个空进程后的内存占用。
+4. **eval 边界**：测试“主模块无 DW，eval 字符串里有 DW”的场景，确保懒分配能正确启用。
+5. **宏展开边界**：测试 `with-cleanup` 这种宏展开后才出现 `dynamic-wind` 的场景，确保静态检测不会漏检。
+6. **fork 边界**：测试父进程无 DW 时 fork 是否跳过 DW 拷贝，且子进程独立正确。
+
+## 6. 结论
+
+你的想法**合理且可行**。`dynamic-wind` 与 `call/cc` 虽然是正交的，但当前实现把 DW 快照绑定到了每次 `call/cc`、每个续体、每个进程上，对不使用 DW 的程序确实是浪费。
+
+- 如果追求**最小改动、最大兼容、最大收益**：采用 **方案 B（模块级检测 + 运行时懒分配）**。当前代码结构已经为此打好了大部分基础。
+- 如果追求**绝对零开销、小体积**：再加 **方案 A（编译期全局开关 `AM_FEATURE_DYNAMIC_WIND`）**。
+- 唯一需要谨慎处理的是 **`System.eval`**：要么保守地在启用 eval 时默认保留 DW，要么在 DW-off build 中让 eval 里的 `dynamic-wind` 编译报错。
+
+建议先实现方案 B，验证收益后再决定是否引入方案 A 的编译期开关。
+
+
+
+
+
+
+
+
+以下是一个纯通识性问题，不需要阅读我的代码，仅回答问题，不要修改代码。在非Scheme/Lisp程序员看来，dynamic-wind相当陌生，大多数程序员更熟悉的是try-catch、longjmp、alloc/free、open/close、with...之类的机制。那么，dynamic-wind在Scheme代码中的使用频率如何？从需求分析和用户调研的角度看，dynamic-wind这个功能的价值、优先级如何？如果一个解释器实现没有做dynamic-wind，是否有什么严重的损失？
+
+
+
+这是一个很好的产品/工程判断问题。结论可以一句话概括：
+
+> **`dynamic-wind` 对最终用户（Scheme 应用开发者）的直接使用频率很低，但对语言基础设施和“正确实现 `call/cc` 及其上层抽象”来说，它是一个高价值、高优先级的底层原语。** 如果你的解释器支持 `call/cc`、协程、生成器或动态参数，那么缺少 `dynamic-wind` 会造成**实质性的正确性损失**；如果解释器本身极简、没有这些特性，那 omit 它几乎无妨。
+
+下面分几点展开。
+
+
+## 1. 在 Scheme 代码中的使用频率：很低，且多为间接使用
+
+- **裸用 `dynamic-wind` 的频率**：普通 Scheme 程序员很少直接写 `(dynamic-wind before thunk after)`。它就像 C 里的 `setjmp/longjmp` 细节、JS 引擎里的 `Promise` 微任务队列、Python 的上下文管理器协议——底层重要，但用户更爱用封装好的高层接口。
+- **常见的上层封装**：
+  - `with-output-to-file`、`with-input-from-file`
+  - `parameterize`（动态参数绑定）
+  - `unwind-protect`（类似 try-finally）
+  - `guard`/`with-exception-handler`（异常处理）
+  - 协程/生成器库里的 `yield`/`resume`
+- 这些高层抽象在实现层面往往**依赖** `dynamic-wind` 或与其等价的风 unwinding 机制。所以用户“感觉不到 `dynamic-wind`”，但它藏在大量库后面。
+
+
+## 2. 需求价值：不是“用户要这个功能”，而是“没有它，用户要的功能会出错”
+
+从需求分析角度，`dynamic-wind` 的核心价值不是“提供一个酷炫的 API”，而是**保证动态作用域边界的完整性**。具体场景：
+
+| 场景 | 没有 `dynamic-wind` 会怎样 |
+|---|---|
+| `call/cc` 跳出/跳回某个作用域 | `before`/`after` 可能不对称执行，导致资源泄漏或状态错乱 |
+| 协程/生成器多次进出 | 打开的文件、锁、定时器不会被正确关闭/恢复 |
+| `parameterize` 动态参数 | 参数绑定可能在非局部跳转后无法恢复 |
+| 异常 + 非局部控制 | `finally` 语义失效 |
+
+所以它更像是一个**正确性基础设施**，而不是一个**用户可见的卖点功能**。
+
+
+## 3. 优先级判断：取决于解释器的定位
+
+### 应该高优先实现的情况
+
+如果你的解释器目标包含以下任何一点，`dynamic-wind` 应该和 `call/cc` 一起考虑，甚至是同步实现：
+
+- 支持 `call/cc`（第一类续体）
+- 支持协程、生成器、纤程
+- 支持 `parameterize` 或动态作用域参数
+- 支持异常处理且允许非局部跳转
+- 计划实现并发/线程（不同线程切换需要 wind 调整）
+
+此时它的优先级不亚于 `call/cc` 本身。没有它，`call/cc` 在很多真实用法下是**危险且不正确**的。
+
+### 可以延后或省略的情况
+
+如果你的解释器是：
+
+- 教学用极简 Scheme 子集
+- 不支持 `call/cc`（或 `call/cc` 仅用于 exit，不保存后续恢复）
+- 没有动态参数、没有并发、没有生成器
+- 资源管理完全靠显式 `close!`、`free` 等，且程序员自己保证不跨边界 jump
+
+那么不做 `dynamic-wind` 是一个合理的技术债，不会立刻造成严重损失。很多早期/教学型 Scheme 实现确实没有它。
+
+
+## 4. 与其他机制的对比
+
+| 机制 | 解决的问题 | 与 `dynamic-wind` 的关系 |
+|---|---|---|
+| `try-catch-finally` | 异常传播与清理 | `dynamic-wind` 不处理异常分类，但提供比 `finally` 更强的**进入/退出对称性**，尤其能处理 `longjmp` 式的侧向跳转 |
+| `longjmp` | 非局部退出 | `dynamic-wind` 是 `longjmp` 的对偶补充：它不仅处理“退出”，还处理“重新进入”时的恢复 |
+| `with open(...) as f:` | 资源作用域封装 | 这是 `dynamic-wind` 的**典型上层用法**，但 `with` 本身无法处理 call/cc 导致的多次进入/退出 |
+| `alloc/free` | 显式内存管理 | `dynamic-wind` 不替代 `free`，但保证 `free` 不会被非局部跳转绕过 |
+
+一个关键区别是：**`try-finally` 只保证退出时清理，不保证重新进入时再次初始化**。而 Scheme 的 `call/cc` 允许“跳回”到之前的位置，所以 `dynamic-wind` 必须同时管理 **exit** 和 **re-entry**。
+
+
+## 5. 如果没做 `dynamic-wind`，损失有多严重？
+
+### 严重损失
+
+- **有 `call/cc` 但无 `dynamic-wind`**：用户会写出“看起来能跑、实际资源泄漏/状态不一致”的代码。这是**语义级 bug**，很难排查。
+- **库作者无法构建可靠的 `with-...`/`parameterize`**：很多标准库模式会受限。
+- **协程/生成器方案难以正确落地**：多次 `yield`/`resume` 需要稳定的进入/退出钩子。
+
+### 可接受的损失
+
+- 对于极简解释器或教学演示，用户本来就不会写复杂控制流。
+- 如果语言明确限制 `call/cc` 的使用范围（例如只允许一次性 escape），那么 `dynamic-wind` 的必要性大幅下降。
+
+
+## 6. 用户调研视角的总结
+
+如果你去做一个 Scheme 用户调研，问“你是否需要 `dynamic-wind`”，大概率会得到：
+
+- **普通用户**：没听过，不需要直接写。
+- **库作者/语言实现者**：必须要有，它是 `call/cc` 的正确性基石。
+- **从 Python/JS/C++ 迁移过来的用户**：更关心 `try-catch`、`with`、RAII。但当他们发现 Scheme 的 `call/cc` 能“随意跳来跳去”时，会**间接需要** `dynamic-wind` 来保证这些高层机制不出错。
+
+所以产品优先级上：
+
+> **`dynamic-wind` 不是“用户想要的功能”，而是“让其他高级功能可信赖的使能条件”。**  
+> 如果你的路线图里有 `call/cc`、协程、生成器或 `parameterize`，它应该排在前排；如果没有这些，它可以放在 backlog 靠后位置，甚至直接 omit。
 
 
 ---------------------

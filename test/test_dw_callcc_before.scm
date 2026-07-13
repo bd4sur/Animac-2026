@@ -33,5 +33,5 @@
 (if (not (equal? (get_item out 3) 'thunk))  (set! ok #f))
 (if (not (equal? (get_item out 4) 'before)) (set! ok #f))
 (if ok
-    (display "PASS before call/cc\n")
-    (display "FAIL before call/cc\n"))
+    (display "✅ PASS before call/cc\n")
+    (display "❌ FAIL before call/cc\n"))

@@ -35,5 +35,5 @@
 
 (if (equal? out '(outer-after inner-after thunk inner-before outer-before
                     outer-after inner-after thunk inner-before outer-before))
-    (display "PASS gc stress\n")
-    (display "FAIL gc stress\n"))
+    (display "✅ PASS gc stress\n")
+    (display "❌ FAIL gc stress\n"))

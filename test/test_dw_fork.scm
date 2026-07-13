@@ -20,5 +20,5 @@
 (newline)
 
 (if (equal? out '(after thunk-end forked thunk-start before))
-    (display "PASS fork\n")
-    (display "FAIL fork\n"))
+    (display "✅ PASS fork\n")
+    (display "❌ FAIL fork\n"))

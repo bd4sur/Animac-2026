@@ -25,5 +25,5 @@
 (newline)
 
 (if (equal? out '(outside after thunk before))
-    (display "PASS escape\n")
-    (display "FAIL escape\n"))
+    (display "✅ PASS escape\n")
+    (display "❌ FAIL escape\n"))
