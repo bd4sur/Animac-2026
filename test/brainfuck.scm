@@ -13,6 +13,9 @@
     ( (lambda (x) (S (lambda (y) ((x x) y))))
       (lambda (x) (S (lambda (y) ((x x) y)))))))
 
+; 用于测试
+(define output_buffer "")
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; Brainfuck运行时环境初始化
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -225,7 +228,9 @@
 ; .
 (define o
   (lambda (env)
-    (display (String.fromCharCode (read_data env)))
+    (define ch (String.fromCharCode (read_data env)))
+    (set! output_buffer (String.concat output_buffer ch))
+    (display ch)
     (cp++ env)))
 
 ; ,暂不实现
@@ -303,6 +308,11 @@
     (set! env (ENV_INIT 0 20 "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++. "))
     (bf_interpreter env 0)
     (newline)
+
+    (if (equal? "Hello World!\n" output_buffer)
+      (display "✅ PASS brainfuck\n")
+      (display "❌ FAIL brainfuck\n"))
+
     (newline)
   })
 )

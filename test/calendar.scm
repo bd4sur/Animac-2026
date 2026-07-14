@@ -89,6 +89,7 @@
     (display "====================")(newline)
     (print-calendar year month)
     (display "====================")(newline)
+    (newline)
   ))
 
 (define run

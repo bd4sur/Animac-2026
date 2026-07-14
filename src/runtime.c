@@ -23,11 +23,27 @@
 // ===============================================================================
 
 // 将数值 TPV 统一转换为浮点数
-static am_float_t runtime_number_to_float(am_value_t v) {
+am_float_t am_runtime_number_to_float(am_value_t v) {
     if (am_value_is_float(v)) return am_value_to_float(v);
     if (am_value_is_int(v)) return (am_float_t)am_value_to_int(v);
     if (am_value_is_uint(v)) return (am_float_t)am_value_to_uint(v);
     return 0.0;
+}
+
+// 将数值 TPV 统一（强制）转换为int
+am_int_t am_runtime_number_to_int(am_value_t v) {
+    if (am_value_is_float(v)) return (am_int_t)am_value_to_float(v);
+    if (am_value_is_int(v)) return am_value_to_int(v);
+    if (am_value_is_uint(v)) return (am_int_t)am_value_to_uint(v);
+    return 0;
+}
+
+// 将数值 TPV 统一（强制）转换为uint
+am_int_t am_runtime_number_to_uint(am_value_t v) {
+    if (am_value_is_float(v)) return (am_uint_t)am_value_to_float(v);
+    if (am_value_is_int(v)) return (am_uint_t)am_value_to_int(v);
+    if (am_value_is_uint(v)) return am_value_to_uint(v);
+    return 0;
 }
 
 
@@ -416,8 +432,8 @@ static bool runtime_value_equal(am_process_t *proc, am_value_t a, am_value_t b) 
 
     // 数字按数值比较
     if (am_value_is_number(a) && am_value_is_number(b)) {
-        am_float_t fa = runtime_number_to_float(a);
-        am_float_t fb = runtime_number_to_float(b);
+        am_float_t fa = am_runtime_number_to_float(a);
+        am_float_t fb = am_runtime_number_to_float(b);
         return fa == fb;
     }
 
@@ -1755,57 +1771,109 @@ static int32_t op_evalcleanup(am_runtime_t *rt, am_process_t *proc, am_value_t o
 // 第四类：算术逻辑运算和谓词
 // ===============================================================================
 
+// 数值类型转换规则
+// +  u  i  f
+// u  u  i  f
+// i  i  i  f
+// f  f  f  f
 static int32_t op_add(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)rt;
     (void)operand;
     am_value_t a = am_process_pop_operand(proc);
     am_value_t b = am_process_pop_operand(proc);
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
-    am_float_t result = runtime_number_to_float(b) + runtime_number_to_float(a);
-    am_process_push_operand(proc, am_make_value_of_float(result));
+
+    if (am_value_is_float(a) || am_value_is_float(b)) {
+        am_float_t result = am_runtime_number_to_float(b) + am_runtime_number_to_float(a);
+        am_process_push_operand(proc, am_make_value_of_float(result));
+    }
+    else if (am_value_is_int(a) || am_value_is_int(b)) {
+        am_int_t result = am_runtime_number_to_int(b) + am_runtime_number_to_int(a);
+        am_process_push_operand(proc, am_make_value_of_int(result));
+    }
+    else {
+        am_uint_t result = am_runtime_number_to_uint(b) + am_runtime_number_to_uint(a);
+        am_process_push_operand(proc, am_make_value_of_uint(result));
+    }
+
     am_process_step(proc);
     return 0;
 }
 
 
+// 数值类型转换规则
+// -  u  i  f
+// u  i  i  f
+// i  i  i  f
+// f  f  f  f
 static int32_t op_sub(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)rt;
     (void)operand;
     am_value_t a = am_process_pop_operand(proc);
     am_value_t b = am_process_pop_operand(proc);
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
-    am_float_t result = runtime_number_to_float(b) - runtime_number_to_float(a);
-    am_process_push_operand(proc, am_make_value_of_float(result));
+
+    if (am_value_is_float(a) || am_value_is_float(b)) {
+        am_float_t result = am_runtime_number_to_float(b) - am_runtime_number_to_float(a);
+        am_process_push_operand(proc, am_make_value_of_float(result));
+    }
+    else {
+        am_int_t result = am_runtime_number_to_int(b) - am_runtime_number_to_int(a);
+        am_process_push_operand(proc, am_make_value_of_int(result));
+    }
+
     am_process_step(proc);
     return 0;
 }
 
 
+// 数值类型转换规则
+// *  u  i  f
+// u  u  i  f
+// i  i  i  f
+// f  f  f  f
 static int32_t op_mul(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)rt;
     (void)operand;
     am_value_t a = am_process_pop_operand(proc);
     am_value_t b = am_process_pop_operand(proc);
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
-    am_float_t result = runtime_number_to_float(b) * runtime_number_to_float(a);
-    am_process_push_operand(proc, am_make_value_of_float(result));
+
+    if (am_value_is_float(a) || am_value_is_float(b)) {
+        am_float_t result = am_runtime_number_to_float(b) * am_runtime_number_to_float(a);
+        am_process_push_operand(proc, am_make_value_of_float(result));
+    }
+    else if (am_value_is_int(a) || am_value_is_int(b)) {
+        am_int_t result = am_runtime_number_to_int(b) * am_runtime_number_to_int(a);
+        am_process_push_operand(proc, am_make_value_of_int(result));
+    }
+    else {
+        am_uint_t result = am_runtime_number_to_uint(b) * am_runtime_number_to_uint(a);
+        am_process_push_operand(proc, am_make_value_of_uint(result));
+    }
+
     am_process_step(proc);
     return 0;
 }
 
 
+// 数值类型转换规则
+// /  u  i  f
+// u  f  f  f
+// i  f  f  f
+// f  f  f  f
 static int32_t op_div(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     (void)rt;
     (void)operand;
     am_value_t a = am_process_pop_operand(proc);
     am_value_t b = am_process_pop_operand(proc);
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
-    am_float_t fa = runtime_number_to_float(a);
+    am_float_t fa = am_runtime_number_to_float(a);
     if (fa == 0.0) {
         am_runtime_error(rt, L"[Runtime] 除零错误\n");
         return -1;
     }
-    am_float_t result = runtime_number_to_float(b) / fa;
+    am_float_t result = am_runtime_number_to_float(b) / fa;
     am_process_push_operand(proc, am_make_value_of_float(result));
     am_process_step(proc);
     return 0;
@@ -1818,7 +1886,7 @@ static int32_t op_mod(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
     am_value_t a = am_process_pop_operand(proc);
     am_value_t b = am_process_pop_operand(proc);
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
-    am_float_t result = fmod(runtime_number_to_float(b), runtime_number_to_float(a));
+    am_float_t result = fmod(am_runtime_number_to_float(b), am_runtime_number_to_float(a));
     am_process_push_operand(proc, am_make_value_of_float(result));
     am_process_step(proc);
     return 0;
@@ -1831,7 +1899,7 @@ static int32_t op_pow(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
     am_value_t a = am_process_pop_operand(proc);
     am_value_t b = am_process_pop_operand(proc);
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
-    am_float_t result = pow(runtime_number_to_float(b), runtime_number_to_float(a));
+    am_float_t result = pow(am_runtime_number_to_float(b), am_runtime_number_to_float(a));
     am_process_push_operand(proc, am_make_value_of_float(result));
     am_process_step(proc);
     return 0;
@@ -1857,7 +1925,7 @@ static int32_t op_eqv(am_runtime_t *rt, am_process_t *proc, am_value_t operand) 
     am_value_t b = am_process_pop_operand(proc);
     bool equal;
     if (am_value_is_number(a) && am_value_is_number(b)) {
-        equal = (runtime_number_to_float(a) == runtime_number_to_float(b));
+        equal = (am_runtime_number_to_float(a) == am_runtime_number_to_float(b));
     }
     else {
         equal = (a == b);
@@ -1886,7 +1954,7 @@ static int32_t op_ge(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     am_value_t a = am_process_pop_operand(proc);
     am_value_t b = am_process_pop_operand(proc);
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
-    bool result = runtime_number_to_float(b) >= runtime_number_to_float(a);
+    bool result = am_runtime_number_to_float(b) >= am_runtime_number_to_float(a);
     am_process_push_operand(proc, result ? AM_VALUE_TRUE : AM_VALUE_FALSE);
     am_process_step(proc);
     return 0;
@@ -1899,7 +1967,7 @@ static int32_t op_le(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     am_value_t a = am_process_pop_operand(proc);
     am_value_t b = am_process_pop_operand(proc);
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
-    bool result = runtime_number_to_float(b) <= runtime_number_to_float(a);
+    bool result = am_runtime_number_to_float(b) <= am_runtime_number_to_float(a);
     am_process_push_operand(proc, result ? AM_VALUE_TRUE : AM_VALUE_FALSE);
     am_process_step(proc);
     return 0;
@@ -1912,7 +1980,7 @@ static int32_t op_gt(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     am_value_t a = am_process_pop_operand(proc);
     am_value_t b = am_process_pop_operand(proc);
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
-    bool result = runtime_number_to_float(b) > runtime_number_to_float(a);
+    bool result = am_runtime_number_to_float(b) > am_runtime_number_to_float(a);
     am_process_push_operand(proc, result ? AM_VALUE_TRUE : AM_VALUE_FALSE);
     am_process_step(proc);
     return 0;
@@ -1925,7 +1993,7 @@ static int32_t op_lt(am_runtime_t *rt, am_process_t *proc, am_value_t operand) {
     am_value_t a = am_process_pop_operand(proc);
     am_value_t b = am_process_pop_operand(proc);
     if (!am_value_is_number(a) || !am_value_is_number(b)) return -1;
-    bool result = runtime_number_to_float(b) < runtime_number_to_float(a);
+    bool result = am_runtime_number_to_float(b) < am_runtime_number_to_float(a);
     am_process_push_operand(proc, result ? AM_VALUE_TRUE : AM_VALUE_FALSE);
     am_process_step(proc);
     return 0;
@@ -2047,7 +2115,7 @@ static int32_t op_isnan(am_runtime_t *rt, am_process_t *proc, am_value_t operand
     am_value_t v = am_process_pop_operand(proc);
     bool result = false;
     if (am_value_is_float(v)) {
-        result = isnan(runtime_number_to_float(v));
+        result = isnan(am_runtime_number_to_float(v));
     }
     am_process_push_operand(proc, result ? AM_VALUE_TRUE : AM_VALUE_FALSE);
     am_process_step(proc);

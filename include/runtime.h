@@ -282,6 +282,20 @@ void am_runtime_output(am_runtime_t *rt, const wchar_t *str);
 void am_runtime_error(am_runtime_t *rt, const wchar_t *str);
 
 
+///////////////////////////////////////////
+// 其他辅助函数
+///////////////////////////////////////////
+
+// 将数值 TPV 统一转换为浮点数
+am_float_t am_runtime_number_to_float(am_value_t v);
+
+// 将数值 TPV 统一（强制）转换为int
+am_int_t am_runtime_number_to_int(am_value_t v);
+
+// 将数值 TPV 统一（强制）转换为uint
+am_int_t am_runtime_number_to_uint(am_value_t v);
+
+
 #ifdef __cplusplus
 }
 #endif

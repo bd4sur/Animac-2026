@@ -13,14 +13,6 @@
 // 内部辅助函数
 // ===============================================================================
 
-// 将数值 TPV 统一转换为浮点数
-static am_float_t runtime_number_to_float(am_value_t v) {
-    if (am_value_is_float(v)) return am_value_to_float(v);
-    if (am_value_is_int(v)) return (am_float_t)am_value_to_int(v);
-    if (am_value_is_uint(v)) return (am_float_t)am_value_to_uint(v);
-    return 0.0;
-}
-
 
 // 从操作数栈中弹出一个数值，统一转换为 float。
 // 成功返回 true，失败返回 false。
@@ -138,8 +130,20 @@ int32_t am_native_String_atom_to_string(am_runtime_t *rt, am_process_t *proc) {
         return native_push_wstring_buf(proc, L"#undefined", 10);
     }
 
-    if (am_value_is_number(v)) {
-        am_float_t f = runtime_number_to_float(v);
+    if (am_value_is_uint(v)) {
+        am_uint_t n = am_runtime_number_to_uint(v);
+        swprintf(buf, 128, L"%lu", (uint64_t)n);
+        return native_push_wstring_buf(proc, buf, wcslen(buf));
+    }
+
+    if (am_value_is_int(v)) {
+        am_int_t n = am_runtime_number_to_int(v);
+        swprintf(buf, 128, L"%ld", (int64_t)n);
+        return native_push_wstring_buf(proc, buf, wcslen(buf));
+    }
+
+    if (am_value_is_float(v)) {
+        am_float_t f = am_runtime_number_to_float(v);
         swprintf(buf, 128, L"%g", (double)f);
         return native_push_wstring_buf(proc, buf, wcslen(buf));
     }

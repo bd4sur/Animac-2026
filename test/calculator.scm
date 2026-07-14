@@ -356,9 +356,14 @@
     (newline)
     (display "预期结果：320") (newline)
     (display "实际结果：")
-    (display (eval ast))
-
+    (define output (eval ast))
+    (display output)
     (newline)
+
+    (if (equal? output 320)
+        (display "✅ PASS calculator\n")
+        (display "❌ FAIL calculator\n"))
+
     (newline)
   })
 )
