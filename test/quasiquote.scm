@@ -17,6 +17,21 @@
     (define a 100)
     (define qq `("a=${" ,(car `((a ,(* a 2) ,a) 1 a ,a ,(* a a))) "}"))
 
+    (display "期望输出：(100)")(newline)
+    (display "实际输出：")
+    (display `(,'a))
+    (newline)
+
+    (display "期望输出：('a)")(newline)
+    (display "实际输出：")
+    (display `('a))
+    (newline)
+
+    (display "期望输出：(100)")(newline)
+    (display "实际输出：")
+    (display `(,a))
+    (newline)
+
     ;; 直接输出
     (display "期望输出：a=${(a 200 100)}")(newline)
     (display "实际输出：")

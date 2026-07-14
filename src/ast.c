@@ -789,8 +789,8 @@ int32_t am_ast_merge(am_ast_t *importer, am_ast_t *importee, int32_t order) {
 size_t am_build_symbol_vocabulary(am_ast_t *ast) {
     if (!ast || !ast->symbol_vocab || !ast->tokens) return 0;
 
-    // 预置24个关键字到symbol_vocab的前24个条目
-    for (size_t i = 0; i < AM_KEYWORDS_NUM && AM_KEYWORDS[i]; i++) {
+    // 预置所有关键字到symbol_vocab的前端条目，索引与AM_VALUE_KW_*常量一致
+    for (size_t i = 0; AM_KEYWORDS[i]; i++) {
         size_t idx;
         ast->symbol_vocab = am_vocab_insert(ast->alloc, ast->symbol_vocab, (wchar_t *)AM_KEYWORDS[i], &idx);
         if (!ast->symbol_vocab || idx == SIZE_MAX) return 0;

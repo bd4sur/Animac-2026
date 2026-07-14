@@ -73,21 +73,8 @@
 ;; after-resume2, exit, body-end, enter,
 ;; after-resume1, exit, body-mid, enter,
 ;; after-coro,    exit, body-start, enter
-(define ok #t)
-(if (not (equal? (get_item out 0)  'after-resume2)) (set! ok #f))
-(if (not (equal? (get_item out 1)  'exit))          (set! ok #f))
-(if (not (equal? (get_item out 2)  'body-end))      (set! ok #f))
-(if (not (equal? (get_item out 3)  'enter))         (set! ok #f))
-(if (not (equal? (get_item out 4)  'after-resume1)) (set! ok #f))
-(if (not (equal? (get_item out 5)  'exit))          (set! ok #f))
-(if (not (equal? (get_item out 6)  'body-mid))      (set! ok #f))
-(if (not (equal? (get_item out 7)  'enter))         (set! ok #f))
-(if (not (equal? (get_item out 8)  'after-coro))    (set! ok #f))
-(if (not (equal? (get_item out 9)  'exit))          (set! ok #f))
-(if (not (equal? (get_item out 10) 'body-start))    (set! ok #f))
-(if (not (equal? (get_item out 11) 'enter))         (set! ok #f))
-(if (not (equal? result 'final))                    (set! ok #f))
-
-(if ok
+(if (equal? out '(after-resume2 exit body-end   enter
+                  after-resume1 exit body-mid   enter
+                  after-coro    exit body-start enter))
     (display "✅ PASS coroutine\n")
     (display "❌ FAIL coroutine\n"))

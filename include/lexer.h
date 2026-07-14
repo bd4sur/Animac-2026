@@ -41,7 +41,7 @@ typedef struct am_token_t {
 } am_token_t;
 
 // 关键字
-#define AM_KEYWORDS_NUM (24)
+#define AM_KEYWORDS_NUM (28)
 extern const wchar_t* AM_KEYWORDS[];
 
 

@@ -5887,6 +5887,75 @@ case AM_VM_OP_wind: ...
 
 ---------------------
 
+# 2026-07-14
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。
+
+当前 @src/macro.c 的实现存在问题，可能跟symbol被错误地加入AST的var_vocab有关。你应当在 @main.c 中取消注释显示AST和IL代码的代码，以便debug。系统中安装了WSL（Ubuntu 24.04），具备gcc、make、gdb等工具。你可以使用WSL进行编译构建和测试。
+
+需要强调的是，在QUOTE列表内部的identifier，不论带不带前导单引号，都是symbol。在Quasiquote列表内部的identifier，带前导逗号的是varible；不带前导逗号的，不论带不带前导单引号，都是symbol。
+
+请你定位并修复问题。用以下代码可复现该问题：
+
+```
+(dynamic-wind
+  (lambda () 1 )
+  (lambda () 2 )
+  (lambda () 'after))
+
+;; 未出现过的symbol，只有一项不会触发错误
+; '(a)
+;; 未出现过的symbol位于首项，且有两项及以上会触发错误 [Macro Error] invalid let-syntax bindings
+'(a 1)
+;; 上面出现过的symbol出现在首项，不会触发错误
+; '(after 1)
+```
+
+作为对比，  @test/test_dw_fork.scm 不会报错。
+
+系统中安装了WSL（Ubuntu 24.04），具备gcc、make、gdb等工具。你可以使用WSL进行编译构建和测试。你可以使用WSL进行编译构建和测试。保证 @main.c 编译运行正确，使用 @test/test.scm 进行回归测试。除了上面提到的几个测试输入外，你可以自行构造测试用例进行测试。你可以使用WSL进行编译构建和测试。
+
+
+
+已定位并修复问题。以下是关键发现和改动。
+
+## 根因
+
+复现时打开 `main.c` 的 AST/IL 输出，发现错误并不是真正的 `let-syntax`，而是：
+
+1. **symbol 表与宏关键字 symbol id 冲突**  
+   `AM_KEYWORDS` 已包含 `define-syntax`、`let-syntax`、`letrec-syntax`、`syntax-rules` 共 28 个关键字，但 `AM_KEYWORDS_NUM` 仍是 24。`am_build_symbol_vocabulary` 只预置了前 24 个关键字，导致 `let-syntax` 等固定 symbol id（24–27）未被占用。用户 symbol 按顺序插入后会抢到这些 id。  
+   在 `'(a 1)` 中，首项 symbol `'a` 恰好拿到 `let-syntax` 的 symbol id，宏展开器因此把它误判为 `let-syntax`，从而报 `invalid let-syntax bindings`。
+
+2. **quote/quasiquote 内的标识符被错误加入 `var_vocab`**  
+   `am_build_variable_vocabulary` 在解析前就把所有 `IDENTIFIER` token 写入 `var_vocab`，包括 `'(a 1)` 里的 `a`。这些标识符语义上应是 symbol，不应该出现在变量表中。
+
+## 修复
+
+- **`include/lexer.h`**：将 `AM_KEYWORDS_NUM` 从 24 改为 28。
+- **`src/ast.c`**：`am_build_symbol_vocabulary` 改为预置 `AM_KEYWORDS` 中全部关键字，确保 symbol id 与 `AM_VALUE_KW_*` 常量一致，避免用户 symbol 冲突。
+- **`src/parser.c`**：
+  - 移除 `am_build_variable_vocabulary(ast)` 的调用；
+  - 在 `parse_identifier` 中通过 `ensure_varid` 按需注册变量。quote/quasiquote 分支在前面已经把标识符转成 symbol，不会走到变量注册逻辑，因此不再污染 `var_vocab`。
+- **`main.c`**：AST/IL 调试输出已临时打开用于定位，现已重新注释掉。
+
+## 验证
+
+在 WSL 下 `make main` 重新编译后，以下用例均通过：
+
+| 用例 | 结果 |
+|------|------|
+| `test/test_repro.scm`（你给的复现） | ✅ 通过 |
+| `test/test_dw_fork.scm` | ✅ PASS fork |
+| `test/test.scm` | ✅ 完整回归通过 |
+| `test/test_macro.scm` | ✅ 全部 PASS |
+| `test/test_mec.scm` | ✅ 全部 PASS |
+| `test/test_dw_complex_macro.scm` | ✅ PASS |
+| 自定义 quote/quasiquote 边界用例 | ✅ 行为正确 |
+
+修改后的 `var_vocab` 不再包含 quote/quasiquote 内部的 symbol（如 `test/test_dw_fork.scm` 中的 `after`、`before` 等已不在 `var_vocab` 中），`symbol_vocab` 也正确预留了所有关键字位置。
 
 ---------------------
 

@@ -986,38 +986,48 @@ static size_t parse_identifier(parser_ctx_t *ctx, size_t index) { PARSER_LOG("Id
                         return index;
                     }
 
+                    // 按需将实际变量注册到 var_vocab；quote/quasiquote 中的标识符
+                    // 在前面已被转换为 symbol，不会走到这里，因此不会污染 var_vocab。
+                    am_varid_t varid = ensure_varid(ctx, var_text);
+                    if (varid == SIZE_MAX) {
+                        free(var_text);
+                        parser_set_error(ctx, L"failed to create varid");
+                        return index;
+                    }
+                    tok->id = (size_t)varid;
+
                     // (import ...) / (native ...) 的第二个元素保持原形，不参与 Alpha-renaming
                     int special_app = special_app_stack_top(ctx);
                     if (special_app != AM_PARSER_SPECIAL_APP_NONE) {
-                        if (am_list_set(ctx->ast->alloc, ctx->ast->var_type, (size_t)tok->id,
+                        if (am_list_set(ctx->ast->alloc, ctx->ast->var_type, (size_t)varid,
                                         am_make_value_of_uint(AM_VAR_TYPE_OLD)) != 0) {
                             free(var_text);
                             parser_set_error(ctx, L"failed to set var_type");
                             return index;
                         }
-                        value = am_make_value_of_varid((am_varid_t)tok->id);
+                        value = am_make_value_of_varid(varid);
                         free(var_text);
                     }
                     // EXT_REF 格式（前缀.后缀）保持原形，不参与 Alpha-renaming
-                    else if (am_ast_check_ext_ref(ctx->ast, (am_varid_t)tok->id) == 0) {
-                        if (am_list_set(ctx->ast->alloc, ctx->ast->var_type, (size_t)tok->id,
+                    else if (am_ast_check_ext_ref(ctx->ast, varid) == 0) {
+                        if (am_list_set(ctx->ast->alloc, ctx->ast->var_type, (size_t)varid,
                                         am_make_value_of_uint(AM_VAR_TYPE_EXT_REF)) != 0) {
                             free(var_text);
                             parser_set_error(ctx, L"failed to set var_type");
                             return index;
                         }
-                        value = am_make_value_of_varid((am_varid_t)tok->id);
+                        value = am_make_value_of_varid(varid);
                         free(var_text);
                     }
                     // 全局内置变量不做 Alpha-renaming
                     else if (is_global_builtin_variable(var_text)) {
-                        value = am_make_value_of_varid((am_varid_t)tok->id);
+                        value = am_make_value_of_varid(varid);
                         free(var_text);
                     }
                     else {
                         // 普通变量：解析阶段保持原 varid，var_type 保持 OLD，
                         // Alpha-renaming 在后续独立的 ARN 阶段完成
-                        value = am_make_value_of_varid((am_varid_t)tok->id);
+                        value = am_make_value_of_varid(varid);
                         free(var_text);
                     }
                 }
@@ -1982,9 +1992,9 @@ am_ast_t *am_parse(am_allocator_t *alloc, wchar_t *code, wchar_t *absolute_path,
         return NULL;
     }
 
-    // 构建词汇表
+    // 构建词汇表：symbol 预置所有关键字；变量在 parse_identifier 中按需注册，
+    // 避免把 quote/quasiquote 内部的标识符错误加入 var_vocab。
     am_build_symbol_vocabulary(ast);
-    am_build_variable_vocabulary(ast);
 
     // 初始化解析器上下文
     parser_ctx_t ctx;

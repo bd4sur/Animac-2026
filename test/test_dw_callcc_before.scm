@@ -26,12 +26,6 @@
 (display out)
 (newline)
 
-(define ok #t)
-(if (not (equal? (get_item out 0) 'after))  (set! ok #f))
-(if (not (equal? (get_item out 1) 'thunk))  (set! ok #f))
-(if (not (equal? (get_item out 2) 'after))  (set! ok #f))
-(if (not (equal? (get_item out 3) 'thunk))  (set! ok #f))
-(if (not (equal? (get_item out 4) 'before)) (set! ok #f))
-(if ok
+(if (equal? out '(after thunk after thunk before))
     (display "✅ PASS before call/cc\n")
     (display "❌ FAIL before call/cc\n"))
