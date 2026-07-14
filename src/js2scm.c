@@ -1,5 +1,7 @@
 /* JS -> Scheme (non-standard) mechanical translator.
  * Migrated from jstoscm.c into the Animac project as a reusable library.
+ *
+ * 宽字符版本：内部全程使用 wchar_t 处理，不再通过 UTF-8 中转。
  */
 
 #include <stdio.h>
@@ -8,6 +10,7 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <wchar.h>
+#include <wctype.h>
 #include <setjmp.h>
 
 #include "js2scm.h"
@@ -26,7 +29,7 @@ static void *xrealloc(void *p, size_t sz) {
 /* ======================== String builder ======================== */
 
 typedef struct {
-    char *buf;
+    wchar_t *buf;
     size_t len;
     size_t cap;
 } SB;
@@ -48,37 +51,33 @@ static void sb_grow(SB *sb, size_t need) {
     if (sb->len + need + 1 <= sb->cap) return;
     size_t newcap = sb->cap ? sb->cap * 2 : 256;
     while (newcap < sb->len + need + 1) newcap *= 2;
-    sb->buf = (char *)xrealloc(sb->buf, newcap);
+    sb->buf = (wchar_t *)xrealloc(sb->buf, newcap * sizeof(wchar_t));
     sb->cap = newcap;
 }
 
-static void sb_append(SB *sb, const char *s) {
+static void sb_append(SB *sb, const wchar_t *s) {
     if (!s) return;
-    size_t n = strlen(s);
+    size_t n = wcslen(s);
     sb_grow(sb, n);
-    memcpy(sb->buf + sb->len, s, n);
+    memcpy(sb->buf + sb->len, s, n * sizeof(wchar_t));
     sb->len += n;
-    sb->buf[sb->len] = '\0';
+    sb->buf[sb->len] = L'\0';
 }
 
-static void sb_appendf(SB *sb, const char *fmt, ...) {
+static void sb_appendf(SB *sb, const wchar_t *fmt, ...) {
     va_list ap;
+    wchar_t tmp[1024];
     va_start(ap, fmt);
-    int n = vsnprintf(NULL, 0, fmt, ap);
+    int n = vswprintf(tmp, sizeof(tmp) / sizeof(tmp[0]), fmt, ap);
     va_end(ap);
-    if (n < 0) return;
-    sb_grow(sb, (size_t)n);
-    va_start(ap, fmt);
-    vsnprintf(sb->buf + sb->len, (size_t)n + 1, fmt, ap);
-    va_end(ap);
-    sb->len += (size_t)n;
+    if (n > 0) sb_append(sb, tmp);
 }
 
-static char *xstrdup(const char *s) {
+static wchar_t *xstrdup(const wchar_t *s) {
     if (!s) return NULL;
-    size_t n = strlen(s) + 1;
-    char *p = (char *)malloc(n);
-    if (p) memcpy(p, s, n);
+    size_t n = wcslen(s) + 1;
+    wchar_t *p = (wchar_t *)malloc(n * sizeof(wchar_t));
+    if (p) memcpy(p, s, n * sizeof(wchar_t));
     return p;
 }
 
@@ -98,7 +97,7 @@ typedef enum {
 
 typedef struct {
     TokType type;
-    char *value;
+    wchar_t *value;
     int line;
     int col;
 } Token;
@@ -115,7 +114,7 @@ static void tl_init(TokList *tl) {
     tl->cap = 0;
 }
 
-static void tl_add(TokList *tl, TokType type, const char *value, int line, int col) {
+static void tl_add(TokList *tl, TokType type, const wchar_t *value, int line, int col) {
     if (tl->n + 1 > tl->cap) {
         tl->cap = tl->cap ? tl->cap * 2 : 64;
         tl->data = (Token *)xrealloc(tl->data, tl->cap * sizeof(Token));
@@ -127,35 +126,35 @@ static void tl_add(TokList *tl, TokType type, const char *value, int line, int c
     t->col = col;
 }
 
-static void lex_error(int line, int col, const char *fmt, ...) {
+static void lex_error(int line, int col, const wchar_t *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     fprintf(stderr, "词法错误 @ %d:%d: ", line, col);
-    vfprintf(stderr, fmt, ap);
+    vfwprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
     longjmp(g_err_jmp, 1);
 }
 
-static Token *tokenize(const char *src, int *out_count) {
+static Token *tokenize(const wchar_t *src, int *out_count) {
     TokList tl;
     tl_init(&tl);
     int i = 0;
-    int len = (int)strlen(src);
+    int len = (int)wcslen(src);
     int line = 1, col = 1;
     int parenDepth = 0, bracketDepth = 0, braceDepth = 0;
 
-#define PEEK(off) ((i + (off) < len) ? src[i + (off)] : '\0')
+#define PEEK(off) ((i + (off) < len) ? src[i + (off)] : L'\0')
 
     while (i < len) {
-        char ch = PEEK(0);
+        wchar_t ch = PEEK(0);
 
-        if (ch == ' ' || ch == '\t' || ch == '\r') {
+        if (ch == L' ' || ch == L'\t' || ch == L'\r') {
             i++; col++;
             continue;
         }
 
-        if (ch == '\n') {
+        if (ch == L'\n') {
             i++; line++; col = 1;
             if (parenDepth == 0 && bracketDepth == 0) {
                 if (tl.n == 0 || tl.data[tl.n - 1].type != T_SEMI)
@@ -165,86 +164,86 @@ static Token *tokenize(const char *src, int *out_count) {
         }
 
         /* comments */
-        if (ch == '/' && PEEK(1) == '/') {
+        if (ch == L'/' && PEEK(1) == L'/') {
             i += 2; col += 2;
-            while (i < len && PEEK(0) != '\n') { i++; col++; }
+            while (i < len && PEEK(0) != L'\n') { i++; col++; }
             continue;
         }
-        if (ch == '/' && PEEK(1) == '*') {
+        if (ch == L'/' && PEEK(1) == L'*') {
             i += 2; col += 2;
             while (i < len) {
-                if (PEEK(0) == '*' && PEEK(1) == '/') {
+                if (PEEK(0) == L'*' && PEEK(1) == L'/') {
                     i += 2; col += 2;
                     break;
                 }
-                if (PEEK(0) == '\n') { i++; line++; col = 1; }
+                if (PEEK(0) == L'\n') { i++; line++; col = 1; }
                 else { i++; col++; }
             }
             continue;
         }
 
         /* number */
-        if (isdigit((unsigned char)ch) || (ch == '.' && isdigit((unsigned char)PEEK(1)))) {
+        if (iswdigit((wint_t)ch) || (ch == L'.' && iswdigit((wint_t)PEEK(1)))) {
             int startLine = line, startCol = col;
             SB num; sb_init(&num);
             int hasDigits = 0;
-            while (i < len && isdigit((unsigned char)PEEK(0))) {
-                sb_appendf(&num, "%c", PEEK(0));
+            while (i < len && iswdigit((wint_t)PEEK(0))) {
+                sb_appendf(&num, L"%lc", (wint_t)PEEK(0));
                 i++; col++; hasDigits = 1;
             }
-            if (PEEK(0) == '.') {
-                sb_appendf(&num, "%c", PEEK(0));
+            if (PEEK(0) == L'.') {
+                sb_appendf(&num, L"%lc", (wint_t)PEEK(0));
                 i++; col++;
-                while (i < len && isdigit((unsigned char)PEEK(0))) {
-                    sb_appendf(&num, "%c", PEEK(0));
+                while (i < len && iswdigit((wint_t)PEEK(0))) {
+                    sb_appendf(&num, L"%lc", (wint_t)PEEK(0));
                     i++; col++; hasDigits = 1;
                 }
             }
-            if (PEEK(0) == 'e' || PEEK(0) == 'E') {
-                char next = PEEK(1);
-                if (isdigit((unsigned char)next) ||
-                    ((next == '+' || next == '-') && isdigit((unsigned char)PEEK(2)))) {
-                    sb_appendf(&num, "%c", PEEK(0));
+            if (PEEK(0) == L'e' || PEEK(0) == L'E') {
+                wchar_t next = PEEK(1);
+                if (iswdigit((wint_t)next) ||
+                    ((next == L'+' || next == L'-') && iswdigit((wint_t)PEEK(2)))) {
+                    sb_appendf(&num, L"%lc", (wint_t)PEEK(0));
                     i++; col++;
-                    if (next == '+' || next == '-') {
-                        sb_appendf(&num, "%c", PEEK(0));
+                    if (next == L'+' || next == L'-') {
+                        sb_appendf(&num, L"%lc", (wint_t)PEEK(0));
                         i++; col++;
                     }
-                    while (i < len && isdigit((unsigned char)PEEK(0))) {
-                        sb_appendf(&num, "%c", PEEK(0));
+                    while (i < len && iswdigit((wint_t)PEEK(0))) {
+                        sb_appendf(&num, L"%lc", (wint_t)PEEK(0));
                         i++; col++; hasDigits = 1;
                     }
                 }
             }
-            if (!hasDigits) lex_error(line, col, "非法数字 \"%s\"", num.buf);
+            if (!hasDigits) lex_error(line, col, L"非法数字 \"%ls\"", num.buf);
             tl_add(&tl, T_NUM, num.buf, startLine, startCol);
             sb_free(&num);
             continue;
         }
 
         /* string */
-        if (ch == '"') {
+        if (ch == L'"') {
             int startLine = line, startCol = col;
             i++; col++;
             SB str; sb_init(&str);
-            while (i < len && PEEK(0) != '"') {
-                if (PEEK(0) == '\\') {
-                    sb_appendf(&str, "%c", PEEK(0));
+            while (i < len && PEEK(0) != L'"') {
+                if (PEEK(0) == L'\\') {
+                    sb_appendf(&str, L"%lc", (wint_t)PEEK(0));
                     i++; col++;
                     if (i < len) {
-                        sb_appendf(&str, "%c", PEEK(0));
-                        if (PEEK(0) == '\n') { line++; col = 1; }
+                        sb_appendf(&str, L"%lc", (wint_t)PEEK(0));
+                        if (PEEK(0) == L'\n') { line++; col = 1; }
                         else { col++; }
                         i++;
                     }
                     continue;
                 }
-                sb_appendf(&str, "%c", PEEK(0));
-                if (PEEK(0) == '\n') { line++; col = 1; }
+                sb_appendf(&str, L"%lc", (wint_t)PEEK(0));
+                if (PEEK(0) == L'\n') { line++; col = 1; }
                 else { col++; }
                 i++;
             }
-            if (PEEK(0) != '"') lex_error(startLine, startCol, "未终止的字符串");
+            if (PEEK(0) != L'"') lex_error(startLine, startCol, L"未终止的字符串");
             i++; col++;
             tl_add(&tl, T_STR, str.buf, startLine, startCol);
             sb_free(&str);
@@ -252,64 +251,64 @@ static Token *tokenize(const char *src, int *out_count) {
         }
 
         /* identifier / keyword */
-        if (isalpha((unsigned char)ch) || ch == '_' || ch == '$') {
+        if (iswalpha((wint_t)ch) || ch == L'_' || ch == L'$') {
             int startLine = line, startCol = col;
             SB id; sb_init(&id);
-            while (i < len && (isalnum((unsigned char)PEEK(0)) || PEEK(0) == '_' || PEEK(0) == '$' || PEEK(0) == '.')) {
-                sb_appendf(&id, "%c", PEEK(0));
+            while (i < len && (iswalnum((wint_t)PEEK(0)) || PEEK(0) == L'_' || PEEK(0) == L'$' || PEEK(0) == L'.')) {
+                sb_appendf(&id, L"%lc", (wint_t)PEEK(0));
                 i++; col++;
             }
             TokType type = T_ID;
-            if (strcmp(id.buf, "if") == 0) type = T_IF;
-            else if (strcmp(id.buf, "else") == 0) type = T_ELSE;
-            else if (strcmp(id.buf, "while") == 0) type = T_WHILE;
-            else if (strcmp(id.buf, "var") == 0) type = T_VAR;
-            else if (strcmp(id.buf, "function") == 0) type = T_FUNCTION;
-            else if (strcmp(id.buf, "return") == 0) type = T_RETURN;
-            else if (strcmp(id.buf, "continue") == 0) type = T_CONTINUE;
-            else if (strcmp(id.buf, "break") == 0) type = T_BREAK;
-            else if (strcmp(id.buf, "true") == 0) type = T_TRUE;
-            else if (strcmp(id.buf, "false") == 0) type = T_FALSE;
-            else if (strcmp(id.buf, "null") == 0) type = T_NULL;
-            else if (strcmp(id.buf, "undefined") == 0) type = T_UNDEFINED;
+            if (wcscmp(id.buf, L"if") == 0) type = T_IF;
+            else if (wcscmp(id.buf, L"else") == 0) type = T_ELSE;
+            else if (wcscmp(id.buf, L"while") == 0) type = T_WHILE;
+            else if (wcscmp(id.buf, L"var") == 0) type = T_VAR;
+            else if (wcscmp(id.buf, L"function") == 0) type = T_FUNCTION;
+            else if (wcscmp(id.buf, L"return") == 0) type = T_RETURN;
+            else if (wcscmp(id.buf, L"continue") == 0) type = T_CONTINUE;
+            else if (wcscmp(id.buf, L"break") == 0) type = T_BREAK;
+            else if (wcscmp(id.buf, L"true") == 0) type = T_TRUE;
+            else if (wcscmp(id.buf, L"false") == 0) type = T_FALSE;
+            else if (wcscmp(id.buf, L"null") == 0) type = T_NULL;
+            else if (wcscmp(id.buf, L"undefined") == 0) type = T_UNDEFINED;
             tl_add(&tl, type, id.buf, startLine, startCol);
             sb_free(&id);
             continue;
         }
 
         /* two-char operators */
-        if (ch == '=' && PEEK(1) == '=') { i += 2; col += 2; tl_add(&tl, T_EQ, NULL, line, col - 2); continue; }
-        if (ch == '=' && PEEK(1) == '>') { i += 2; col += 2; tl_add(&tl, T_ARROW, NULL, line, col - 2); continue; }
-        if (ch == '<' && PEEK(1) == '=') { i += 2; col += 2; tl_add(&tl, T_LE, NULL, line, col - 2); continue; }
-        if (ch == '>' && PEEK(1) == '=') { i += 2; col += 2; tl_add(&tl, T_GE, NULL, line, col - 2); continue; }
-        if (ch == '|' && PEEK(1) == '|') { i += 2; col += 2; tl_add(&tl, T_OR, NULL, line, col - 2); continue; }
-        if (ch == '&' && PEEK(1) == '&') { i += 2; col += 2; tl_add(&tl, T_AND, NULL, line, col - 2); continue; }
-        if (ch == '+' && PEEK(1) == '+') { i += 2; col += 2; tl_add(&tl, T_INC, NULL, line, col - 2); continue; }
-        if (ch == '-' && PEEK(1) == '-') { i += 2; col += 2; tl_add(&tl, T_DEC, NULL, line, col - 2); continue; }
+        if (ch == L'=' && PEEK(1) == L'=') { i += 2; col += 2; tl_add(&tl, T_EQ, NULL, line, col - 2); continue; }
+        if (ch == L'=' && PEEK(1) == L'>') { i += 2; col += 2; tl_add(&tl, T_ARROW, NULL, line, col - 2); continue; }
+        if (ch == L'<' && PEEK(1) == L'=') { i += 2; col += 2; tl_add(&tl, T_LE, NULL, line, col - 2); continue; }
+        if (ch == L'>' && PEEK(1) == L'=') { i += 2; col += 2; tl_add(&tl, T_GE, NULL, line, col - 2); continue; }
+        if (ch == L'|' && PEEK(1) == L'|') { i += 2; col += 2; tl_add(&tl, T_OR, NULL, line, col - 2); continue; }
+        if (ch == L'&' && PEEK(1) == L'&') { i += 2; col += 2; tl_add(&tl, T_AND, NULL, line, col - 2); continue; }
+        if (ch == L'+' && PEEK(1) == L'+') { i += 2; col += 2; tl_add(&tl, T_INC, NULL, line, col - 2); continue; }
+        if (ch == L'-' && PEEK(1) == L'-') { i += 2; col += 2; tl_add(&tl, T_DEC, NULL, line, col - 2); continue; }
 
         /* single-char punctuation / operators */
         TokType stype = T_EOF;
         switch (ch) {
-            case '(': stype = T_LPAREN;   parenDepth++;   break;
-            case ')': stype = T_RPAREN;   parenDepth--; if (parenDepth < 0) parenDepth = 0; break;
-            case '[': stype = T_LBRACKET; bracketDepth++; break;
-            case ']': stype = T_RBRACKET; bracketDepth--; if (bracketDepth < 0) bracketDepth = 0; break;
-            case '{': stype = T_LBRACE;   braceDepth++;   break;
-            case '}': stype = T_RBRACE;   braceDepth--; if (braceDepth < 0) braceDepth = 0; break;
-            case ';': stype = T_SEMI;     break;
-            case ',': stype = T_COMMA;    break;
-            case ':': stype = T_COLON;    break;
-            case '?': stype = T_QUESTION; break;
-            case '!': stype = T_NOT;      break;
-            case '+': stype = T_PLUS;     break;
-            case '-': stype = T_MINUS;    break;
-            case '*': stype = T_MUL;      break;
-            case '/': stype = T_DIV;      break;
-            case '%': stype = T_MOD;      break;
-            case '=': stype = T_ASSIGN;   break;
-            case '^': stype = T_POW;      break;
-            case '<': stype = T_LT;       break;
-            case '>': stype = T_GT;       break;
+            case L'(': stype = T_LPAREN;   parenDepth++;   break;
+            case L')': stype = T_RPAREN;   parenDepth--; if (parenDepth < 0) parenDepth = 0; break;
+            case L'[': stype = T_LBRACKET; bracketDepth++; break;
+            case L']': stype = T_RBRACKET; bracketDepth--; if (bracketDepth < 0) bracketDepth = 0; break;
+            case L'{': stype = T_LBRACE;   braceDepth++;   break;
+            case L'}': stype = T_RBRACE;   braceDepth--; if (braceDepth < 0) braceDepth = 0; break;
+            case L';': stype = T_SEMI;     break;
+            case L',': stype = T_COMMA;    break;
+            case L':': stype = T_COLON;    break;
+            case L'?': stype = T_QUESTION; break;
+            case L'!': stype = T_NOT;      break;
+            case L'+': stype = T_PLUS;     break;
+            case L'-': stype = T_MINUS;    break;
+            case L'*': stype = T_MUL;      break;
+            case L'/': stype = T_DIV;      break;
+            case L'%': stype = T_MOD;      break;
+            case L'=': stype = T_ASSIGN;   break;
+            case L'^': stype = T_POW;      break;
+            case L'<': stype = T_LT;       break;
+            case L'>': stype = T_GT;       break;
         }
         if (stype != T_EOF) {
             tl_add(&tl, stype, NULL, line, col);
@@ -317,7 +316,7 @@ static Token *tokenize(const char *src, int *out_count) {
             continue;
         }
 
-        lex_error(line, col, "非法字符 \"%c\"", ch);
+        lex_error(line, col, L"非法字符 \"%lc\"", (wint_t)ch);
     }
 
     tl_add(&tl, T_EOF, NULL, line, col);
@@ -343,7 +342,7 @@ typedef enum {
 typedef struct Node Node;
 struct Node {
     NodeType type;
-    char *value;                 /* id/number/string/bool/op/varname/funcname */
+    wchar_t *value;              /* id/number/string/bool/op/varname/funcname */
     Node **items;
     int n_items;
     int cap_items;
@@ -355,7 +354,7 @@ struct Node {
     Node *expr;
     Node *obj;
     Node *idx;
-    char **params;
+    wchar_t **params;
     int n_params;
     int cap_params;
 };
@@ -387,7 +386,7 @@ static void nl_add(NodeList *l, Node *n) {
 }
 
 typedef struct {
-    char **data;
+    wchar_t **data;
     int n;
     int cap;
 } ParamList;
@@ -398,10 +397,10 @@ static void pl_init(ParamList *p) {
     p->cap = 0;
 }
 
-static void pl_add(ParamList *p, const char *s) {
+static void pl_add(ParamList *p, const wchar_t *s) {
     if (p->n + 1 > p->cap) {
         p->cap = p->cap ? p->cap * 2 : 4;
-        p->data = (char **)xrealloc(p->data, p->cap * sizeof(char *));
+        p->data = (wchar_t **)xrealloc(p->data, p->cap * sizeof(wchar_t *));
     }
     p->data[p->n++] = xstrdup(s);
 }
@@ -440,12 +439,12 @@ static Token *expect(TokType t) {
     return advance_tok();
 }
 
-static void parse_error(const char *fmt, ...) {
+static void parse_error(const wchar_t *fmt, ...) {
     Token *tok = peek();
     va_list ap;
     va_start(ap, fmt);
     fprintf(stderr, "语法错误 @ %d:%d: ", tok->line, tok->col);
-    vfprintf(stderr, fmt, ap);
+    vfwprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
     longjmp(g_err_jmp, 1);
@@ -478,7 +477,7 @@ static Node *parse_add(void);
 static Node *parse_mul(void);
 static Node *parse_exp(void);
 
-static Node *new_binary(const char *op, Node *l, Node *r) {
+static Node *new_binary(const wchar_t *op, Node *l, Node *r) {
     Node *n = new_node(N_BINARY);
     n->value = xstrdup(op);
     n->left = l;
@@ -664,25 +663,25 @@ static Node *parse_ternary_from(Node *left) {
 static Node *parse_or_from(Node *left) {
     Node *node = parse_and_from(left);
     while (match(T_OR)) {
-        node = new_binary("or", node, parse_and());
+        node = new_binary(L"or", node, parse_and());
     }
     return node;
 }
 static Node *parse_and_from(Node *left) {
     Node *node = parse_cmp_from(left);
     while (match(T_AND)) {
-        node = new_binary("and", node, parse_cmp());
+        node = new_binary(L"and", node, parse_cmp());
     }
     return node;
 }
-static const char *cmp_op(TokType t) {
+static const wchar_t *cmp_op(TokType t) {
     switch (t) {
-        case T_GT: return ">";
-        case T_LT: return "<";
-        case T_EQ: return "==";
-        case T_LE: return "<=";
-        case T_GE: return ">=";
-        default: return "?";
+        case T_GT: return L">";
+        case T_LT: return L"<";
+        case T_EQ: return L"==";
+        case T_LE: return L"<=";
+        case T_GE: return L">=";
+        default: return L"?";
     }
 }
 static Node *parse_cmp_from(Node *left) {
@@ -697,7 +696,7 @@ static Node *parse_add_from(Node *left) {
     Node *node = parse_mul_from(left);
     TokType op;
     while ((op = match_any(2, T_PLUS, T_MINUS)) != T_EOF) {
-        const char *s = (op == T_PLUS) ? "+" : "-";
+        const wchar_t *s = (op == T_PLUS) ? L"+" : L"-";
         node = new_binary(s, node, parse_mul());
     }
     return node;
@@ -706,17 +705,17 @@ static Node *parse_mul_from(Node *left) {
     Node *node = parse_exp_from(left);
     TokType op;
     while ((op = match_any(3, T_MUL, T_DIV, T_MOD)) != T_EOF) {
-        const char *s;
-        if (op == T_MOD) s = "mod";
-        else if (op == T_MUL) s = "*";
-        else s = "/";
+        const wchar_t *s;
+        if (op == T_MOD) s = L"mod";
+        else if (op == T_MUL) s = L"*";
+        else s = L"/";
         node = new_binary(s, node, parse_exp());
     }
     return node;
 }
 static Node *parse_exp_from(Node *left) {
     if (match(T_POW)) {
-        return new_binary("pow", left, parse_exp());
+        return new_binary(L"pow", left, parse_exp());
     }
     return left;
 }
@@ -730,23 +729,23 @@ static Node *parse_exp(void) { return parse_exp_from(parse_unary()); }
 static Node *parse_unary(void) {
     if (match(T_NOT)) {
         Node *n = new_node(N_UNARY);
-        n->value = xstrdup("not");
+        n->value = xstrdup(L"not");
         n->expr = parse_unary();
         return n;
     }
     if (match(T_MINUS)) {
         Node *e = parse_unary();
-        if (e->type == N_NUMBER && e->value[0] != '-') {
-            size_t len = strlen(e->value);
-            char *v = (char *)malloc(len + 2);
-            v[0] = '-';
-            strcpy(v + 1, e->value);
+        if (e->type == N_NUMBER && e->value[0] != L'-') {
+            size_t len = wcslen(e->value);
+            wchar_t *v = (wchar_t *)malloc((len + 2) * sizeof(wchar_t));
+            v[0] = L'-';
+            wcscpy(v + 1, e->value);
             free(e->value);
             e->value = v;
             return e;
         }
         Node *n = new_node(N_UNARY);
-        n->value = xstrdup("-");
+        n->value = xstrdup(L"-");
         n->expr = e;
         return n;
     }
@@ -816,8 +815,8 @@ static Node *parse_primary(void) {
             n->value = xstrdup(tok->value);
             return n;
         }
-        case T_TRUE:  advance_tok(); { Node *n = new_node(N_BOOL); n->value = xstrdup("true"); return n; }
-        case T_FALSE: advance_tok(); { Node *n = new_node(N_BOOL); n->value = xstrdup("false"); return n; }
+        case T_TRUE:  advance_tok(); { Node *n = new_node(N_BOOL); n->value = xstrdup(L"true"); return n; }
+        case T_FALSE: advance_tok(); { Node *n = new_node(N_BOOL); n->value = xstrdup(L"false"); return n; }
         case T_NULL:      advance_tok(); return new_node(N_NULL);
         case T_UNDEFINED: advance_tok(); return new_node(N_UNDEFINED);
         case T_LBRACKET: {
@@ -832,7 +831,7 @@ static Node *parse_primary(void) {
         case T_LPAREN:
             return parse_paren_or_lambda();
         default:
-            parse_error("意外的 \"%s\"", tok->value ? tok->value : "");
+            parse_error(L"意外的 \"%ls\"", tok->value ? tok->value : L"");
             return NULL;
     }
 }
@@ -869,13 +868,13 @@ static Node *parse_paren_or_lambda(void) {
 static void emit_node(Node *node, SB *sb);
 
 typedef struct {
-    char **strs;
+    wchar_t **strs;
     int n;
 } StrList;
 
 static StrList emit_children(Node **items, int n_items) {
     StrList sl;
-    sl.strs = (char **)malloc((n_items > 0 ? n_items : 1) * sizeof(char *));
+    sl.strs = (wchar_t **)malloc((n_items > 0 ? n_items : 1) * sizeof(wchar_t *));
     sl.n = 0;
     for (int i = 0; i < n_items; i++) {
         SB t; sb_init(&t);
@@ -898,19 +897,19 @@ static void free_strlist(StrList *sl) {
 
 static void emit_params(Node *n, SB *sb) {
     for (int i = 0; i < n->n_params; i++) {
-        if (i) sb_append(sb, " ");
+        if (i) sb_append(sb, L" ");
         sb_append(sb, n->params[i]);
     }
 }
 
-static void emit_incdec(Node *n, SB *sb, const char *op) {
-    sb_append(sb, "(set! ");
+static void emit_incdec(Node *n, SB *sb, const wchar_t *op) {
+    sb_append(sb, L"(set! ");
     emit_node(n->expr, sb);
-    sb_append(sb, " (");
+    sb_append(sb, L" (");
     sb_append(sb, op);
-    sb_append(sb, " ");
+    sb_append(sb, L" ");
     emit_node(n->expr, sb);
-    sb_append(sb, " 1))");
+    sb_append(sb, L" 1))");
 }
 
 /* ======================== Emitter ======================== */
@@ -922,189 +921,189 @@ static void emit_node(Node *node, SB *sb) {
     switch (node->type) {
         case N_PROGRAM: {
             StrList terms = emit_children(node->items, node->n_items);
-            sb_append(sb, "((lambda ()");
+            sb_append(sb, L"((lambda ()");
             if (terms.n > 0) {
-                sb_append(sb, "\n  ");
+                sb_append(sb, L"\n  ");
                 for (int i = 0; i < terms.n; i++) {
                     sb_append(sb, terms.strs[i]);
-                    if (i + 1 < terms.n) sb_append(sb, "\n  ");
+                    if (i + 1 < terms.n) sb_append(sb, L"\n  ");
                 }
             }
-            sb_append(sb, "))\n");
+            sb_append(sb, L"))\n");
             free_strlist(&terms);
             break;
         }
         case N_BLOCK: {
             StrList parts = emit_children(node->items, node->n_items);
             if (parts.n == 0) {
-                sb_append(sb, "{}");
+                sb_append(sb, L"{}");
             } else {
-                sb_append(sb, "{");
+                sb_append(sb, L"{");
                 for (int i = 0; i < parts.n; i++) {
                     sb_append(sb, parts.strs[i]);
-                    if (i + 1 < parts.n) sb_append(sb, " ");
+                    if (i + 1 < parts.n) sb_append(sb, L" ");
                 }
-                sb_append(sb, "}");
+                sb_append(sb, L"}");
             }
             free_strlist(&parts);
             break;
         }
         case N_ID:       sb_append(sb, node->value); break;
         case N_NUMBER:   sb_append(sb, node->value); break;
-        case N_STRING:   sb_append(sb, "\""); sb_append(sb, node->value); sb_append(sb, "\""); break;
-        case N_BOOL:     sb_append(sb, strcmp(node->value, "true") == 0 ? "#t" : "#f"); break;
-        case N_NULL:     sb_append(sb, "#null"); break;
-        case N_UNDEFINED:sb_append(sb, "#undefined"); break;
+        case N_STRING:   sb_append(sb, L"\""); sb_append(sb, node->value); sb_append(sb, L"\""); break;
+        case N_BOOL:     sb_append(sb, wcscmp(node->value, L"true") == 0 ? L"#t" : L"#f"); break;
+        case N_NULL:     sb_append(sb, L"#null"); break;
+        case N_UNDEFINED:sb_append(sb, L"#undefined"); break;
         case N_LIST: {
             if (node->n_items == 0) {
-                sb_append(sb, "`()");
+                sb_append(sb, L"`()");
             } else {
-                sb_append(sb, "`(");
+                sb_append(sb, L"`(");
                 for (int i = 0; i < node->n_items; i++) {
-                    if (i) sb_append(sb, " ");
+                    if (i) sb_append(sb, L" ");
                     emit_node_qq(node->items[i], sb);
                 }
-                sb_append(sb, ")");
+                sb_append(sb, L")");
             }
             break;
         }
         case N_CALL: {
-            sb_append(sb, "(");
+            sb_append(sb, L"(");
             emit_node(node->expr, sb);
             for (int i = 0; i < node->n_items; i++) {
-                sb_append(sb, " ");
+                sb_append(sb, L" ");
                 emit_node(node->items[i], sb);
             }
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             break;
         }
         case N_INDEX: {
-            sb_append(sb, "(get_item ");
+            sb_append(sb, L"(get_item ");
             emit_node(node->obj, sb);
-            sb_append(sb, " ");
+            sb_append(sb, L" ");
             emit_node(node->idx, sb);
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             break;
         }
         case N_UNARY: {
-            sb_append(sb, "(");
+            sb_append(sb, L"(");
             sb_append(sb, node->value);
-            sb_append(sb, " ");
+            sb_append(sb, L" ");
             emit_node(node->expr, sb);
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             break;
         }
         case N_BINARY: {
-            sb_append(sb, "(");
+            sb_append(sb, L"(");
             sb_append(sb, node->value);
-            sb_append(sb, " ");
+            sb_append(sb, L" ");
             emit_node(node->left, sb);
-            sb_append(sb, " ");
+            sb_append(sb, L" ");
             emit_node(node->right, sb);
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             break;
         }
         case N_TERNARY: {
-            sb_append(sb, "(if ");
+            sb_append(sb, L"(if ");
             emit_node(node->cond, sb);
-            sb_append(sb, " ");
+            sb_append(sb, L" ");
             emit_node(node->trueBranch, sb);
-            sb_append(sb, " ");
+            sb_append(sb, L" ");
             emit_node(node->falseBranch, sb);
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             break;
         }
         case N_ASSIGN: {
             Node *rhs = node->right;
             if (node->left->type == N_INDEX) {
-                sb_append(sb, "(set_item! ");
+                sb_append(sb, L"(set_item! ");
                 emit_node(node->left->obj, sb);
-                sb_append(sb, " ");
+                sb_append(sb, L" ");
                 emit_node(node->left->idx, sb);
-                sb_append(sb, " ");
+                sb_append(sb, L" ");
                 emit_node(rhs, sb);
-                sb_append(sb, ")");
+                sb_append(sb, L")");
             } else {
-                sb_append(sb, "(set! ");
+                sb_append(sb, L"(set! ");
                 emit_node(node->left, sb);
-                sb_append(sb, " ");
+                sb_append(sb, L" ");
                 emit_node(rhs, sb);
-                sb_append(sb, ")");
+                sb_append(sb, L")");
             }
             break;
         }
         case N_VARDEF: {
-            sb_append(sb, "(define ");
+            sb_append(sb, L"(define ");
             sb_append(sb, node->value);
-            sb_append(sb, " ");
+            sb_append(sb, L" ");
             emit_node(node->right, sb);
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             break;
         }
         case N_FUNCDEF: {
-            sb_append(sb, "(define ");
+            sb_append(sb, L"(define ");
             sb_append(sb, node->value);
-            sb_append(sb, " (lambda (");
+            sb_append(sb, L" (lambda (");
             emit_params(node, sb);
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             StrList body = emit_children(node->items, node->n_items);
             if (body.n > 0) {
-                sb_append(sb, " ");
+                sb_append(sb, L" ");
                 for (int i = 0; i < body.n; i++) {
                     sb_append(sb, body.strs[i]);
-                    if (i + 1 < body.n) sb_append(sb, " ");
+                    if (i + 1 < body.n) sb_append(sb, L" ");
                 }
             }
-            sb_append(sb, "))");
+            sb_append(sb, L"))");
             free_strlist(&body);
             break;
         }
         case N_LAMBDA: {
-            sb_append(sb, "(lambda (");
+            sb_append(sb, L"(lambda (");
             emit_params(node, sb);
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             StrList body = emit_children(node->items, node->n_items);
             if (body.n > 0) {
-                sb_append(sb, " ");
+                sb_append(sb, L" ");
                 for (int i = 0; i < body.n; i++) {
                     sb_append(sb, body.strs[i]);
-                    if (i + 1 < body.n) sb_append(sb, " ");
+                    if (i + 1 < body.n) sb_append(sb, L" ");
                 }
             }
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             free_strlist(&body);
             break;
         }
         case N_IF: {
-            sb_append(sb, "(if ");
+            sb_append(sb, L"(if ");
             emit_node(node->cond, sb);
-            sb_append(sb, " ");
+            sb_append(sb, L" ");
             emit_node(node->trueBranch, sb);
             if (node->falseBranch) {
-                sb_append(sb, " ");
+                sb_append(sb, L" ");
                 emit_node(node->falseBranch, sb);
             }
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             break;
         }
         case N_WHILE: {
-            sb_append(sb, "(while ");
+            sb_append(sb, L"(while ");
             emit_node(node->cond, sb);
-            sb_append(sb, " ");
+            sb_append(sb, L" ");
             emit_node(node->expr, sb);
-            sb_append(sb, ")");
+            sb_append(sb, L")");
             break;
         }
         case N_RETURN: {
             if (node->expr) emit_node(node->expr, sb);
             break;
         }
-        case N_CONTINUE: sb_append(sb, "continue"); break;
-        case N_BREAK:    sb_append(sb, "break"); break;
+        case N_CONTINUE: sb_append(sb, L"continue"); break;
+        case N_BREAK:    sb_append(sb, L"break"); break;
         case N_PREINC:
-        case N_POSTINC:  emit_incdec(node, sb, "+"); break;
+        case N_POSTINC:  emit_incdec(node, sb, L"+"); break;
         case N_PREDEC:
-        case N_POSTDEC:  emit_incdec(node, sb, "-"); break;
+        case N_POSTDEC:  emit_incdec(node, sb, L"-"); break;
     }
 }
 
@@ -1115,117 +1114,44 @@ static void emit_node_qq(Node *node, SB *sb) {
     if (!node) return;
     switch (node->type) {
         case N_ID:
-            sb_append(sb, ",");
+            sb_append(sb, L",");
             sb_append(sb, node->value);
             break;
         case N_NUMBER:
             sb_append(sb, node->value);
             break;
         case N_STRING:
-            sb_append(sb, "\"");
+            sb_append(sb, L"\"");
             sb_append(sb, node->value);
-            sb_append(sb, "\"");
+            sb_append(sb, L"\"");
             break;
         case N_BOOL:
-            sb_append(sb, strcmp(node->value, "true") == 0 ? "#t" : "#f");
+            sb_append(sb, wcscmp(node->value, L"true") == 0 ? L"#t" : L"#f");
             break;
         case N_NULL:
-            sb_append(sb, "#null");
+            sb_append(sb, L"#null");
             break;
         case N_UNDEFINED:
-            sb_append(sb, "#undefined");
+            sb_append(sb, L"#undefined");
             break;
         case N_LIST: {
             if (node->n_items == 0) {
-                sb_append(sb, "`()");
+                sb_append(sb, L"`()");
             } else {
-                sb_append(sb, "`(");
+                sb_append(sb, L"`(");
                 for (int i = 0; i < node->n_items; i++) {
-                    if (i) sb_append(sb, " ");
+                    if (i) sb_append(sb, L" ");
                     emit_node_qq(node->items[i], sb);
                 }
-                sb_append(sb, ")");
+                sb_append(sb, L")");
             }
             break;
         }
         default:
-            sb_append(sb, ",");
+            sb_append(sb, L",");
             emit_node(node, sb);
             break;
     }
-}
-
-/* ======================== I/O ======================== */
-
-/* ======================== wchar_t <-> UTF-8 helpers ======================== */
-
-static char *wcs_to_utf8(const wchar_t *src) {
-    size_t len = 0;
-    for (const wchar_t *p = src; *p; p++) {
-        unsigned int c = (unsigned int)*p;
-        if (c < 0x80) len++;
-        else if (c < 0x800) len += 2;
-        else if (c < 0x10000) len += 3;
-        else len += 4;
-    }
-    char *out = (char *)malloc(len + 1);
-    size_t j = 0;
-    for (const wchar_t *p = src; *p; p++) {
-        unsigned int c = (unsigned int)*p;
-        if (c < 0x80) {
-            out[j++] = (char)c;
-        } else if (c < 0x800) {
-            out[j++] = (char)(0xC0 | (c >> 6));
-            out[j++] = (char)(0x80 | (c & 0x3F));
-        } else if (c < 0x10000) {
-            out[j++] = (char)(0xE0 | (c >> 12));
-            out[j++] = (char)(0x80 | ((c >> 6) & 0x3F));
-            out[j++] = (char)(0x80 | (c & 0x3F));
-        } else {
-            out[j++] = (char)(0xF0 | (c >> 18));
-            out[j++] = (char)(0x80 | ((c >> 12) & 0x3F));
-            out[j++] = (char)(0x80 | ((c >> 6) & 0x3F));
-            out[j++] = (char)(0x80 | (c & 0x3F));
-        }
-    }
-    out[j] = '\0';
-    return out;
-}
-
-static wchar_t *utf8_to_wcs(const char *src) {
-    size_t len = 0;
-    for (const unsigned char *p = (const unsigned char *)src; *p; ) {
-        unsigned char c = *p;
-        if (c < 0x80) p++;
-        else if ((c & 0xE0) == 0xC0) p += 2;
-        else if ((c & 0xF0) == 0xE0) p += 3;
-        else if ((c & 0xF8) == 0xF0) p += 4;
-        else p++;
-        len++;
-    }
-    wchar_t *out = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
-    size_t j = 0;
-    for (const unsigned char *p = (const unsigned char *)src; *p; ) {
-        unsigned int code = 0;
-        unsigned char c = *p;
-        if (c < 0x80) {
-            code = c; p++;
-        } else if ((c & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
-            code = ((c & 0x1F) << 6) | (p[1] & 0x3F);
-            p += 2;
-        } else if ((c & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
-            code = ((c & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
-            p += 3;
-        } else if ((c & 0xF8) == 0xF0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
-            code = ((c & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
-            p += 4;
-        } else {
-            code = 0xFFFD; p++;
-        }
-        out[j++] = (wchar_t)code;
-    }
-    out[j] = L'\0';
-    return out;
 }
 
 /* ======================== Cleanup helpers ======================== */
@@ -1254,9 +1180,9 @@ static void free_tokens(Token *toks, int count) {
     free(toks);
 }
 
-/* ======================== Public API ======================== */
+/* ======================== Wide-char translate ======================== */
 
-static char *translate_utf8(const char *js_source) {
+static wchar_t *translate(const wchar_t *js_source) {
     if (!js_source) return NULL;
     int ntok = 0;
     Node *ast = NULL;
@@ -1289,12 +1215,5 @@ static char *translate_utf8(const char *js_source) {
  * 输入/输出均为宽字符字符串；返回的指针由调用者负责 free。 */
 wchar_t *am_js_to_scheme(const wchar_t *js_source) {
     if (!js_source) return NULL;
-    char *utf8_in = wcs_to_utf8(js_source);
-    if (!utf8_in) return NULL;
-    char *utf8_out = translate_utf8(utf8_in);
-    free(utf8_in);
-    if (!utf8_out) return NULL;
-    wchar_t *out = utf8_to_wcs(utf8_out);
-    free(utf8_out);
-    return out;
+    return translate(js_source);
 }
