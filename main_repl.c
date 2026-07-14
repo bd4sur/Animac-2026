@@ -10,6 +10,8 @@
 
 #include "repl.h"
 
+#define ANIMAC_VERSION "V2607"
+
 static volatile sig_atomic_t g_should_stop = 0;
 
 static void signal_handler(int sig) {
@@ -26,7 +28,7 @@ static int repl_event_hook(void) {
 
 int main(int argc, char *argv[]) {
     int js_mode = 0;
-    if (argc > 1 && strcmp(argv[1], "-j") == 0) {
+    if (argc > 1 && strcmp(argv[1], "--js") == 0) {
         js_mode = 1;
     }
 
@@ -52,14 +54,14 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    printf("\033[96mAnimac\033[0m " ANIMAC_VERSION " REPL\n");
+    printf("Copyright (c) 2018-2026 BD4SUR\n");
+
     if (js_mode) {
         am_repl_ctx_set_js_mode(ctx, 1);
-        printf("Animac REPL (JavaScript interpreter mode)\n");
-        printf("输入 JavaScript 表达式，将先翻译为 Scheme 再执行。\n");
-        printf("空行或 Ctrl+C 退出。\n\n");
+        printf("\033[93mJavaScript\033[0m mode. Press Ctrl+C to quit. Type \".help\" for more infomation.\n");
     } else {
-        printf("Animac REPL\n");
-        printf("输入 Scheme 表达式，空行或 Ctrl+C 退出。\n\n");
+        printf("\033[93mScheme\033[0m mode. Press Ctrl+C to quit. Type \".help\" for more infomation.\n");
     }
 
     while (!g_should_stop) {

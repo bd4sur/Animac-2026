@@ -382,19 +382,19 @@ static void value_to_wchar_buf(am_process_t *proc, am_value_t v, wchar_t *buf, s
                 return;
             }
             else if (obj->type == AM_OBJECT_TYPE_LIST) {
-                swprintf(buf, buf_size, L"#<list>");
+                swprintf(buf, buf_size, L"#<list:%#x>", (uintptr_t)obj);
                 return;
             }
             else if (obj->type == AM_OBJECT_TYPE_CLOSURE) {
-                swprintf(buf, buf_size, L"#<closure>");
+                swprintf(buf, buf_size, L"#<closure:%#x>", (uintptr_t)obj);
                 return;
             }
             else if (obj->type == AM_OBJECT_TYPE_CONTINUATION) {
-                swprintf(buf, buf_size, L"#<continuation>");
+                swprintf(buf, buf_size, L"#<continuation:%#x>", (uintptr_t)obj);
                 return;
             }
         }
-        swprintf(buf, buf_size, L"#<handle>");
+        swprintf(buf, buf_size, L"#<handle:%zu>", hd);
     }
     else if (am_value_is_float(v)) {
         swprintf(buf, buf_size, L"%g", (double)am_value_to_float(v));
@@ -415,14 +415,30 @@ static void value_to_wchar_buf(am_process_t *proc, am_value_t v, wchar_t *buf, s
         swprintf(buf, buf_size, L"#undefined");
     }
     else if (am_value_is_symbol(v)) {
-        swprintf(buf, buf_size, L"#<symbol>");
+        am_symbol_t sym = am_value_to_symbol(v);
+        wchar_t *s = am_vocab_get(proc->vm_alloc, proc->symbol_vocab, &sym);
+        if (!s) {
+            swprintf(buf, buf_size, L"#<symbol>");
+            return;
+        }
+        else {
+            swprintf(buf, buf_size, L"%ls", s);
+        }
     }
     else if (am_value_is_varid(v)) {
-        swprintf(buf, buf_size, L"#<varid>");
+        am_varid_t vid = am_value_to_varid(v);
+        wchar_t *s = am_vocab_get(proc->vm_alloc, proc->var_vocab, &vid);
+        if (!s) {
+            swprintf(buf, buf_size, L"#<varid:%zu>", vid);
+            return;
+        }
+        else {
+            swprintf(buf, buf_size, L"#<builtin:%ls>", s);
+        }
     }
-    else {
-        swprintf(buf, buf_size, L"#<value>");
-    }
+    // else {
+    //     swprintf(buf, buf_size, L"#<value>");
+    // }
 }
 
 

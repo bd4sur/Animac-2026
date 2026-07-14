@@ -34,6 +34,8 @@ static am_module_t *repl_create_initial_module(am_repl_ctx_t *ctx);
 static int repl_ctx_js_indent(const wchar_t *code);
 static am_repl_result_t repl_ctx_eval_js_accum(am_repl_ctx_t *ctx, int force);
 static am_repl_result_t repl_ctx_submit(am_repl_ctx_t *ctx);
+static int repl_ctx_reset(am_repl_ctx_t *ctx);
+static wchar_t *repl_session_strip_display(const wchar_t *session);
 
 // 运行时回调：捕获输出到当前上下文的输出缓冲区。
 static void on_tick(am_runtime_t *rt) {
@@ -518,6 +520,115 @@ static void repl_ctx_rollback_session(am_repl_ctx_t *ctx, size_t submitted_len) 
     if (ctx->session) ctx->session[ctx->session_len] = L'\0';
 }
 
+// REPL 特殊指令类型。
+typedef enum {
+    REPL_CMD_NONE = 0,
+    REPL_CMD_EXIT,
+    REPL_CMD_HELP,
+    REPL_CMD_RESET,
+    REPL_CMD_JS,
+    REPL_CMD_SCHEME,
+} repl_cmd_t;
+
+// 解析一行输入是否为特殊指令。仅在未进入多行输入且累积缓冲区为空时生效。
+static repl_cmd_t repl_ctx_parse_command(am_repl_ctx_t *ctx, const wchar_t *line_w) {
+    if (!ctx || !line_w) return REPL_CMD_NONE;
+    if (ctx->multiline || (ctx->accum && ctx->accum_len > 0)) return REPL_CMD_NONE;
+
+    if (wcscmp(line_w, L"exit") == 0 ||
+        wcscmp(line_w, L"quit") == 0 ||
+        wcscmp(line_w, L"(exit)") == 0 ||
+        wcscmp(line_w, L"(quit)") == 0 ||
+        wcscmp(line_w, L".exit") == 0 ||
+        wcscmp(line_w, L".quit") == 0 ||
+        wcscmp(line_w, L"(System.exit)") == 0) {
+        return REPL_CMD_EXIT;
+    }
+    if (wcscmp(line_w, L".help") == 0) {
+        return REPL_CMD_HELP;
+    }
+    if (wcscmp(line_w, L".reset") == 0) {
+        return REPL_CMD_RESET;
+    }
+    if (wcscmp(line_w, L".javascript") == 0 || wcscmp(line_w, L".js") == 0) {
+        return REPL_CMD_JS;
+    }
+    if (wcscmp(line_w, L".scheme") == 0 || wcscmp(line_w, L".scm") == 0) {
+        return REPL_CMD_SCHEME;
+    }
+    return REPL_CMD_NONE;
+}
+
+static am_repl_result_t repl_ctx_handle_command(am_repl_ctx_t *ctx, repl_cmd_t cmd) {
+    if (!ctx) return repl_result_from_ctx(ctx);
+
+    switch (cmd) {
+        case REPL_CMD_EXIT:
+            ctx->status = AM_REPL_STATUS_EXIT;
+            break;
+        case REPL_CMD_HELP:
+            ctx->status = AM_REPL_STATUS_OUTPUT;
+            repl_ctx_output_wcs(ctx,
+                L"Animac Interpreter\n"
+                L"Copyright (c) 2018-2026 BD4SUR\n"
+                L"https://github.com/bd4sur/Animac\n"
+                L"REPL Command Reference:\n"
+                L"  .help    show this information.\n"
+                L"  .reset   reset REPL context and clear all history.\n"
+                L"  .js      switch to JavaScript mode (with REPL context reset)\n"
+                L"  .scm     switch to Scheme mode (with REPL context reset)\n"
+                L"  .exit    exit the REPL\n"
+                L"   Ctrl+C  exit the REPL\n"
+                L"\n");
+            if (ctx->js_mode) {
+                repl_ctx_output_wcs(ctx, L"Current mode: JavaScript\n");
+            } else {
+                repl_ctx_output_wcs(ctx, L"Current mode: Scheme\n");
+            }
+            repl_ctx_output_wcs(ctx, L"\n");
+            break;
+        case REPL_CMD_RESET:
+            if (repl_ctx_reset(ctx) == 0) {
+                ctx->status = AM_REPL_STATUS_OUTPUT;
+                repl_ctx_output_wcs(ctx, L"[REPL] 上下文已重置，历史记录已清空。\n");
+            } else {
+                ctx->status = AM_REPL_STATUS_ERROR;
+                repl_ctx_error_wcs(ctx, L"[REPL] 重置失败\n");
+            }
+            break;
+        case REPL_CMD_JS:
+            if (ctx->js_mode) {
+                ctx->status = AM_REPL_STATUS_OUTPUT;
+                repl_ctx_output_wcs(ctx, L"[REPL] 当前已经是 JavaScript 模式。\n");
+            } else if (repl_ctx_reset(ctx) == 0) {
+                am_repl_ctx_set_js_mode(ctx, 1);
+                ctx->status = AM_REPL_STATUS_OUTPUT;
+                repl_ctx_output_wcs(ctx, L"[REPL] 已重置上下文并切换到 JavaScript 模式。\n");
+            } else {
+                ctx->status = AM_REPL_STATUS_ERROR;
+                repl_ctx_error_wcs(ctx, L"[REPL] 模式切换失败\n");
+            }
+            break;
+        case REPL_CMD_SCHEME:
+            if (!ctx->js_mode) {
+                ctx->status = AM_REPL_STATUS_OUTPUT;
+                repl_ctx_output_wcs(ctx, L"[REPL] 当前已经是 Scheme 模式。\n");
+            } else if (repl_ctx_reset(ctx) == 0) {
+                am_repl_ctx_set_js_mode(ctx, 0);
+                ctx->status = AM_REPL_STATUS_OUTPUT;
+                repl_ctx_output_wcs(ctx, L"[REPL] 已重置上下文并切换到 Scheme 模式。\n");
+            } else {
+                ctx->status = AM_REPL_STATUS_ERROR;
+                repl_ctx_error_wcs(ctx, L"[REPL] 模式切换失败\n");
+            }
+            break;
+        default:
+            ctx->status = AM_REPL_STATUS_CONTINUE;
+            break;
+    }
+    return repl_result_from_ctx(ctx);
+}
+
 static am_repl_result_t repl_result_from_ctx(am_repl_ctx_t *ctx) {
     am_repl_result_t res;
     res.status = ctx ? ctx->status : AM_REPL_STATUS_ERROR;
@@ -675,9 +786,251 @@ static am_repl_result_t repl_ctx_eval_js_accum(am_repl_ctx_t *ctx, int force) {
     return res;
 }
 
+// 查找从 start 开始的下一个 S-表达式的结束位置（返回末尾后一个字符的索引）。
+// 失败返回 SIZE_MAX。此函数为轻量级扫描器，仅用于识别顶层 display 表达式。
+static size_t repl_find_expr_end(const wchar_t *s, size_t start, size_t len) {
+    size_t i = start;
+    while (i < len && iswspace(s[i])) i++;
+    if (i >= len) return i;
+
+    // 处理引用简写前缀：' ` , ,@
+    int has_prefix = 1;
+    while (has_prefix && i < len) {
+        if (s[i] == L'\'' || s[i] == L'`') {
+            i++;
+            continue;
+        }
+        if (s[i] == L',' && i + 1 < len && s[i + 1] == L'@') {
+            i += 2;
+            continue;
+        }
+        if (s[i] == L',') {
+            i++;
+            continue;
+        }
+        has_prefix = 0;
+    }
+    if (i >= len) return SIZE_MAX;
+
+    // 处理向量前缀 #( ... )
+    if (s[i] == L'#' && i + 1 < len &&
+        (s[i + 1] == L'(' || s[i + 1] == L'[' || s[i + 1] == L'{')) {
+        i++;
+    }
+
+    if (s[i] == L'(' || s[i] == L'[' || s[i] == L'{') {
+        wchar_t open = s[i];
+        wchar_t close;
+        if (open == L'(') close = L')';
+        else if (open == L'[') close = L']';
+        else close = L'}';
+
+        int depth = 1;
+        i++;
+        int in_string = 0;
+        int escape = 0;
+        int line_comment = 0;
+
+        while (i < len && depth > 0) {
+            wchar_t c = s[i];
+            if (line_comment) {
+                if (c == L'\n') line_comment = 0;
+                i++;
+                continue;
+            }
+            if (in_string) {
+                if (escape) {
+                    escape = 0;
+                    i++;
+                    continue;
+                }
+                if (c == L'\\') {
+                    escape = 1;
+                    i++;
+                    continue;
+                }
+                if (c == L'"') in_string = 0;
+                i++;
+                continue;
+            }
+            if (c == L';') {
+                line_comment = 1;
+                i++;
+                continue;
+            }
+            if (c == L'"') {
+                in_string = 1;
+                i++;
+                continue;
+            }
+            if (c == open) depth++;
+            else if (c == close) depth--;
+            i++;
+        }
+        if (depth != 0) return SIZE_MAX;
+        return i;
+    } else if (s[i] == L'"') {
+        // 字符串字面量
+        i++;
+        int in_string = 1;
+        int escape = 0;
+        while (i < len && in_string) {
+            wchar_t c = s[i];
+            if (escape) {
+                escape = 0;
+                i++;
+                continue;
+            }
+            if (c == L'\\') {
+                escape = 1;
+                i++;
+                continue;
+            }
+            if (c == L'"') in_string = 0;
+            i++;
+        }
+        return i;
+    } else {
+        // 原子：读取到空白、行注释或分隔符
+        while (i < len) {
+            wchar_t c = s[i];
+            if (iswspace(c) || c == L';' ||
+                c == L'(' || c == L')' ||
+                c == L'[' || c == L']' ||
+                c == L'{' || c == L'}') {
+                break;
+            }
+            i++;
+        }
+        return i;
+    }
+}
+
+// 判断 [start, end) 区间的表达式是否为顶层 (display ...) 调用。
+static int repl_expr_is_display(const wchar_t *s, size_t start, size_t end) {
+    size_t i = start;
+    while (i < end && iswspace(s[i])) i++;
+    if (i >= end || s[i] != L'(') return 0;
+    i++;
+    while (i < end && iswspace(s[i])) i++;
+    const wchar_t *kw = L"display";
+    size_t kw_len = wcslen(kw);
+    if (i + kw_len > end || wcsncmp(s + i, kw, kw_len) != 0) return 0;
+    i += kw_len;
+    if (i < end && !iswspace(s[i]) && s[i] != L')') return 0;
+    return 1;
+}
+
+// 移除 session 中所有顶层 (display ...) 表达式，返回新分配的宽字符串。
+// 调用者负责 free。若分配失败返回 NULL。
+static wchar_t *repl_session_strip_display(const wchar_t *session) {
+    if (!session) return NULL;
+    size_t len = wcslen(session);
+    wchar_t *out = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
+    if (!out) return NULL;
+    size_t out_len = 0;
+    size_t i = 0;
+
+    while (i < len) {
+        // 跳过并保留非首部的空白字符
+        while (i < len && iswspace(session[i])) {
+            if (out_len > 0) {
+                out[out_len++] = session[i];
+            }
+            i++;
+        }
+        if (i >= len) break;
+
+        // 保留行注释
+        if (session[i] == L';') {
+            size_t comment_start = i;
+            while (i < len && session[i] != L'\n') i++;
+            size_t n = i - comment_start;
+            memcpy(out + out_len, session + comment_start, n * sizeof(wchar_t));
+            out_len += n;
+            continue;
+        }
+
+        size_t expr_start = i;
+        size_t expr_end = repl_find_expr_end(session, expr_start, len);
+        if (expr_end == SIZE_MAX || expr_end <= expr_start) {
+            // 格式异常，复制剩余部分并结束
+            size_t n = len - expr_start;
+            memcpy(out + out_len, session + expr_start, n * sizeof(wchar_t));
+            out_len += n;
+            break;
+        }
+
+        if (!repl_expr_is_display(session, expr_start, expr_end)) {
+            size_t n = expr_end - expr_start;
+            memcpy(out + out_len, session + expr_start, n * sizeof(wchar_t));
+            out_len += n;
+        }
+
+        i = expr_end;
+    }
+
+    // 去除尾部空白
+    while (out_len > 0 && iswspace(out[out_len - 1])) {
+        out_len--;
+    }
+    out[out_len] = L'\0';
+    return out;
+}
+
+// 彻底重置 REPL 上下文：清空累积输入、历史记录，并重新加载初始模块。
+static int repl_ctx_reset(am_repl_ctx_t *ctx) {
+    if (!ctx) return -1;
+
+    repl_ctx_reset_accum(ctx);
+
+    free(ctx->session);
+    ctx->session = NULL;
+    ctx->session_len = 0;
+
+    am_module_t *mod = repl_create_initial_module(ctx);
+    if (!mod) return -1;
+
+    am_pid_t new_pid = am_runtime_load_module(ctx->rt, mod);
+    if (new_pid == (am_pid_t)-1) {
+        if (mod->ilcode) am_free(ctx->vm_alloc, mod->ilcode);
+        if (mod->ast) am_ast_destroy(mod->ast);
+        am_free(ctx->vm_alloc, mod);
+        return -1;
+    }
+
+    if (mod->ilcode) {
+        am_free(ctx->vm_alloc, mod->ilcode);
+        mod->ilcode = NULL;
+    }
+    if (mod->ast) {
+        am_ast_destroy(mod->ast);
+        mod->ast = NULL;
+    }
+    am_free(ctx->vm_alloc, mod);
+
+    if (ctx->pid != (am_pid_t)-1) {
+        am_runtime_kill_process(ctx->rt, ctx->pid);
+    }
+    ctx->pid = new_pid;
+    ctx->runtime_error = 0;
+
+    return 0;
+}
+
 // 提交当前 accum 到 session 并执行。
 static am_repl_result_t repl_ctx_submit(am_repl_ctx_t *ctx) {
     if (!ctx) return repl_result_from_ctx(ctx);
+
+    // 追加新输入前，先清除历史记录中的 display 表达式（仅保留最新输入中的 display）。
+    if (ctx->session && ctx->session_len > 0) {
+        wchar_t *stripped = repl_session_strip_display(ctx->session);
+        if (stripped) {
+            free(ctx->session);
+            ctx->session = stripped;
+            ctx->session_len = wcslen(stripped);
+        }
+    }
 
     size_t submitted_len = ctx->accum_len;
     if (!repl_ctx_session_append(ctx, ctx->accum, ctx->accum_len)) {
@@ -816,7 +1169,7 @@ am_repl_ctx_t *am_repl_ctx_create(void) {
     ctx->indent = 0;
     ctx->js_mode = 0;
     ctx->should_stop = 0;
-    ctx->prompt_main = "animac> ";
+    ctx->prompt_main = "> ";
     ctx->prompt_cont = "... ";
 
     return ctx;
@@ -832,10 +1185,10 @@ void am_repl_ctx_set_js_mode(am_repl_ctx_t *ctx, int js_mode) {
     if (!ctx) return;
     ctx->js_mode = js_mode ? 1 : 0;
     if (ctx->js_mode) {
-        ctx->prompt_main = "js> ";
-        ctx->prompt_cont = "js ... ";
+        ctx->prompt_main = "> ";
+        ctx->prompt_cont = "... ";
     } else {
-        ctx->prompt_main = "animac> ";
+        ctx->prompt_main = "> ";
         ctx->prompt_cont = "... ";
     }
 }
@@ -887,16 +1240,11 @@ static am_repl_result_t am_repl_ctx_feed_scheme(am_repl_ctx_t *ctx, const char *
             return repl_result_from_ctx(ctx);
         }
 
-        // 退出命令（仅在尚未进入多行输入时生效）
-        if (!ctx->multiline && (!ctx->accum || ctx->accum_len == 0)) {
-            if (wcscmp(line_w, L"exit") == 0 ||
-                wcscmp(line_w, L"quit") == 0 ||
-                wcscmp(line_w, L"(exit)") == 0 ||
-                wcscmp(line_w, L"(System.exit)") == 0) {
-                free(line_w);
-                ctx->status = AM_REPL_STATUS_EXIT;
-                return repl_result_from_ctx(ctx);
-            }
+        // 特殊指令（仅在尚未进入多行输入时生效）
+        repl_cmd_t cmd = repl_ctx_parse_command(ctx, line_w);
+        if (cmd != REPL_CMD_NONE) {
+            free(line_w);
+            return repl_ctx_handle_command(ctx, cmd);
         }
 
         if (!repl_ctx_accum_append(ctx, line_w)) {
@@ -945,16 +1293,11 @@ static am_repl_result_t am_repl_ctx_feed_js(am_repl_ctx_t *ctx, const char *inpu
         return repl_result_from_ctx(ctx);
     }
 
-    // 退出命令（仅在尚未进入多行输入时生效）
-    if (!ctx->multiline && (!ctx->accum || ctx->accum_len == 0)) {
-        if (wcscmp(line_w, L"exit") == 0 ||
-            wcscmp(line_w, L"quit") == 0 ||
-            wcscmp(line_w, L"(exit)") == 0 ||
-            wcscmp(line_w, L"(System.exit)") == 0) {
-            free(line_w);
-            ctx->status = AM_REPL_STATUS_EXIT;
-            return repl_result_from_ctx(ctx);
-        }
+    // 特殊指令（仅在尚未进入多行输入时生效）
+    repl_cmd_t cmd = repl_ctx_parse_command(ctx, line_w);
+    if (cmd != REPL_CMD_NONE) {
+        free(line_w);
+        return repl_ctx_handle_command(ctx, cmd);
     }
 
     if (!repl_ctx_accum_append(ctx, line_w)) {

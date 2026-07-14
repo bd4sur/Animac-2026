@@ -5959,9 +5959,25 @@ case AM_VM_OP_wind: ...
 
 ---------------------
 
+# 2026-07-14
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。现在请你修改 @src/repl.c ，增加以下两个功能：
+
+- 删除历史记录中所有的display表达式（除了最新输入的），防止每次replay都执行一遍。
+- 现在有了输入exit退出的功能，请你增加一些其他的选项，包括“.help”、“.reset”。“.help”的功能是输出帮助信息和版权信息，内容先随便写一些。“.reset”的功能是彻底清理已经输入的历史记录，重置上下文，以全新的状态重新开始REPL循环。我看 am_repl_ctx_feed_js 和 am_repl_ctx_feed_scheme 这部分逻辑可能有些重复，最好把解析这些特殊指令的部分单独抽取出来。
+
+只能修改 @src/repl.c 、 @include/repl.h 、 @main_repl.c ，不准修改无关文件。系统中安装了WSL（Ubuntu 24.04），具备gcc、make、gdb等工具。你可以使用WSL进行编译构建和测试。你可以使用WSL进行编译构建和测试。你可以自行构造测试用例进行测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 
+# 2026-07-14
+
+给REPL增加以下特殊指令：
+
+- “.javascript”或者“.js”：将语言模式切换为JavaScript。如果当前已经是JavaScript模式，则不执行任何操作。如果当前不是JavaScript模式，则先执行reset再切换到JavaScript模式。
+- “.scheme”或者“.scm”：将语言模式切换为Scheme。如果当前已经是Scheme模式，则不执行任何操作。如果当前不是Scheme模式，则先执行reset再切换到JavaScript模式。
 
 ---------------------
 

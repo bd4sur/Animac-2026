@@ -649,6 +649,7 @@ const char *am_debug_opcode_name(uint32_t opcode) {
         case AM_VM_OP_mod:         return "mod";
         case AM_VM_OP_eq:          return "eq";
         case AM_VM_OP_eqv:         return "eqv";
+        case AM_VM_OP_equal:       return "equal";
         case AM_VM_OP_ge:          return "ge";
         case AM_VM_OP_le:          return "le";
         case AM_VM_OP_gt:          return "gt";
