@@ -1751,8 +1751,48 @@ static void macro_rebuild_var_top(am_ast_t *ast) {
 // 入口函数
 // ===============================================================================
 
+static int macro_is_any_macro_keyword(am_value_t v) {
+    return macro_is_symbol_value(v, AM_VALUE_KW_define_syntax) ||
+           macro_is_symbol_value(v, AM_VALUE_KW_let_syntax) ||
+           macro_is_symbol_value(v, AM_VALUE_KW_letrec_syntax) ||
+           macro_is_symbol_value(v, AM_VALUE_KW_syntax_rules);
+}
+
+
+typedef struct {
+    am_ast_t *ast;
+    int       found;
+} macro_fast_path_scan_t;
+
+
+static void macro_fast_path_scan_cb(am_handle_t handle, am_value_t value, void *user_data) {
+    macro_fast_path_scan_t *data = (macro_fast_path_scan_t *)user_data;
+    if (data->found) return;
+    (void)handle;
+
+    if (!am_value_is_ptr(value)) return;
+    am_object_t *obj = am_value_to_ptr(value);
+    if (obj->type != AM_OBJECT_TYPE_LIST) return;
+
+    am_list_t *lst = (am_list_t *)obj;
+    if (lst->length == 0) return;
+
+    am_value_t first = am_list_get(data->ast->alloc, lst, 0);
+    if (macro_is_any_macro_keyword(first)) {
+        data->found = 1;
+    }
+}
+
+
 int32_t am_macro_expand(am_ast_t *ast) {
     if (!ast) return -1;
+
+    // 快速路径：扫描 AST 堆中是否出现任何宏关键字。
+    // 若整个 AST 都不含 define-syntax / let-syntax / letrec-syntax / syntax-rules，
+    // 则无需进行递归宏展开，直接返回成功。
+    macro_fast_path_scan_t scan = { ast, 0 };
+    am_heap_iter(ast->alloc, ast->alloc, ast->nodes, macro_fast_path_scan_cb, &scan);
+    if (!scan.found) return 0;
 
     am_macro_expand_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
