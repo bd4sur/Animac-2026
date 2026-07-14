@@ -5981,6 +5981,13 @@ case AM_VM_OP_wind: ...
 
 ---------------------
 
+# 2026-07-14
+
+开始编码前，请先阅读 @doc/AGENTS.md 。
+
+本项目是一个完整的非标准Scheme解释器，采取编译器+中间语言VM架构。在 @src/repl.c 中实现了一个REPL，其中实现了char字符串与wchar字符串互相转换的函数 mb_to_wchar 和 wchar_to_mb 。在其他应用中调用repl时，会出现字符编码混乱的情况。我怀疑与 @src/repl.c 自己实现的这两个函数有关。请你将 mb_to_wchar 和 wchar_to_mb 这两个函数与 @src/utils.c 中实现的 am_wcstombs 和 am_mbstowcs 进行比较，告诉我它们有什么区别，并分析宽窄字符转换方面有哪些潜在问题。如果能替换的话，我希望统一使用 @src/utils.c 提供的函数。
+
+只能修改 @src/repl.c 或 @include/repl.h 或 @main_repl.c ，不准修改无关文件。系统中安装了WSL（Ubuntu 24.04），具备gcc、make、gdb等工具。你可以使用WSL进行编译构建和测试。你可以使用WSL进行编译构建和测试。你可以自行构造测试用例进行测试。你可以使用WSL进行编译构建和测试。
 
 ---------------------
 

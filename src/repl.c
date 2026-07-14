@@ -66,21 +66,24 @@ static void on_error(am_runtime_t *rt) {
 
 static wchar_t *mb_to_wchar(const char *src) {
     if (!src) return NULL;
-    size_t len = mbstowcs(NULL, src, 0);
-    if (len == (size_t)-1) return NULL;
-    wchar_t *dst = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
+    // 使用项目统一的 UTF-8 -> UTF-32 转换，不依赖当前 C locale。
+    // 每个 UTF-8 字节最多对应一个 wchar_t，因此 strlen(src) + 1 足够容纳。
+    size_t src_len = strlen(src);
+    wchar_t *dst = (wchar_t *)malloc((src_len + 1) * sizeof(wchar_t));
     if (!dst) return NULL;
-    mbstowcs(dst, src, len + 1);
+    am_mbstowcs(dst, src, (uint32_t)src_len);
     return dst;
 }
 
 static char *wchar_to_mb(const wchar_t *src) {
     if (!src) return NULL;
-    size_t len = wcstombs(NULL, src, 0);
-    if (len == (size_t)-1) return NULL;
-    char *dst = (char *)malloc(len + 1);
+    // 使用项目统一的 UTF-32 -> UTF-8 转换，不依赖当前 C locale。
+    // 每个 UTF-32 码点最多需要 4 字节 UTF-8 表示。
+    size_t src_len = wcslen(src);
+    size_t buf_size = src_len * 4 + 1;
+    char *dst = (char *)malloc(buf_size);
     if (!dst) return NULL;
-    wcstombs(dst, src, len + 1);
+    am_wcstombs(dst, src, (uint32_t)buf_size);
     return dst;
 }
 
