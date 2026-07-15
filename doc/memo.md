@@ -17,6 +17,30 @@ NOTE 回归测试使用哪些用例：
 - test_deadlock.scm
 - jstest.js
 
+TODO REPL遗留问题
+- import不支持：①增加cwd（base_dir）；②增加link过程；③去掉链接过程的输出
+- REPL里用不了异步任务？
+- 在REPL中说明局限性。重放式REPL最大的问题：副作用代码会被反复执行：因此要求整个代码是幂等的，只要里面有一个依赖物理世界的东西，就会破坏幂等
+
+NOTE 由于eval无法增加新绑定，所以不能用eval实现REPL
+
+TODO JS翻译器要翻译特殊标识符，例如
+     - callcc  -  call/cc
+     - dynamic_wind  -  dynamic-wind
+     - JS不用set
+     - is_null  -  null?
+
+TODO 给每个没有注释的函数增加注释，格式：
+// 功能：
+// 参数：
+// 返回：
+// 设计说明：
+已有较长注释的就不必修改或追加了。
+
+TODO JS层面通过特殊语法实现Object操作，例如@tbl["key"]这种
+
+TODO 反射库、自省
+
 TODO 栈平衡。
 
 TODO 平台相关抽象。
