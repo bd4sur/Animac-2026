@@ -22,7 +22,7 @@
     (display `(,'a))
     (newline)
 
-    (display "期望输出：('a)")(newline)
+    (display "期望输出：(a)")(newline)
     (display "实际输出：")
     (display `('a))
     (newline)

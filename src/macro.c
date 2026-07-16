@@ -136,6 +136,35 @@ static int macro_is_symbol_value(am_value_t v, am_value_t kw) {
 }
 
 
+static am_list_t *macro_as_list(am_ast_t *ast, am_value_t v);
+
+
+// 判断 v 是否是 ellipsis 标记。
+// 支持以下形式：
+//   - AM_VALUE_KW_dot3（application / unquote 中的关键字 ...）
+//   - symbol "'..."（quote/quasiquote 中被 parser 转换后的 ...）
+//   - (unquote ...) 包装
+// in_quote 为真时，不把 "'..." 当成 ellipsis，以保留 (quote ...) 中的字面 ...。
+static int macro_is_ellipsis_marker(am_ast_t *ast, am_value_t v, int in_quote) {
+    if (macro_is_symbol_value(v, AM_VALUE_KW_dot3)) return 1;
+
+    if (!in_quote && am_value_is_symbol(v)) {
+        am_symbol_t sym = am_value_to_symbol(v);
+        wchar_t *name = am_vocab_get(ast->alloc, ast->symbol_vocab, &sym);
+        if (name && wcscmp(name, L"'...") == 0) return 1;
+    }
+
+    if (am_value_is_handle(v)) {
+        am_list_t *lst = macro_as_list(ast, v);
+        if (lst && lst->type == AM_LIST_TYPE_UNQUOTE && lst->length == 1) {
+            return macro_is_ellipsis_marker(ast, am_list_get(ast->alloc, lst, 0), 0);
+        }
+    }
+
+    return 0;
+}
+
+
 static int macro_is_varid_in_list(am_ast_t *ast, am_value_t v, am_value_t list_handle) {
     if (!am_value_is_varid(v)) return 0;
     if (am_value_is_null(list_handle)) return 0;
@@ -684,9 +713,10 @@ static int macro_match_value(am_macro_expand_ctx_t *ctx, am_macro_t *macro,
 
     // 模式变量
     if (am_value_is_varid(pattern) && macro_is_pattern_var(macro, clause, am_value_to_varid(pattern))) {
-        am_value_t existing = am_map_get(NULL, ctx->subst, pattern);
-        if (!am_value_is_null(existing)) {
+        // am_map 用 AM_VALUE_NULL 作为“不存在”的哨兵，需用 contains 判断是否存在。
+        if (am_map_contains(NULL, ctx->subst, pattern) == 0) {
             // 已绑定，要求相等
+            am_value_t existing = am_map_get(NULL, ctx->subst, pattern);
             return am_value_equal(existing, input) ? 0 : -1;
         }
         // 新绑定
@@ -1074,7 +1104,7 @@ static am_value_t macro_instantiate_lambda(am_macro_expand_ctx_t *ctx, am_macro_
     int param_has_ellipsis = 0;
     if (n_param >= 2) {
         am_value_t last_param = am_list_get(ctx->ast->alloc, lst, 2 + n_param - 1);
-        if (macro_is_symbol_value(last_param, AM_VALUE_KW_dot3)) {
+        if (macro_is_ellipsis_marker(ctx->ast, last_param, 0)) {
             param_has_ellipsis = 1;
             param_fixed_end = n_param - 2;
         }
@@ -1151,7 +1181,7 @@ static am_value_t macro_instantiate_lambda(am_macro_expand_ctx_t *ctx, am_macro_
     int body_has_ellipsis = 0;
     if (n_body >= 2) {
         am_value_t last_body = bodies[n_body - 1];
-        if (macro_is_symbol_value(last_body, AM_VALUE_KW_dot3)) {
+        if (macro_is_ellipsis_marker(ctx->ast, last_body, 0)) {
             body_has_ellipsis = 1;
             body_fixed_end = n_body - 2;
         }
@@ -1231,12 +1261,13 @@ static am_value_t macro_instantiate_list(am_macro_expand_ctx_t *ctx, am_macro_t 
     }
 
     // 普通列表：扫描子元素，处理 ellipsis
+    int in_quote = (lst->type == AM_LIST_TYPE_QUOTE);
     for (size_t i = 0; i < lst->length; ) {
         am_value_t child = am_list_get(ctx->ast->alloc, lst, i);
 
         // ellipsis 模板：T ...
         if (i + 1 < lst->length &&
-            macro_is_symbol_value(am_list_get(ctx->ast->alloc, lst, i + 1), AM_VALUE_KW_dot3)) {
+            macro_is_ellipsis_marker(ctx->ast, am_list_get(ctx->ast->alloc, lst, i + 1), in_quote)) {
             am_value_t ellip_template = child;
 
             am_value_t *pvars = NULL;
@@ -1343,11 +1374,13 @@ static am_value_t macro_instantiate(am_macro_expand_ctx_t *ctx, am_macro_t *macr
     if (am_value_is_varid(template)) {
         am_varid_t vid = am_value_to_varid(template);
         if (macro_is_pattern_var(macro, clause, vid)) {
-            am_value_t subst_val = am_map_get(NULL, ctx->subst, template);
-            if (am_value_is_null(subst_val)) {
+            // 注意：am_map 用 AM_VALUE_NULL 作为“不存在”的哨兵，
+            // 因此不能通过返回值是否为 null 判断绑定是否存在。
+            if (am_map_contains(NULL, ctx->subst, template) != 0) {
                 macro_set_error(ctx, L"unbound pattern variable in template");
                 return AM_VALUE_UNDEFINED;
             }
+            am_value_t subst_val = am_map_get(NULL, ctx->subst, template);
             return macro_deep_copy_value(ctx, subst_val, parent);
         }
 

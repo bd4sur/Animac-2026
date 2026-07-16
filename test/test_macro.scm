@@ -189,3 +189,25 @@
 } {
   (display "❌ FAIL macro_lambda") (newline)
 })
+
+;; ================= 12. quasiquote 中裸 ... 也应被识别为 ellipsis，且 #null 可正常匹配 =================
+(define-syntax flat
+  (syntax-rules ()
+    ((flat ((a b) ...))
+     `((,a ...) (,b ...)))
+  ))
+
+(define-syntax flat-comma
+  (syntax-rules ()
+    ((flat-comma ((a b) ...))
+     `((,a ,...) (,b ,...)))
+  ))
+
+(display "12. quasiquote ellipsis test:") (newline)
+
+(assert (equal? (flat ((1 10) (2 20) (3 30))) '((1 2 3) (10 20 30))))
+(assert (equal? (flat ((1 #null) (2 20))) '((1 2) (#null 20))))
+(assert (equal? (flat-comma ((1 10) (2 20) (3 30))) '((1 2 3) (10 20 30))))
+(assert (equal? (flat-comma ((1 #null) (2 20))) '((1 2) (#null 20))))
+
+(display "✅ PASS quasiquote_ellipsis") (newline)

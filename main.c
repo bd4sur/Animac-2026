@@ -146,7 +146,8 @@ static void test_runtime_load_from_wstring(wchar_t *code, char *path) {
     printf("test_runtime_load_from_string ... \n");
     test_halt_called = 0;
 
-    char *base_dir = am_path_dirname((char*)path);
+    char *base_dir_owned = am_path_dirname((char*)path);
+    char *base_dir = base_dir_owned ? base_dir_owned : ".";
 
     wchar_t *path_w = (wchar_t *)am_malloc(vm_alloc, 256 * sizeof(wchar_t));
     wchar_t *base_dir_w = (wchar_t *)am_malloc(vm_alloc, 256 * sizeof(wchar_t));
@@ -294,7 +295,7 @@ static void test_runtime_load_from_wstring(wchar_t *code, char *path) {
     // 释放资源
     am_runtime_destroy(rt);
     free(module_buffer);
-    free(base_dir);
+    if (base_dir_owned) free(base_dir_owned);
 }
 
 static void test_runtime_load_from_file(char *path) {
