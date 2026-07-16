@@ -29,7 +29,7 @@
     ((_ test e1 e2 ...) (if test (begin e1 e2 ...) #f))
     ((_ else e1 e2 ...) (begin e1 e2 ...))))
 (check "T2 literal-else" 7 (my-when else 7))
-(my-when #t (display "T2 ellipsis body") (newline))
+(my-when #t (display "T2 ellipsis body OK") (newline))
 
 ; ============ 3. call/cc 基础 ============
 (define cc-val
@@ -65,7 +65,7 @@
   (syntax-rules ()
     ((_ v)
      (call/cc (lambda (k)
-                (System.eval "(display \"T9 macro+call/cc+eval: \") (newline)")
+                (System.eval "(display \"T9 macro+call/cc+eval: Eval OK\") (newline)")
                 (k v))))))
 (check "T9 macro+call/cc+eval" 42 (remote-cc 42))
 

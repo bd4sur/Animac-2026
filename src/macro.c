@@ -982,6 +982,238 @@ static int macro_collect_pvars_in_value(am_macro_t *macro, am_macro_clause_t *cl
 }
 
 
+// 计算 ellipsis 模板应重复的次数，同时收集其中的模式变量。
+// 成功返回重复次数；失败返回 SIZE_MAX，并释放 *out_pvars（如果已分配）。
+static size_t macro_ellipsis_length(am_macro_expand_ctx_t *ctx, am_macro_t *macro,
+                                     am_macro_clause_t *clause, am_value_t ellip_template,
+                                     am_value_t **out_pvars, size_t *out_pvar_count) {
+    if (macro_collect_pvars_in_value(macro, clause, ellip_template, out_pvars, out_pvar_count) != 0) {
+        return SIZE_MAX;
+    }
+    if (*out_pvar_count == 0) {
+        free(*out_pvars);
+        *out_pvars = NULL;
+        return SIZE_MAX;
+    }
+
+    size_t n = 0;
+    int first = 1;
+    for (size_t j = 0; j < *out_pvar_count; j++) {
+        am_value_t list_val = am_map_get(NULL, ctx->subst, (*out_pvars)[j]);
+        if (!am_value_is_handle(list_val)) {
+            free(*out_pvars);
+            *out_pvars = NULL;
+            return SIZE_MAX;
+        }
+        am_list_t *ellip_list = macro_list_from_handle(ctx->ast, am_value_to_handle(list_val));
+        if (!ellip_list) {
+            free(*out_pvars);
+            *out_pvars = NULL;
+            return SIZE_MAX;
+        }
+        if (first) {
+            n = ellip_list->length;
+            first = 0;
+        } else if (ellip_list->length != n) {
+            free(*out_pvars);
+            *out_pvars = NULL;
+            return SIZE_MAX;
+        }
+    }
+    return n;
+}
+
+
+// 为第 j 次 ellipsis 迭代创建临时 subst：拷贝当前 subst 并覆盖 ellipsis 模式变量。
+// 成功返回 0；失败返回 -1。
+static int macro_ellipsis_iter_setup(am_macro_expand_ctx_t *ctx, am_macro_expand_ctx_t *iter_ctx,
+                                      am_value_t *pvars, size_t pvar_count, size_t j) {
+    iter_ctx->subst = am_map_copy(ctx->ast->alloc, ctx->subst);
+    if (!iter_ctx->subst) return -1;
+    for (size_t k = 0; k < pvar_count; k++) {
+        am_value_t list_val = am_map_get(NULL, ctx->subst, pvars[k]);
+        am_list_t *ellip_list = macro_list_from_handle(ctx->ast, am_value_to_handle(list_val));
+        am_value_t elem = am_list_get(ctx->ast->alloc, ellip_list, j);
+        am_map_t *m = am_map_set(ctx->ast->alloc, iter_ctx->subst, pvars[k], elem);
+        if (!m) {
+            am_map_destroy(ctx->ast->alloc, iter_ctx->subst);
+            iter_ctx->subst = NULL;
+            return -1;
+        }
+        iter_ctx->subst = m;
+    }
+    return 0;
+}
+
+
+// 实例化 lambda 模板，支持参数和函数体中的 ellipsis 展开。
+static am_value_t macro_instantiate_lambda(am_macro_expand_ctx_t *ctx, am_macro_t *macro,
+                                            am_macro_clause_t *clause, am_list_t *lst,
+                                            am_map_t *template_bindings, am_handle_t parent) {
+    if (ctx->error) return AM_VALUE_UNDEFINED;
+
+    am_handle_t new_h = am_ast_make_lambda_node(ctx->ast, parent);
+    if (new_h == AM_HANDLE_NULL) {
+        macro_set_error(ctx, L"out of memory instantiating lambda");
+        return AM_VALUE_UNDEFINED;
+    }
+
+    if (macro_register_lambda_scope(ctx, new_h, parent) != 0) {
+        macro_set_error(ctx, L"failed to register lambda scope");
+        return AM_VALUE_UNDEFINED;
+    }
+
+    // 参数处理
+    am_uint_t n_param = 0;
+    if (lst->length >= 2) {
+        am_value_t n_val = am_list_get(ctx->ast->alloc, lst, 1);
+        if (am_value_is_uint(n_val)) n_param = am_value_to_uint(n_val);
+    }
+
+    size_t param_fixed_end = (size_t)n_param;
+    int param_has_ellipsis = 0;
+    if (n_param >= 2) {
+        am_value_t last_param = am_list_get(ctx->ast->alloc, lst, 2 + n_param - 1);
+        if (macro_is_symbol_value(last_param, AM_VALUE_KW_dot3)) {
+            param_has_ellipsis = 1;
+            param_fixed_end = n_param - 2;
+        }
+    }
+
+    for (size_t i = 0; i < param_fixed_end; i++) {
+        am_value_t p = am_list_get(ctx->ast->alloc, lst, 2 + i);
+        am_value_t inst_p = macro_instantiate(ctx, macro, clause, p, template_bindings, new_h);
+        if (ctx->error) return AM_VALUE_UNDEFINED;
+        if (!am_value_is_varid(inst_p)) {
+            macro_set_error(ctx, L"lambda parameter must be variable");
+            return AM_VALUE_UNDEFINED;
+        }
+        if (macro_lambda_add_param(ctx->ast, new_h, am_value_to_varid(inst_p)) != 0) {
+            macro_set_error(ctx, L"failed to add instantiated lambda param");
+            return AM_VALUE_UNDEFINED;
+        }
+        if (macro_lambda_scope_add_var(ctx, new_h, am_value_to_varid(inst_p)) != 0) {
+            macro_set_error(ctx, L"failed to add lambda param to scope");
+            return AM_VALUE_UNDEFINED;
+        }
+    }
+
+    if (param_has_ellipsis) {
+        am_value_t ellip_template = am_list_get(ctx->ast->alloc, lst, 2 + param_fixed_end);
+        am_value_t *pvars = NULL;
+        size_t pvar_count = 0;
+        size_t n = macro_ellipsis_length(ctx, macro, clause, ellip_template, &pvars, &pvar_count);
+        if (n == SIZE_MAX) {
+            macro_set_error(ctx, L"invalid ellipsis in lambda parameter list");
+            return AM_VALUE_UNDEFINED;
+        }
+
+        for (size_t j = 0; j < n; j++) {
+            am_macro_expand_ctx_t iter_ctx = *ctx;
+            if (macro_ellipsis_iter_setup(ctx, &iter_ctx, pvars, pvar_count, j) != 0) {
+                free(pvars);
+                macro_set_error(ctx, L"out of memory in lambda parameter ellipsis");
+                return AM_VALUE_UNDEFINED;
+            }
+            am_value_t inst_p = macro_instantiate(&iter_ctx, macro, clause, ellip_template,
+                                                 template_bindings, new_h);
+            am_map_destroy(ctx->ast->alloc, iter_ctx.subst);
+            if (iter_ctx.error) {
+                ctx->error = 1;
+                wcsncpy(ctx->error_msg, iter_ctx.error_msg, 256);
+                free(pvars);
+                return AM_VALUE_UNDEFINED;
+            }
+            if (!am_value_is_varid(inst_p)) {
+                macro_set_error(ctx, L"lambda ellipsis parameter must be variable");
+                free(pvars);
+                return AM_VALUE_UNDEFINED;
+            }
+            if (macro_lambda_add_param(ctx->ast, new_h, am_value_to_varid(inst_p)) != 0) {
+                macro_set_error(ctx, L"failed to add lambda ellipsis param");
+                free(pvars);
+                return AM_VALUE_UNDEFINED;
+            }
+            if (macro_lambda_scope_add_var(ctx, new_h, am_value_to_varid(inst_p)) != 0) {
+                macro_set_error(ctx, L"failed to add lambda ellipsis param to scope");
+                free(pvars);
+                return AM_VALUE_UNDEFINED;
+            }
+        }
+        free(pvars);
+    }
+
+    // 函数体处理
+    size_t n_body = 0;
+    am_value_t *bodies = am_list_lambda_get_bodies(ctx->ast->alloc, lst, &n_body);
+
+    size_t body_fixed_end = n_body;
+    int body_has_ellipsis = 0;
+    if (n_body >= 2) {
+        am_value_t last_body = bodies[n_body - 1];
+        if (macro_is_symbol_value(last_body, AM_VALUE_KW_dot3)) {
+            body_has_ellipsis = 1;
+            body_fixed_end = n_body - 2;
+        }
+    }
+
+    for (size_t i = 0; i < body_fixed_end; i++) {
+        am_value_t inst = macro_instantiate(ctx, macro, clause, bodies[i], template_bindings, new_h);
+        if (ctx->error) {
+            free(bodies);
+            return AM_VALUE_UNDEFINED;
+        }
+        if (macro_lambda_add_body(ctx->ast, new_h, inst, NULL) != 0) {
+            macro_set_error(ctx, L"failed to add instantiated lambda body");
+            free(bodies);
+            return AM_VALUE_UNDEFINED;
+        }
+    }
+
+    if (body_has_ellipsis) {
+        am_value_t ellip_template = bodies[body_fixed_end];
+        am_value_t *pvars = NULL;
+        size_t pvar_count = 0;
+        size_t n = macro_ellipsis_length(ctx, macro, clause, ellip_template, &pvars, &pvar_count);
+        if (n == SIZE_MAX) {
+            free(bodies);
+            macro_set_error(ctx, L"invalid ellipsis in lambda body");
+            return AM_VALUE_UNDEFINED;
+        }
+
+        for (size_t j = 0; j < n; j++) {
+            am_macro_expand_ctx_t iter_ctx = *ctx;
+            if (macro_ellipsis_iter_setup(ctx, &iter_ctx, pvars, pvar_count, j) != 0) {
+                free(pvars);
+                free(bodies);
+                macro_set_error(ctx, L"out of memory in lambda body ellipsis");
+                return AM_VALUE_UNDEFINED;
+            }
+            am_value_t inst = macro_instantiate(&iter_ctx, macro, clause, ellip_template,
+                                                 template_bindings, new_h);
+            am_map_destroy(ctx->ast->alloc, iter_ctx.subst);
+            if (iter_ctx.error) {
+                ctx->error = 1;
+                wcsncpy(ctx->error_msg, iter_ctx.error_msg, 256);
+                free(pvars);
+                free(bodies);
+                return AM_VALUE_UNDEFINED;
+            }
+            if (macro_lambda_add_body(ctx->ast, new_h, inst, NULL) != 0) {
+                macro_set_error(ctx, L"failed to add lambda ellipsis body");
+                free(pvars);
+                free(bodies);
+                return AM_VALUE_UNDEFINED;
+            }
+        }
+        free(pvars);
+    }
+
+    free(bodies);
+    return am_make_value_of_handle(new_h);
+}
+
+
 static am_value_t macro_instantiate_list(am_macro_expand_ctx_t *ctx, am_macro_t *macro,
                                           am_macro_clause_t *clause, am_list_t *lst,
                                           am_map_t *template_bindings, am_handle_t parent) {
@@ -989,57 +1221,13 @@ static am_value_t macro_instantiate_list(am_macro_expand_ctx_t *ctx, am_macro_t 
 
     am_handle_t new_h;
     if (lst->type == AM_LIST_TYPE_LAMBDA) {
-        new_h = am_ast_make_lambda_node(ctx->ast, parent);
+        return macro_instantiate_lambda(ctx, macro, clause, lst, template_bindings, parent);
     } else {
         new_h = am_ast_make_slist_node(ctx->ast, parent, lst->type);
     }
     if (new_h == AM_HANDLE_NULL) {
         macro_set_error(ctx, L"out of memory instantiating list");
         return AM_VALUE_UNDEFINED;
-    }
-
-    if (lst->type == AM_LIST_TYPE_LAMBDA) {
-        if (macro_register_lambda_scope(ctx, new_h, parent) != 0) {
-            macro_set_error(ctx, L"failed to register lambda scope");
-            return AM_VALUE_UNDEFINED;
-        }
-        am_uint_t n_param = 0;
-        if (lst->length >= 2) {
-            am_value_t n_val = am_list_get(ctx->ast->alloc, lst, 1);
-            if (am_value_is_uint(n_val)) n_param = am_value_to_uint(n_val);
-        }
-        for (size_t i = 0; i < (size_t)n_param; i++) {
-            am_value_t p = am_list_get(ctx->ast->alloc, lst, 2 + i);
-            am_value_t inst_p = macro_instantiate(ctx, macro, clause, p, template_bindings, new_h);
-            if (ctx->error) return AM_VALUE_UNDEFINED;
-            if (!am_value_is_varid(inst_p)) {
-                macro_set_error(ctx, L"lambda parameter must be variable");
-                return AM_VALUE_UNDEFINED;
-            }
-            if (macro_lambda_add_param(ctx->ast, new_h, am_value_to_varid(inst_p)) != 0) {
-                macro_set_error(ctx, L"failed to add instantiated lambda param");
-                return AM_VALUE_UNDEFINED;
-            }
-            if (macro_lambda_scope_add_var(ctx, new_h, am_value_to_varid(inst_p)) != 0) {
-                macro_set_error(ctx, L"failed to add lambda param to scope");
-                return AM_VALUE_UNDEFINED;
-            }
-        }
-        size_t n_body = am_list_lambda_get_body_number(ctx->ast->alloc, lst);
-        am_value_t *bodies = am_list_lambda_get_bodies(ctx->ast->alloc, lst, &n_body);
-        if (bodies) {
-            for (size_t i = 0; i < n_body; i++) {
-                am_value_t inst = macro_instantiate(ctx, macro, clause, bodies[i], template_bindings, new_h);
-                if (ctx->error) { free(bodies); return AM_VALUE_UNDEFINED; }
-                if (macro_lambda_add_body(ctx->ast, new_h, inst, NULL) != 0) {
-                    macro_set_error(ctx, L"failed to add instantiated lambda body");
-                    free(bodies);
-                    return AM_VALUE_UNDEFINED;
-                }
-            }
-            free(bodies);
-        }
-        return am_make_value_of_handle(new_h);
     }
 
     // 普通列表：扫描子元素，处理 ellipsis

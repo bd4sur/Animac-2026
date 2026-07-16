@@ -257,7 +257,13 @@ static inline void lambda_set_param_count(am_list_t *lambda, am_uint_t n) {
 
 
 am_list_t *am_list_lambda_add_parameter(am_allocator_t *alloc, am_list_t *lst, am_value_t param) {
-    if (!lst || !am_value_is_varid(param)) return NULL;
+    if (!lst) return NULL;
+    if (!am_value_is_varid(param)) {
+        // 允许 '...' 作为形式参数出现，用于 syntax-rules 宏模板中的可变参数列表。
+        if (!(am_value_is_symbol(param) && am_value_to_symbol(param) == am_value_to_symbol(AM_VALUE_KW_dot3))) {
+            return NULL;
+        }
+    }
     if (lst->type != AM_LIST_TYPE_LAMBDA) return NULL;
 
     am_uint_t n_param = lambda_param_count(lst);

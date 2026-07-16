@@ -155,3 +155,37 @@
 (assert (eqv? sum 15))
 (assert (eqv? i 999)) ; 全局 i 被遮蔽，保持 999 不变
 
+
+;; ================= 11. 测试 syntax-rules 模板中 lambda 参数和函数体的 ellipsis 展开 =================
+(define-syntax mylet
+  (syntax-rules ()
+    ((mylet ((name val) ...) body1 body2 ...)
+     ((lambda (name ...) body1 body2 ...) val ...))))
+
+(define-syntax mylambda
+  (syntax-rules ()
+    ((mylambda (name ...) body ...)
+     (lambda (name ...) body ...))))
+
+(define ok #t)
+
+(mylet ((a 10) (b 20) (c 30))
+  (set! ok (== (+ a (+ b c)) 60))
+  (set! ok (== (* a (* b c)) 6000))  )
+
+
+(mylet ((x 42))
+  (set! ok (== x 42))  )
+
+(mylet ((a 1) (b 2))
+  (mylet ((c 3) (d 4))
+    (set! ok (== (+ a (+ b (+ c d))) 10))))
+
+(define f (mylambda (x y z) (+ x (+ y z))))
+(set! ok (== (f 1 2 3) 6))
+
+(if ok {
+  (display "✅ PASS macro_lambda") (newline)
+} {
+  (display "❌ FAIL macro_lambda") (newline)
+})

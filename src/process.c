@@ -1086,7 +1086,7 @@ static int32_t am_process_append_list_to_strbuf(am_process_strbuf_t *sb, am_proc
 
     if (am_process_strbuf_append_string(sb, prefix) != 0) return -1;
 
-    bool child_in_quote = in_quote || (lst->type == AM_LIST_TYPE_QUOTE);
+    bool child_in_quote = in_quote || (lst->type == AM_LIST_TYPE_QUOTE) || (lst->type == AM_LIST_TYPE_QUASIQUOTE);
 
     for (size_t i = 0; i < lst->length; i++) {
         if (i > 0) {
@@ -1144,10 +1144,10 @@ static int32_t am_process_append_value_to_strbuf(am_process_strbuf_t *sb, am_pro
         if (!text) return am_process_strbuf_append_string(sb, L"#<sym>");
         if (*text == L'\'') {
             // symbol 字面量（词汇表中已带前导单引号）
-            if (in_quote) {
+            // if (in_quote) {
                 // 在 quote 列表内部：去掉前导单引号
                 while (*text == L'\'') text++;
-            }
+            // }
             return am_process_strbuf_append_string(sb, text);
         }
         // 关键字等不带前导单引号的 symbol：原样输出

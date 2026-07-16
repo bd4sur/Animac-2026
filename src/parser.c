@@ -708,8 +708,11 @@ static size_t parse_arg_list_seq(parser_ctx_t *ctx, size_t index) { PARSER_LOG("
         am_value_t param = node_stack_pop(ctx);
         if (ctx->error) return index;
         if (!am_value_is_varid(param)) {
-            parser_set_error(ctx, L"lambda parameter must be variable");
-            return index;
+            // 允许 '...' 出现在 lambda 参数列表中，用于 syntax-rules 宏模板。
+            if (!(am_value_is_symbol(param) && am_value_to_symbol(param) == am_value_to_symbol(AM_VALUE_KW_dot3))) {
+                parser_set_error(ctx, L"lambda parameter must be variable");
+                return index;
+            }
         }
 
         if (add_parameter_to_top_lambda(ctx, param) < 0) return index;
