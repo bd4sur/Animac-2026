@@ -29,13 +29,14 @@ static void repl_ctx_reset_accum(am_repl_ctx_t *ctx);
 static int repl_ctx_session_append(am_repl_ctx_t *ctx, const wchar_t *code, size_t len);
 static am_repl_result_t repl_result_from_ctx(am_repl_ctx_t *ctx);
 static int32_t repl_eval_session(am_repl_ctx_t *ctx, const wchar_t *session_code,
-                                  am_module_t **out_mod, am_process_t **out_proc);
+                                  am_module_t **out_mod);
 static am_module_t *repl_create_initial_module(am_repl_ctx_t *ctx);
 static int repl_ctx_js_indent(const wchar_t *code);
 static am_repl_result_t repl_ctx_eval_js_accum(am_repl_ctx_t *ctx, int force);
 static am_repl_result_t repl_ctx_submit(am_repl_ctx_t *ctx);
 static int repl_ctx_reset(am_repl_ctx_t *ctx);
 static wchar_t *repl_session_strip_display(const wchar_t *session);
+static int repl_ctx_init_runtime(am_repl_ctx_t *ctx);
 
 // 运行时回调：捕获输出到当前上下文的输出缓冲区。
 static void on_tick(am_runtime_t *rt) {
@@ -325,10 +326,11 @@ static wchar_t *repl_build_session_code(am_repl_ctx_t *ctx, const wchar_t *sessi
     return new_code;
 }
 
-// 编译并执行完整的 REPL 会话代码。成功返回 0，失败返回 -1。
+// 编译完整的 REPL 会话代码。成功返回 0 并通过 out_mod 输出模块，失败返回 -1。
+// 注意：本函数不创建进程，进程由调用者在合适的时机通过 am_runtime_load_module 创建。
 static int32_t repl_eval_session(am_repl_ctx_t *ctx, const wchar_t *session_code,
-                                  am_module_t **out_mod, am_process_t **out_proc) {
-    if (!ctx || !session_code || !out_mod || !out_proc) return -1;
+                                  am_module_t **out_mod) {
+    if (!ctx || !session_code || !out_mod) return -1;
 
     wchar_t *display_wrapped = repl_build_session_code(ctx, session_code);
     if (!display_wrapped) {
@@ -357,18 +359,7 @@ static int32_t repl_eval_session(am_repl_ctx_t *ctx, const wchar_t *session_code
         return -1;
     }
 
-    am_process_t *proc = am_process_load_from_module(ctx->vm_alloc, ctx->heap_alloc, mod);
-    if (!proc) {
-        if (mod->ilcode) am_free(ctx->vm_alloc, mod->ilcode);
-        if (mod->ast) am_ast_destroy(mod->ast);
-        am_free(ctx->vm_alloc, mod);
-        repl_ctx_error_wcs(ctx, L"[REPL] 加载进程失败\n");
-        return -1;
-    }
-
     *out_mod = mod;
-    *out_proc = proc;
-
     return 0;
 }
 
@@ -440,17 +431,19 @@ static void repl_ctx_error_mb(am_repl_ctx_t *ctx, const char *s) {
 }
 
 static void repl_ctx_output_wchar(am_repl_ctx_t *ctx, wchar_t c) {
-    char mb[MB_CUR_MAX + 1];
-    int n = wctomb(mb, c);
-    if (n <= 0) return;
+    wchar_t src[2] = { c, L'\0' };
+    char mb[8];
+    uint32_t n = am_wcstombs(mb, src, sizeof(mb));
+    if (n == 0) return;
     mb[n] = '\0';
     repl_ctx_output_mb(ctx, mb);
 }
 
 static void repl_ctx_error_wchar(am_repl_ctx_t *ctx, wchar_t c) {
-    char mb[MB_CUR_MAX + 1];
-    int n = wctomb(mb, c);
-    if (n <= 0) return;
+    wchar_t src[2] = { c, L'\0' };
+    char mb[8];
+    uint32_t n = am_wcstombs(mb, src, sizeof(mb));
+    if (n == 0) return;
     mb[n] = '\0';
     repl_ctx_error_mb(ctx, mb);
 }
@@ -981,41 +974,43 @@ static wchar_t *repl_session_strip_display(const wchar_t *session) {
     return out;
 }
 
-// 彻底重置 REPL 上下文：清空累积输入、历史记录，并重新加载初始模块。
+// 彻底重置 REPL 上下文：释放所有资源并冷启动整个系统。
+// 包括 Runtime、Allocator Pool、输入/输出缓冲区、会话历史、进程状态等。
 static int repl_ctx_reset(am_repl_ctx_t *ctx) {
     if (!ctx) return -1;
 
-    repl_ctx_reset_accum(ctx);
+    // 保留解释器模式，其余全部重置。
+    int saved_js_mode = ctx->js_mode;
 
+    // 释放标准 C 分配的缓冲区。
+    free(ctx->accum);
     free(ctx->session);
-    ctx->session = NULL;
-    ctx->session_len = 0;
+    free(ctx->stdout_buf);
+    free(ctx->stderr_buf);
 
-    am_module_t *mod = repl_create_initial_module(ctx);
-    if (!mod) return -1;
+    // 销毁旧的运行时与分配器池，彻底归还其管理的整片内存。
+    if (ctx->rt) {
+        am_runtime_destroy(ctx->rt);
+    }
+    if (ctx->pool) {
+        am_allocator_pool_destroy(ctx->pool);
+    }
 
-    am_pid_t new_pid = am_runtime_load_module(ctx->rt, mod);
-    if (new_pid == (am_pid_t)-1) {
-        if (mod->ilcode) am_free(ctx->vm_alloc, mod->ilcode);
-        if (mod->ast) am_ast_destroy(mod->ast);
-        am_free(ctx->vm_alloc, mod);
+    // 清空上下文所有字段，随后恢复冷启动所需的默认值。
+    memset(ctx, 0, sizeof(am_repl_ctx_t));
+
+    ctx->pid = (am_pid_t)-1;
+    ctx->status = AM_REPL_STATUS_CONTINUE;
+    ctx->js_mode = saved_js_mode;
+    ctx->should_stop = 0;
+    ctx->prompt_main = "> ";
+    ctx->prompt_cont = "... ";
+
+    // 重新初始化运行时基础设施，相当于重头冷启动。
+    if (repl_ctx_init_runtime(ctx) != 0) {
         return -1;
     }
 
-    if (mod->ilcode) {
-        am_free(ctx->vm_alloc, mod->ilcode);
-        mod->ilcode = NULL;
-    }
-    if (mod->ast) {
-        am_ast_destroy(mod->ast);
-        mod->ast = NULL;
-    }
-    am_free(ctx->vm_alloc, mod);
-
-    if (ctx->pid != (am_pid_t)-1) {
-        am_runtime_kill_process(ctx->rt, ctx->pid);
-    }
-    ctx->pid = new_pid;
     ctx->runtime_error = 0;
 
     return 0;
@@ -1045,11 +1040,16 @@ static am_repl_result_t repl_ctx_submit(am_repl_ctx_t *ctx) {
     repl_ctx_reset_accum(ctx);
 
     am_module_t *new_mod = NULL;
-    am_process_t *new_proc = NULL;
-    if (repl_eval_session(ctx, ctx->session, &new_mod, &new_proc) != 0) {
+    if (repl_eval_session(ctx, ctx->session, &new_mod) != 0) {
         repl_ctx_rollback_session(ctx, submitted_len);
         ctx->status = AM_REPL_STATUS_ERROR;
         return repl_result_from_ctx(ctx);
+    }
+
+    // 新模块编译成功后，立即终止旧进程，避免新旧进程同时驻留导致内存持续累积。
+    if (ctx->pid != (am_pid_t)-1) {
+        am_runtime_kill_process(ctx->rt, ctx->pid);
+        ctx->pid = (am_pid_t)-1;
     }
 
     ctx->runtime_error = 0;
@@ -1092,27 +1092,26 @@ static am_repl_result_t repl_ctx_submit(am_repl_ctx_t *ctx) {
     if (ctx->runtime_error) {
         am_runtime_kill_process(ctx->rt, new_pid);
         repl_ctx_rollback_session(ctx, submitted_len);
+        ctx->pid = (am_pid_t)-1;
         ctx->status = AM_REPL_STATUS_ERROR;
         return repl_result_from_ctx(ctx);
     }
 
-    am_runtime_kill_process(ctx->rt, ctx->pid);
     ctx->pid = new_pid;
     ctx->status = AM_REPL_STATUS_OUTPUT;
     return repl_result_from_ctx(ctx);
 }
 
-// 建立 REPL 上下文。
-am_repl_ctx_t *am_repl_ctx_create(void) {
-    am_repl_ctx_t *ctx = (am_repl_ctx_t *)calloc(1, sizeof(am_repl_ctx_t));
-    if (!ctx) return NULL;
-
-    ctx->pid = (am_pid_t)-1;
+// 初始化 REPL 上下文的运行时基础设施：allocator pool、runtime、native libs、初始模块。
+// 调用前 ctx 的 pid 应为 -1，pool/rt 应为 NULL。
+static int repl_ctx_init_runtime(am_repl_ctx_t *ctx) {
+    if (!ctx) return -1;
 
     ctx->pool = am_allocator_pool_create(AM_ALLOCATOR_POOL_SIZE);
     if (!ctx->pool) {
-        free(ctx);
-        return NULL;
+        ctx->vm_alloc = NULL;
+        ctx->heap_alloc = NULL;
+        return -1;
     }
     ctx->vm_alloc = am_allocator_pool_get_vm(ctx->pool);
     ctx->heap_alloc = am_allocator_pool_get_heap(ctx->pool);
@@ -1121,8 +1120,10 @@ am_repl_ctx_t *am_repl_ctx_create(void) {
     ctx->rt = am_runtime_create(ctx->vm_alloc, ctx->heap_alloc, cwd_w);
     if (!ctx->rt) {
         am_allocator_pool_destroy(ctx->pool);
-        free(ctx);
-        return NULL;
+        ctx->pool = NULL;
+        ctx->vm_alloc = NULL;
+        ctx->heap_alloc = NULL;
+        return -1;
     }
 
     am_runtime_set_default_timeslice(ctx->rt, 8192);
@@ -1142,8 +1143,11 @@ am_repl_ctx_t *am_repl_ctx_create(void) {
     if (!mod) {
         am_runtime_destroy(ctx->rt);
         am_allocator_pool_destroy(ctx->pool);
-        free(ctx);
-        return NULL;
+        ctx->rt = NULL;
+        ctx->pool = NULL;
+        ctx->vm_alloc = NULL;
+        ctx->heap_alloc = NULL;
+        return -1;
     }
 
     ctx->pid = am_runtime_load_module(ctx->rt, mod);
@@ -1153,8 +1157,11 @@ am_repl_ctx_t *am_repl_ctx_create(void) {
         am_free(ctx->vm_alloc, mod);
         am_runtime_destroy(ctx->rt);
         am_allocator_pool_destroy(ctx->pool);
-        free(ctx);
-        return NULL;
+        ctx->rt = NULL;
+        ctx->pool = NULL;
+        ctx->vm_alloc = NULL;
+        ctx->heap_alloc = NULL;
+        return -1;
     }
 
     if (mod->ilcode) {
@@ -1167,13 +1174,25 @@ am_repl_ctx_t *am_repl_ctx_create(void) {
     }
     am_free(ctx->vm_alloc, mod);
 
+    return 0;
+}
+
+// 建立 REPL 上下文。
+am_repl_ctx_t *am_repl_ctx_create(void) {
+    am_repl_ctx_t *ctx = (am_repl_ctx_t *)calloc(1, sizeof(am_repl_ctx_t));
+    if (!ctx) return NULL;
+
+    ctx->pid = (am_pid_t)-1;
     ctx->status = AM_REPL_STATUS_CONTINUE;
-    ctx->output = NULL;
-    ctx->indent = 0;
     ctx->js_mode = 0;
     ctx->should_stop = 0;
     ctx->prompt_main = "> ";
     ctx->prompt_cont = "... ";
+
+    if (repl_ctx_init_runtime(ctx) != 0) {
+        free(ctx);
+        return NULL;
+    }
 
     return ctx;
 }
