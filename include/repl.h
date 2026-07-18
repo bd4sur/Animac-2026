@@ -34,6 +34,7 @@ typedef struct repl_ctx {
     am_allocator_pool_t *pool;
     am_allocator_t *vm_alloc;
     am_allocator_t *heap_alloc;
+    wchar_t *base_dir;
     am_runtime_t *rt;
     am_pid_t pid;
     volatile int runtime_error;

@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <unistd.h>
+#include <limits.h>
 
 #include "repl.h"
 #include "linker.h"
@@ -86,6 +88,17 @@ static char *wchar_to_mb(const wchar_t *src) {
     if (!dst) return NULL;
     am_wcstombs(dst, src, (uint32_t)buf_size);
     return dst;
+}
+
+// 获取当前工作目录并转换为 wchar_t*（调用者负责 free）。失败返回 NULL。
+static wchar_t *repl_get_cwd(void) {
+    char cwd_mb[PATH_MAX];
+    if (!getcwd(cwd_mb, sizeof(cwd_mb))) return NULL;
+    size_t len = strlen(cwd_mb);
+    wchar_t *cwd_w = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
+    if (!cwd_w) return NULL;
+    am_mbstowcs(cwd_w, cwd_mb, (uint32_t)(len + 1));
+    return cwd_w;
 }
 
 // 检查代码是否构成完整的 S-表达式。
@@ -338,23 +351,33 @@ static int32_t repl_eval_session(am_repl_ctx_t *ctx, const wchar_t *session_code
         return -1;
     }
 
-    wchar_t *path_buf = repl_make_path(ctx->vm_alloc, L".");
+    const wchar_t *base_dir = ctx->base_dir ? ctx->base_dir : L".";
+    wchar_t *path_buf = repl_make_path(ctx->vm_alloc, base_dir);
     if (!path_buf) {
         am_free(ctx->vm_alloc, display_wrapped);
         return -1;
     }
 
     am_ast_t *ast = am_parse(ctx->vm_alloc, display_wrapped, path_buf, 0);
-    am_free(ctx->vm_alloc, path_buf);
     am_free(ctx->vm_alloc, display_wrapped);
     if (!ast) {
+        am_free(ctx->vm_alloc, path_buf);
         repl_ctx_error_wcs(ctx, L"[REPL] 语法解析失败\n");
         return -1;
     }
 
-    am_module_t *mod = am_compile(ast, 0, 0);
-    if (!mod) {
+    am_ast_t *linked = am_link(ast, (wchar_t *)base_dir);
+    if (!linked) {
         am_ast_destroy(ast);
+        am_free(ctx->vm_alloc, path_buf);
+        repl_ctx_error_wcs(ctx, L"[REPL] 模块链接失败\n");
+        return -1;
+    }
+
+    am_module_t *mod = am_compile(linked, 0, 0);
+    am_free(ctx->vm_alloc, path_buf);
+    if (!mod) {
+        am_ast_destroy(linked);
         repl_ctx_error_wcs(ctx, L"[REPL] 编译失败\n");
         return -1;
     }
@@ -367,16 +390,27 @@ static int32_t repl_eval_session(am_repl_ctx_t *ctx, const wchar_t *session_code
 static am_module_t *repl_create_initial_module(am_repl_ctx_t *ctx) {
     if (!ctx) return NULL;
     const wchar_t *init_code = L"((lambda () (begin)))";
-    wchar_t *path_buf = repl_make_path(ctx->vm_alloc, L".");
+    const wchar_t *base_dir = ctx->base_dir ? ctx->base_dir : L".";
+    wchar_t *path_buf = repl_make_path(ctx->vm_alloc, base_dir);
     if (!path_buf) return NULL;
 
     am_ast_t *ast = am_parse(ctx->vm_alloc, (wchar_t *)init_code, path_buf, 0);
-    am_free(ctx->vm_alloc, path_buf);
-    if (!ast) return NULL;
+    if (!ast) {
+        am_free(ctx->vm_alloc, path_buf);
+        return NULL;
+    }
 
-    am_module_t *mod = am_compile(ast, 0, 0);
-    if (!mod) {
+    am_ast_t *linked = am_link(ast, (wchar_t *)base_dir);
+    if (!linked) {
         am_ast_destroy(ast);
+        am_free(ctx->vm_alloc, path_buf);
+        return NULL;
+    }
+
+    am_module_t *mod = am_compile(linked, 0, 0);
+    am_free(ctx->vm_alloc, path_buf);
+    if (!mod) {
+        am_ast_destroy(linked);
         return NULL;
     }
 
@@ -987,6 +1021,7 @@ static int repl_ctx_reset(am_repl_ctx_t *ctx) {
     free(ctx->session);
     free(ctx->stdout_buf);
     free(ctx->stderr_buf);
+    free(ctx->base_dir);
 
     // 销毁旧的运行时与分配器池，彻底归还其管理的整片内存。
     if (ctx->rt) {
@@ -1006,7 +1041,15 @@ static int repl_ctx_reset(am_repl_ctx_t *ctx) {
     ctx->prompt_main = "> ";
     ctx->prompt_cont = "... ";
 
-    // 重新初始化运行时基础设施，相当于重头冷启动。
+    ctx->base_dir = repl_get_cwd();
+    if (!ctx->base_dir) {
+        ctx->base_dir = (wchar_t *)malloc(2 * sizeof(wchar_t));
+        if (!ctx->base_dir) return -1;
+        ctx->base_dir[0] = L'.';
+        ctx->base_dir[1] = L'\0';
+    }
+
+    // 重新初始化运行时基础设施，相当于从头冷启动。
     if (repl_ctx_init_runtime(ctx) != 0) {
         return -1;
     }
@@ -1116,8 +1159,8 @@ static int repl_ctx_init_runtime(am_repl_ctx_t *ctx) {
     ctx->vm_alloc = am_allocator_pool_get_vm(ctx->pool);
     ctx->heap_alloc = am_allocator_pool_get_heap(ctx->pool);
 
-    wchar_t cwd_w[2] = { L'.', L'\0' };
-    ctx->rt = am_runtime_create(ctx->vm_alloc, ctx->heap_alloc, cwd_w);
+    const wchar_t *base_dir = ctx->base_dir ? ctx->base_dir : L".";
+    ctx->rt = am_runtime_create(ctx->vm_alloc, ctx->heap_alloc, base_dir);
     if (!ctx->rt) {
         am_allocator_pool_destroy(ctx->pool);
         ctx->pool = NULL;
@@ -1189,7 +1232,19 @@ am_repl_ctx_t *am_repl_ctx_create(void) {
     ctx->prompt_main = "> ";
     ctx->prompt_cont = "... ";
 
+    ctx->base_dir = repl_get_cwd();
+    if (!ctx->base_dir) {
+        ctx->base_dir = (wchar_t *)malloc(2 * sizeof(wchar_t));
+        if (!ctx->base_dir) {
+            free(ctx);
+            return NULL;
+        }
+        ctx->base_dir[0] = L'.';
+        ctx->base_dir[1] = L'\0';
+    }
+
     if (repl_ctx_init_runtime(ctx) != 0) {
+        free(ctx->base_dir);
         free(ctx);
         return NULL;
     }
@@ -1229,6 +1284,7 @@ void am_repl_ctx_destroy(am_repl_ctx_t *ctx) {
     free(ctx->session);
     free(ctx->stdout_buf);
     free(ctx->stderr_buf);
+    free(ctx->base_dir);
     free(ctx);
 }
 
